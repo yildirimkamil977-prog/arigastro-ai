@@ -6,7 +6,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
-import { Download, Search, Package, Loader2, ExternalLink, Eye, ChevronLeft, ChevronRight } from "lucide-react";
+import { Download, Search, Package, Loader2, ExternalLink, Eye, ChevronLeft, ChevronRight, DollarSign, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
 export default function ProductsPage() {
@@ -17,6 +17,7 @@ export default function ProductsPage() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [importing, setImporting] = useState(false);
+  const [fetchingPrices, setFetchingPrices] = useState(false);
   const [editingPrice, setEditingPrice] = useState(null);
   const [priceValue, setPriceValue] = useState("");
 
@@ -50,6 +51,30 @@ export default function ProductsPage() {
       toast.error("Urun aktarimi basarisiz");
     } finally {
       setImporting(false);
+    }
+  };
+
+  const handleBulkFetchPrices = async () => {
+    setFetchingPrices(true);
+    try {
+      const { data } = await axios.post(`${API}/feed/sync-prices`, {}, { headers: getAuthHeaders(), withCredentials: true });
+      toast.success(`${data.updated} urun guncellendi, ${data.new_products} yeni urun eklendi. Fiyatli: ${data.products_with_price}`);
+      fetchProducts();
+    } catch (err) {
+      toast.error("Feed senkronizasyonu basarisiz");
+    } finally {
+      setFetchingPrices(false);
+    }
+  };
+
+  const fetchSinglePrice = async (slug) => {
+    try {
+      toast.info("Feed'den fiyat senkronizasyonu baslatiliyor...");
+      const { data } = await axios.post(`${API}/feed/sync-prices`, {}, { headers: getAuthHeaders(), withCredentials: true });
+      toast.success(`${data.updated} urun guncellendi`);
+      fetchProducts();
+    } catch (err) {
+      toast.error("Fiyat senkronizasyonu basarisiz");
     }
   };
 
@@ -97,15 +122,26 @@ export default function ProductsPage() {
           <h2 className="text-2xl font-bold tracking-tight text-slate-900 font-heading">Urunler</h2>
           <p className="text-sm text-slate-500 mt-1">Toplam {total} urun</p>
         </div>
-        <Button
-          onClick={handleImport}
-          disabled={importing}
-          data-testid="import-products-button"
-          className="bg-slate-900 hover:bg-slate-800 text-white text-sm h-9"
-        >
-          {importing ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Download className="h-4 w-4 mr-2" />}
-          Urunleri Aktar
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={handleBulkFetchPrices}
+            disabled={fetchingPrices}
+            data-testid="bulk-fetch-prices-button"
+            className="bg-amber-500 hover:bg-amber-600 text-black text-sm h-9 font-medium"
+          >
+            {fetchingPrices ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <DollarSign className="h-4 w-4 mr-2" />}
+            {fetchingPrices ? "Senkronize ediliyor..." : "Feed'den Fiyat Guncelle"}
+          </Button>
+          <Button
+            onClick={handleImport}
+            disabled={importing}
+            data-testid="import-products-button"
+            className="bg-slate-900 hover:bg-slate-800 text-white text-sm h-9"
+          >
+            {importing ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Download className="h-4 w-4 mr-2" />}
+            Urunleri Aktar
+          </Button>
+        </div>
       </div>
 
       <div className="relative max-w-md">
@@ -126,6 +162,7 @@ export default function ProductsPage() {
               <TableRow className="bg-slate-50">
                 <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 w-12"></TableHead>
                 <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Urun Adi</TableHead>
+                <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Marka</TableHead>
                 <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 text-right">Fiyatimiz</TableHead>
                 <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 text-right">En Ucuz Rakip</TableHead>
                 <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Durum</TableHead>
@@ -156,7 +193,10 @@ export default function ProductsPage() {
                       </TableCell>
                       <TableCell>
                         <p className="text-sm font-medium text-slate-900 line-clamp-1">{p.name}</p>
-                        <p className="text-[10px] text-slate-400 mt-0.5 truncate max-w-xs">{p.slug}</p>
+                        <p className="text-[10px] text-slate-400 mt-0.5 truncate max-w-xs">{p.category_path || p.slug}</p>
+                      </TableCell>
+                      <TableCell>
+                        <p className="text-xs text-slate-600">{p.brand || "-"}</p>
                       </TableCell>
                       <TableCell className="text-right">
                         {editingPrice === p.slug ? (
@@ -179,7 +219,15 @@ export default function ProductsPage() {
                             onClick={() => { setEditingPrice(p.slug); setPriceValue(p.our_price || ""); }}
                             className="text-sm font-mono text-slate-900 hover:text-blue-600 cursor-pointer"
                           >
-                            {p.our_price ? `${p.our_price.toLocaleString('tr-TR')} TL` : <span className="text-slate-400 text-xs">Fiyat Ekle</span>}
+                            {p.our_price ? `${p.our_price.toLocaleString('tr-TR')} TL` : (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); fetchSinglePrice(p.slug); }}
+                                className="text-amber-600 hover:text-amber-700 text-xs font-medium flex items-center gap-1"
+                                data-testid={`fetch-price-${p.slug}`}
+                              >
+                                <RefreshCw className="h-3 w-3" /> Feed Sync
+                              </button>
+                            )}
                           </button>
                         )}
                       </TableCell>

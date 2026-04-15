@@ -276,81 +276,278 @@ async def toggle_product_tracking(slug: str, user: dict = Depends(get_current_us
     await db.products.update_one({"slug": slug}, {"$set": {"is_tracked": new_val, "updated_at": datetime.now(timezone.utc).isoformat()}})
     return {"slug": slug, "is_tracked": new_val}
 
+# ============ FEED PRICE SYNC (Google Merchant Feed) ============
+
+import random
+
+FEED_URL = os.environ.get("FEED_URL", "")
+
+async def fetch_and_parse_feed() -> list:
+    """Fetch and parse Google Merchant Center feed XML."""
+    if not FEED_URL:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as http_client:
+            resp = await http_client.get(FEED_URL, headers={"User-Agent": "AriAI/1.0"})
+            resp.raise_for_status()
+
+        soup = BeautifulSoup(resp.text, "lxml-xml")
+        items = []
+        for entry in soup.find_all("item") or soup.find_all("entry"):
+            item = {}
+            # Google Merchant fields use g: namespace
+            for tag_name, key in [
+                ("g:id", "feed_id"), ("g:title", "title"), ("g:link", "url"),
+                ("g:price", "price_raw"), ("g:brand", "brand"),
+                ("g:product_type", "category"), ("g:availability", "availability"),
+                ("g:image_link", "image_url"), ("g:gtin", "gtin"),
+            ]:
+                el = entry.find(tag_name)
+                if not el:
+                    # Try without namespace prefix
+                    el = entry.find(tag_name.split(":")[-1])
+                if el:
+                    item[key] = el.get_text(strip=True)
+
+            # Also try <link> directly
+            if "url" not in item:
+                link_el = entry.find("link")
+                if link_el:
+                    item["url"] = link_el.get_text(strip=True)
+
+            # Parse price: "18937.06TRY" or "18937.06 TRY"
+            if "price_raw" in item:
+                price_text = item["price_raw"].replace("TRY", "").replace("₺", "").strip()
+                try:
+                    item["price"] = float(price_text)
+                except (ValueError, TypeError):
+                    item["price"] = None
+            else:
+                item["price"] = None
+
+            # Extract slug from URL
+            if "url" in item:
+                item["slug"] = item["url"].rstrip("/").split("/")[-1]
+
+            if item.get("slug"):
+                items.append(item)
+        return items
+    except Exception as e:
+        logger.error(f"Feed parse error: {e}")
+        return []
+
+@api_router.post("/feed/sync-prices")
+async def sync_prices_from_feed(user: dict = Depends(get_current_user)):
+    """Sync product prices, names, brands and categories from Google Merchant Feed."""
+    feed_items = await fetch_and_parse_feed()
+    if not feed_items:
+        raise HTTPException(status_code=500, detail="Feed okunamadi veya bos")
+
+    updated = 0
+    new_products = 0
+    for item in feed_items:
+        slug = item.get("slug", "")
+        if not slug:
+            continue
+
+        update_data = {"updated_at": datetime.now(timezone.utc).isoformat()}
+        if item.get("price"):
+            update_data["our_price"] = item["price"]
+        if item.get("title"):
+            update_data["name"] = item["title"]
+        if item.get("brand"):
+            update_data["brand"] = item["brand"]
+        if item.get("category"):
+            update_data["category_path"] = item["category"]
+        if item.get("availability"):
+            update_data["availability"] = item["availability"]
+        if item.get("gtin"):
+            update_data["gtin"] = item["gtin"]
+        if item.get("image_url"):
+            update_data["image_url"] = item["image_url"]
+
+        existing = await db.products.find_one({"slug": slug})
+        if existing:
+            await db.products.update_one({"slug": slug}, {"$set": update_data})
+            updated += 1
+        else:
+            # Create new product from feed
+            await db.products.insert_one({
+                "slug": slug,
+                "url": item.get("url", ""),
+                "name": item.get("title", slug_to_name(slug)),
+                "image_url": item.get("image_url", ""),
+                "our_price": item.get("price"),
+                "brand": item.get("brand", ""),
+                "category_path": item.get("category", ""),
+                "category_slug": "",
+                "gtin": item.get("gtin", ""),
+                "availability": item.get("availability", ""),
+                "is_tracked": False,
+                "akakce_matched": False,
+                "akakce_url": "",
+                "last_price_check": None,
+                "cheapest_competitor": None,
+                "cheapest_price": None,
+                "price_difference": None,
+                "competitors": [],
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            })
+            new_products += 1
+
+    total = await db.products.count_documents({})
+    priced = await db.products.count_documents({"our_price": {"$ne": None}})
+    return {
+        "updated": updated,
+        "new_products": new_products,
+        "total_products": total,
+        "products_with_price": priced,
+        "feed_items": len(feed_items),
+        "message": f"{updated} urun guncellendi, {new_products} yeni urun eklendi"
+    }
+
+@api_router.get("/feed/status")
+async def feed_status(user: dict = Depends(get_current_user)):
+    """Check feed sync status."""
+    total = await db.products.count_documents({})
+    priced = await db.products.count_documents({"our_price": {"$ne": None}})
+    unpriced = await db.products.count_documents({"our_price": None})
+    return {
+        "feed_url": FEED_URL[:50] + "..." if FEED_URL else "Not configured",
+        "total_products": total,
+        "products_with_price": priced,
+        "products_without_price": unpriced,
+    }
+
 # ============ AKAKCE SCRAPING ============
 
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+]
+
 AKAKCE_SEARCH_URL = "https://www.akakce.com/arama/?q={query}"
-AKAKCE_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
-}
+
+def get_akakce_headers():
+    return {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+        "Cache-Control": "max-age=0",
+        "Connection": "keep-alive",
+        "Referer": "https://www.google.com/",
+    }
 
 async def search_akakce(product_name: str) -> dict:
-    """Search Akakçe for a product and extract prices."""
+    """Search Akakçe for a product and extract prices with improved anti-bot evasion."""
     try:
         search_query = product_name.replace(" ", "+")
         url = AKAKCE_SEARCH_URL.format(query=search_query)
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as http_client:
-            resp = await http_client.get(url, headers=AKAKCE_HEADERS)
+        
+        async with httpx.AsyncClient(
+            timeout=20.0,
+            follow_redirects=True,
+            http2=True,
+        ) as http_client:
+            # First visit homepage to get cookies
+            try:
+                home_resp = await http_client.get("https://www.akakce.com/", headers=get_akakce_headers())
+                await asyncio.sleep(random.uniform(1, 2))
+            except Exception:
+                pass
+            
+            # Now search
+            headers = get_akakce_headers()
+            headers["Referer"] = "https://www.akakce.com/"
+            headers["Sec-Fetch-Site"] = "same-origin"
+            resp = await http_client.get(url, headers=headers)
+            
+            if resp.status_code == 403:
+                return {"success": False, "error": "Akakce bot korumasi aktif (403). Proxy gerekli olabilir.", "competitors": [], "search_url": url}
             if resp.status_code != 200:
-                return {"success": False, "error": f"HTTP {resp.status_code}", "competitors": []}
+                return {"success": False, "error": f"HTTP {resp.status_code}", "competitors": [], "search_url": url}
         
         soup = BeautifulSoup(resp.text, "html.parser")
         results = []
         
-        # Try to parse Akakçe search results
-        # Akakçe uses various list structures for search results
-        product_items = soup.select("li.p") or soup.select("div.p") or soup.select("[class*='product']")
+        # Akakçe search results - try multiple selector strategies
+        selectors_to_try = [
+            "li[class]", "div.p", "li.p", ".prc_list li",
+            "[class*='product']", "[class*='result']",
+            "ul li[onclick]", "div[data-id]",
+        ]
         
-        for item in product_items[:10]:
-            try:
-                name_el = item.select_one("h3, .pn, [class*='name'], a[title]")
-                price_el = item.select_one(".pt, .pb, [class*='price'], span.pt")
-                
-                name = name_el.get_text(strip=True) if name_el else ""
-                price_text = price_el.get_text(strip=True) if price_el else ""
-                
-                # Parse Turkish price format (1.234,56 TL)
-                price = parse_turkish_price(price_text)
-                
-                if name and price:
-                    link = item.select_one("a")
-                    href = link.get("href", "") if link else ""
-                    if href and not href.startswith("http"):
-                        href = f"https://www.akakce.com{href}"
-                    results.append({"name": name, "price": price, "url": href})
-            except Exception:
-                continue
+        for selector in selectors_to_try:
+            items = soup.select(selector)
+            for item in items[:15]:
+                try:
+                    text = item.get_text(" ", strip=True)
+                    # Find price in Turkish format
+                    price_matches = re.findall(r'([\d.]+,\d{2})\s*TL', text)
+                    if not price_matches:
+                        price_matches = re.findall(r'₺\s*([\d.,]+)', text)
+                    
+                    if price_matches:
+                        price = parse_turkish_price(price_matches[0] + " TL")
+                        if price and price > 1:
+                            # Try to get product name
+                            name_el = item.select_one("a[title], h3, h2, .pn, span.pn")
+                            name = name_el.get_text(strip=True) if name_el else ""
+                            if not name:
+                                # Take first meaningful text
+                                name = text[:80].split("TL")[0].strip()
+                                name = re.sub(r'[\d.,]+$', '', name).strip()
+                            
+                            link = item.select_one("a[href]")
+                            href = link.get("href", "") if link else ""
+                            if href and not href.startswith("http"):
+                                href = f"https://www.akakce.com{href}"
+                            
+                            if name and len(name) > 3:
+                                results.append({"name": name[:120], "price": price, "url": href})
+                except Exception:
+                    continue
+            if results:
+                break
         
-        # Also try to find the first product detail page result
+        # Fallback: search entire page for price patterns
         if not results:
-            # Try alternate selectors
-            for sel in ["ul.products li", "div.result-item", ".search-result"]:
-                items = soup.select(sel)
-                for item in items[:10]:
-                    try:
-                        name = item.get_text(strip=True)[:100]
-                        price_match = re.search(r'([\d.]+,\d{2})\s*TL', item.get_text())
-                        if price_match:
-                            price = parse_turkish_price(price_match.group(0))
-                            if price:
-                                results.append({"name": name[:80], "price": price, "url": ""})
-                    except Exception:
-                        continue
-                if results:
-                    break
+            page_text = soup.get_text()
+            price_matches = re.findall(r'([\d.]+,\d{2})\s*TL', page_text)
+            for pm in price_matches[:5]:
+                price = parse_turkish_price(pm + " TL")
+                if price and price > 1:
+                    results.append({"name": "Akakce sonucu", "price": price, "url": url})
+        
+        # Deduplicate by price
+        seen_prices = set()
+        unique_results = []
+        for r in results:
+            if r["price"] not in seen_prices:
+                seen_prices.add(r["price"])
+                unique_results.append(r)
         
         return {
-            "success": len(results) > 0,
+            "success": len(unique_results) > 0,
             "search_url": url,
-            "competitors": sorted(results, key=lambda x: x["price"])[:10],
-            "error": None if results else "No results found or page structure changed"
+            "competitors": sorted(unique_results, key=lambda x: x["price"])[:10],
+            "error": None if unique_results else "Sonuc bulunamadi veya sayfa yapisi degisti"
         }
     except httpx.TimeoutException:
-        return {"success": False, "error": "Timeout - Akakçe may be blocking requests", "competitors": []}
+        return {"success": False, "error": "Zaman asimi - Akakce yanitlamiyor", "competitors": [], "search_url": ""}
     except Exception as e:
         logger.error(f"Akakçe search error: {e}")
-        return {"success": False, "error": str(e), "competitors": []}
+        return {"success": False, "error": str(e), "competitors": [], "search_url": ""}
 
 def parse_turkish_price(text: str) -> Optional[float]:
     """Parse Turkish price format: 1.234,56 TL -> 1234.56"""

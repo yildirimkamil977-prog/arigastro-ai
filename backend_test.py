@@ -232,6 +232,36 @@ class AriAIAPITester:
         )
         return success, response
 
+    def test_feed_status(self):
+        """Test feed status endpoint"""
+        success, response = self.run_test(
+            "Feed Status",
+            "GET",
+            "feed/status",
+            200
+        )
+        return success, response
+
+    def test_sync_prices_from_feed(self):
+        """Test syncing prices from Google Merchant Feed"""
+        success, response = self.run_test(
+            "Sync Prices from Feed",
+            "POST",
+            "feed/sync-prices",
+            200
+        )
+        return success, response
+
+    def test_products_with_search(self, search_term):
+        """Test product search functionality"""
+        success, response = self.run_test(
+            f"Search Products ({search_term})",
+            "GET",
+            f"products?search={search_term}",
+            200
+        )
+        return success, response
+
 def main():
     print("🚀 Starting ARI AI Admin Panel API Tests")
     print("=" * 60)
@@ -298,7 +328,21 @@ def main():
     if first_product_slug:
         tester.test_update_product_price(first_product_slug, 1500.0)
     
-    print(f"\n📋 Phase 4: Dashboard & Analytics Tests")
+    print(f"\n📋 Phase 4: Feed Sync Tests (NEW FEATURES)")
+    
+    # Test feed status
+    tester.test_feed_status()
+    
+    # Test feed sync functionality
+    feed_success, feed_data = tester.test_sync_prices_from_feed()
+    if feed_success:
+        print(f"   Feed sync result: {feed_data.get('updated', 0)} updated, {feed_data.get('new_products', 0)} new products")
+        print(f"   Products with prices: {feed_data.get('products_with_price', 0)}")
+    
+    # Test product search
+    tester.test_products_with_search("tava")
+    
+    print(f"\n📋 Phase 5: Dashboard & Analytics Tests")
     
     # Test dashboard stats
     tester.test_dashboard_stats()
@@ -306,7 +350,7 @@ def main():
     # Test price tracking
     tester.test_price_tracking()
     
-    print(f"\n📋 Phase 5: Advanced Features Tests")
+    print(f"\n📋 Phase 6: Advanced Features Tests")
     
     # Test Akakçe price checking (may fail due to bot protection)
     if first_product_slug:
@@ -319,7 +363,7 @@ def main():
         tester.test_seo_generation(first_product_slug)
         tester.test_get_seo_content(first_product_slug)
     
-    print(f"\n📋 Phase 6: Cleanup Tests")
+    print(f"\n📋 Phase 7: Cleanup Tests")
     
     # Test logout
     tester.test_logout()
