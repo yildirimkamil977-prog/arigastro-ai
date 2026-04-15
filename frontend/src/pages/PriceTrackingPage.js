@@ -124,11 +124,12 @@ export default function PriceTrackingPage() {
               <TableRow className="bg-slate-50">
                 <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 w-10"></TableHead>
                 <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Urun</TableHead>
+                <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 text-center">Siramiz</TableHead>
                 <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 text-right">Bizim Fiyat</TableHead>
                 <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 text-right">En Ucuz Rakip</TableHead>
                 <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 text-right">Fark</TableHead>
                 <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">En Ucuz Firma</TableHead>
-                <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Son Kontrol</TableHead>
+                <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Satici Sayisi</TableHead>
                 <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 w-10"></TableHead>
               </TableRow>
             </TableHeader>
@@ -156,6 +157,14 @@ export default function PriceTrackingPage() {
                       </TableCell>
                       <TableCell>
                         <p className="text-sm font-medium text-slate-900 line-clamp-1">{p.name}</p>
+                        <p className="text-[10px] text-slate-400 truncate max-w-[200px]">{p.akakce_product_name || ""}</p>
+                      </TableCell>
+                      <TableCell className="text-center">
+                        {p.our_position ? (
+                          <Badge className={`border-0 text-xs font-mono ${p.our_position === 1 ? "bg-emerald-100 text-emerald-700" : p.our_position <= 3 ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"}`}>
+                            {p.our_position}/{p.total_sellers || "?"}
+                          </Badge>
+                        ) : "-"}
                       </TableCell>
                       <TableCell className="text-right font-mono text-sm">
                         {p.our_price ? `${p.our_price.toLocaleString('tr-TR')} TL` : <span className="text-slate-400">-</span>}
@@ -175,14 +184,12 @@ export default function PriceTrackingPage() {
                       <TableCell>
                         <p className="text-xs text-slate-600 truncate max-w-[150px]">{p.cheapest_competitor || "-"}</p>
                       </TableCell>
-                      <TableCell>
-                        <p className="text-[10px] text-slate-400">
-                          {p.last_price_check ? new Date(p.last_price_check).toLocaleDateString('tr-TR') : "-"}
-                        </p>
+                      <TableCell className="text-center">
+                        <p className="text-xs text-slate-600">{p.total_sellers ? `${p.total_sellers} satici` : "-"}</p>
                       </TableCell>
                       <TableCell>
-                        {p.akakce_url && (
-                          <a href={p.akakce_url} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-blue-600">
+                        {(p.akakce_product_url || p.akakce_url) && (
+                          <a href={p.akakce_product_url || p.akakce_url} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-blue-600">
                             <ExternalLink className="h-3.5 w-3.5" />
                           </a>
                         )}

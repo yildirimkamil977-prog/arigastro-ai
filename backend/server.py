@@ -548,46 +548,236 @@ def parse_turkish_price(text: str) -> Optional[float]:
 
 @api_router.post("/products/{slug}/check-akakce")
 async def check_akakce_price(slug: str, user: dict = Depends(get_current_user)):
-    """Search Akakçe for product and update competitor prices."""
+    """Check prices from a MATCHED Akakçe product page. Requires akakce_product_url to be set."""
     product = await db.products.find_one({"slug": slug})
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     
-    result = await search_akakce(product["name"])
+    akakce_url = product.get("akakce_product_url", "")
+    if not akakce_url:
+        return {"slug": slug, "success": False, "error": "Bu urun henuz Akakce ile eslestirilmemis. Once eslestirme yapin."}
+    
+    # Fetch the Akakçe product page and parse sellers
+    result = await fetch_akakce_product_page(akakce_url)
     
     update_data = {
         "last_price_check": datetime.now(timezone.utc).isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
-        "akakce_matched": result["success"],
     }
     
-    if result["success"] and result["competitors"]:
-        cheapest = result["competitors"][0]
-        update_data["cheapest_competitor"] = cheapest["name"]
-        update_data["cheapest_price"] = cheapest["price"]
-        update_data["competitors"] = result["competitors"]
-        update_data["akakce_url"] = result.get("search_url", "")
+    if result["success"] and result["sellers"]:
+        # Filter out Arigastro from competitors
+        competitors = [s for s in result["sellers"] if "arigastro" not in s["seller"].lower()]
+        all_sellers = result["sellers"]
         
-        if product.get("our_price"):
-            update_data["price_difference"] = round(product["our_price"] - cheapest["price"], 2)
-        
-        # Save to price history
-        await db.price_history.insert_one({
-            "product_slug": slug,
-            "our_price": product.get("our_price"),
-            "cheapest_competitor": cheapest["name"],
-            "cheapest_price": cheapest["price"],
-            "all_competitors": result["competitors"],
-            "checked_at": datetime.now(timezone.utc).isoformat()
-        })
+        if competitors:
+            cheapest = competitors[0]
+            update_data["cheapest_competitor"] = cheapest["seller"]
+            update_data["cheapest_price"] = cheapest["price"]
+            update_data["competitors"] = competitors
+            update_data["all_sellers"] = all_sellers
+            update_data["akakce_product_name"] = result.get("product_name", "")
+            
+            if product.get("our_price"):
+                update_data["price_difference"] = round(product["our_price"] - cheapest["price"], 2)
+            
+            # Find our position among sellers
+            our_position = None
+            for i, s in enumerate(all_sellers):
+                if "arigastro" in s["seller"].lower():
+                    our_position = i + 1
+                    break
+            update_data["our_position"] = our_position
+            update_data["total_sellers"] = len(all_sellers)
+            
+            await db.price_history.insert_one({
+                "product_slug": slug,
+                "our_price": product.get("our_price"),
+                "cheapest_competitor": cheapest["seller"],
+                "cheapest_price": cheapest["price"],
+                "all_sellers": all_sellers,
+                "our_position": our_position,
+                "checked_at": datetime.now(timezone.utc).isoformat()
+            })
     
     await db.products.update_one({"slug": slug}, {"$set": update_data})
+    return {"slug": slug, "success": result["success"], "sellers": result.get("sellers", []), "error": result.get("error")}
+
+async def fetch_akakce_product_page(url: str) -> dict:
+    """Fetch and parse an Akakçe product detail page to extract all seller prices."""
+    try:
+        loop = asyncio.get_event_loop()
+        resp = await loop.run_in_executor(None, lambda: akakce_request(url))
+        
+        if resp.status_code == 403:
+            return {"success": False, "error": "Akakce Cloudflare korumasi (403). Residential IP veya proxy gerekli.", "sellers": []}
+        if resp.status_code != 200:
+            return {"success": False, "error": f"HTTP {resp.status_code}", "sellers": []}
+        
+        soup = BeautifulSoup(resp.content if hasattr(resp, 'content') else resp.text, "html.parser")
+        
+        product_name = ""
+        h1 = soup.find("h1")
+        if h1:
+            product_name = h1.get_text(strip=True)
+        
+        sellers = []
+        # Parse seller listings from Akakçe product page
+        # Each seller block contains price + seller name
+        for li in soup.select("li[class], div[class]"):
+            text = li.get_text(" ", strip=True)
+            price_match = re.search(r'([\d.]+)\s*,(\d{2})\s*TL', text)
+            if not price_match:
+                continue
+            
+            price_str = price_match.group(1).replace(".", "") + "." + price_match.group(2)
+            try:
+                price = float(price_str)
+            except ValueError:
+                continue
+            
+            # Find seller name - usually bold or in specific elements
+            seller_name = ""
+            bold = li.select_one("b, strong, .v_v8")
+            if bold:
+                seller_name = bold.get_text(strip=True)
+            
+            if not seller_name:
+                # Look for known patterns
+                for pattern in [r'Stokta.*?([A-Za-zğüşıöçĞÜŞİÖÇ0-9.]+\.com[.a-z]*)', r'\*\*([^*]+)\*\*']:
+                    m = re.search(pattern, text)
+                    if m:
+                        seller_name = m.group(1).strip()
+                        break
+            
+            if price > 1 and seller_name and len(seller_name) > 2:
+                sellers.append({"seller": seller_name, "price": price})
+        
+        # Deduplicate sellers
+        seen = set()
+        unique_sellers = []
+        for s in sellers:
+            key = s["seller"].lower()
+            if key not in seen:
+                seen.add(key)
+                unique_sellers.append(s)
+        
+        return {
+            "success": len(unique_sellers) > 0,
+            "product_name": product_name,
+            "sellers": sorted(unique_sellers, key=lambda x: x["price"]),
+            "error": None if unique_sellers else "Satici bilgisi okunamadi"
+        }
+    except Exception as e:
+        logger.error(f"Akakce product page error: {e}")
+        return {"success": False, "error": str(e), "sellers": []}
+
+# ============ AI-POWERED PRODUCT MATCHING ============
+
+class AkakceMatchRequest(BaseModel):
+    akakce_product_url: str
+    akakce_product_name: Optional[str] = ""
+
+@api_router.post("/products/{slug}/set-akakce-match")
+async def set_akakce_match(slug: str, req: AkakceMatchRequest, user: dict = Depends(get_current_user)):
+    """Manually set the Akakçe product URL for a product (admin override)."""
+    product = await db.products.find_one({"slug": slug})
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
     
-    return {
-        "slug": slug,
-        "akakce_result": result,
-        "updated": True
-    }
+    await db.products.update_one({"slug": slug}, {"$set": {
+        "akakce_product_url": req.akakce_product_url,
+        "akakce_product_name": req.akakce_product_name,
+        "akakce_matched": True,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }})
+    return {"slug": slug, "matched": True, "akakce_product_url": req.akakce_product_url}
+
+@api_router.post("/products/{slug}/ai-match-akakce")
+async def ai_match_akakce(slug: str, user: dict = Depends(get_current_user)):
+    """Use AI to search Akakçe and find the matching product. Searches, then uses GPT to pick the right one."""
+    product = await db.products.find_one({"slug": slug})
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    # Step 1: Search Akakçe
+    search_result = search_akakce_sync(product["name"])
+    
+    if not search_result["success"]:
+        return {"slug": slug, "matched": False, "error": search_result["error"], "candidates": []}
+    
+    candidates = search_result.get("competitors", [])
+    if not candidates:
+        return {"slug": slug, "matched": False, "error": "Akakce'de sonuc bulunamadi", "candidates": []}
+    
+    # Step 2: Use AI to find the best match
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    if not openai_key:
+        # Return candidates for manual selection
+        return {"slug": slug, "matched": False, "candidates": candidates, "error": "AI anahtari yok. Manuel eslestirme yapabilirsiniz."}
+    
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        import json
+        
+        chat = LlmChat(
+            api_key=openai_key,
+            session_id=f"match-{slug}-{uuid.uuid4().hex[:8]}",
+            system_message="""Sen bir ürün eşleştirme uzmanısın. Sana bir ürün adı ve Akakçe arama sonuçlarından aday ürünler verilecek.
+Görevin: Aday ürünlerden TAMAMEN AYNI ürünü bulmak. Marka, model, boyut, özellik gibi tüm detaylar eşleşmeli.
+Eğer kesin eşleşme yoksa, "no_match" döndür.
+Yanıtını JSON formatında ver: {"match_index": 0, "confidence": "high/medium/low", "reason": "..."}
+Eğer eşleşme yoksa: {"match_index": -1, "confidence": "none", "reason": "..."}"""
+        ).with_model("openai", "gpt-4o")
+        
+        candidates_text = "\n".join([f"{i}. {c['name']} - {c.get('price', '?')} TL (URL: {c.get('url', '')})" for i, c in enumerate(candidates)])
+        
+        prompt = f"""Ürünümüz: {product['name']}
+Marka: {product.get('brand', 'Bilinmiyor')}
+GTIN: {product.get('gtin', 'Yok')}
+
+Akakçe aday ürünleri:
+{candidates_text}
+
+Hangi aday ürün bizim ürünümüzle AYNI üründür? Sadece bire bir aynı ürünü eşleştir."""
+        
+        response = await chat.send_message(UserMessage(text=prompt))
+        response_text = response.strip()
+        if response_text.startswith("```"):
+            response_text = re.sub(r'^```(?:json)?\s*', '', response_text)
+            response_text = re.sub(r'\s*```$', '', response_text)
+        
+        ai_result = json.loads(response_text)
+        match_idx = ai_result.get("match_index", -1)
+        confidence = ai_result.get("confidence", "none")
+        
+        if match_idx >= 0 and match_idx < len(candidates) and confidence in ["high", "medium"]:
+            matched_product = candidates[match_idx]
+            await db.products.update_one({"slug": slug}, {"$set": {
+                "akakce_product_url": matched_product.get("url", ""),
+                "akakce_product_name": matched_product["name"],
+                "akakce_matched": True,
+                "akakce_match_confidence": confidence,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }})
+            return {
+                "slug": slug, "matched": True,
+                "akakce_product_url": matched_product.get("url", ""),
+                "akakce_product_name": matched_product["name"],
+                "confidence": confidence,
+                "reason": ai_result.get("reason", ""),
+                "candidates": candidates
+            }
+        else:
+            return {
+                "slug": slug, "matched": False,
+                "candidates": candidates,
+                "reason": ai_result.get("reason", "Kesin esleme bulunamadi"),
+                "confidence": confidence
+            }
+    except Exception as e:
+        logger.error(f"AI matching error: {e}")
+        return {"slug": slug, "matched": False, "candidates": candidates, "error": str(e)}
 
 # ============ SEO GENERATION ============
 
