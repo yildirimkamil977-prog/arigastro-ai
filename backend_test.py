@@ -1,16 +1,10 @@
-#!/usr/bin/env python3
-"""
-Backend API Testing for ARI AI Admin Panel
-Tests all authentication, sitemap import, CRUD operations, and dashboard endpoints
-"""
-
 import requests
 import sys
 import json
 from datetime import datetime
 
 class AriAIAPITester:
-    def __init__(self, base_url="https://price-pulse-51.preview.emergentagent.com/api"):
+    def __init__(self, base_url="https://price-pulse-51.preview.emergentagent.com"):
         self.base_url = base_url
         self.token = None
         self.tests_run = 0
@@ -21,7 +15,6 @@ class AriAIAPITester:
         """Run a single API test"""
         url = f"{self.base_url}/{endpoint}"
         test_headers = {'Content-Type': 'application/json'}
-        
         if self.token:
             test_headers['Authorization'] = f'Bearer {self.token}'
         if headers:
@@ -38,8 +31,6 @@ class AriAIAPITester:
                 response = requests.post(url, json=data, headers=test_headers, timeout=30)
             elif method == 'PUT':
                 response = requests.put(url, json=data, headers=test_headers, timeout=30)
-            elif method == 'DELETE':
-                response = requests.delete(url, headers=test_headers, timeout=30)
 
             success = response.status_code == expected_status
             if success:
@@ -47,147 +38,138 @@ class AriAIAPITester:
                 print(f"✅ Passed - Status: {response.status_code}")
                 try:
                     response_data = response.json()
-                    if isinstance(response_data, dict) and len(str(response_data)) < 200:
+                    if isinstance(response_data, dict) and len(str(response_data)) < 500:
                         print(f"   Response: {response_data}")
+                    elif isinstance(response_data, dict):
+                        print(f"   Response keys: {list(response_data.keys())}")
                 except:
-                    pass
+                    print(f"   Response: {response.text[:200]}")
             else:
                 print(f"❌ Failed - Expected {expected_status}, got {response.status_code}")
-                try:
-                    error_detail = response.json()
-                    print(f"   Error: {error_detail}")
-                except:
-                    print(f"   Response text: {response.text[:200]}")
+                print(f"   Response: {response.text[:300]}")
                 self.failed_tests.append({
                     "test": name,
                     "expected": expected_status,
                     "actual": response.status_code,
-                    "error": response.text[:200]
+                    "response": response.text[:300]
                 })
 
             return success, response.json() if success and response.text else {}
 
-        except requests.exceptions.Timeout:
-            print(f"❌ Failed - Request timeout")
-            self.failed_tests.append({"test": name, "error": "Request timeout"})
-            return False, {}
         except Exception as e:
             print(f"❌ Failed - Error: {str(e)}")
-            self.failed_tests.append({"test": name, "error": str(e)})
+            self.failed_tests.append({
+                "test": name,
+                "error": str(e)
+            })
             return False, {}
-
-    def test_root_endpoint(self):
-        """Test root API endpoint"""
-        success, response = self.run_test(
-            "Root API Endpoint",
-            "GET",
-            "",
-            200
-        )
-        return success
 
     def test_login(self, username, password):
         """Test login and get token"""
         success, response = self.run_test(
-            "Admin Login",
+            "Login",
             "POST",
-            "auth/login",
+            "api/auth/login",
             200,
             data={"username": username, "password": password}
         )
         if success and 'token' in response:
             self.token = response['token']
-            print(f"   Token received: {self.token[:20]}...")
+            print(f"   Token obtained: {self.token[:20]}...")
             return True
         return False
 
-    def test_get_me(self):
-        """Test get current user info"""
+    def test_auth_me(self):
+        """Test auth/me endpoint"""
         success, response = self.run_test(
             "Get Current User",
             "GET",
-            "auth/me",
-            200
-        )
-        return success, response
-
-    def test_logout(self):
-        """Test logout"""
-        success, response = self.run_test(
-            "Logout",
-            "POST",
-            "auth/logout",
+            "api/auth/me",
             200
         )
         return success
 
-    def test_import_categories(self):
-        """Test importing categories from sitemap"""
-        success, response = self.run_test(
-            "Import Categories from Sitemap",
-            "POST",
-            "sitemap/import-categories",
-            200
-        )
-        return success, response
-
-    def test_import_products(self):
-        """Test importing products from sitemap"""
-        success, response = self.run_test(
-            "Import Products from Sitemap",
-            "POST",
-            "sitemap/import-products",
-            200
-        )
-        return success, response
-
-    def test_list_categories(self):
-        """Test listing categories"""
-        success, response = self.run_test(
-            "List Categories",
-            "GET",
-            "categories",
-            200
-        )
-        return success, response
-
-    def test_toggle_category_tracking(self, slug):
-        """Test toggling category tracking"""
-        success, response = self.run_test(
-            f"Toggle Category Tracking ({slug})",
-            "PUT",
-            f"categories/{slug}/toggle-tracking",
-            200
-        )
-        return success, response
-
-    def test_list_products(self):
-        """Test listing products with pagination"""
-        success, response = self.run_test(
-            "List Products",
-            "GET",
-            "products?page=1&limit=10",
-            200
-        )
-        return success, response
-
-    def test_update_product_price(self, slug, price):
-        """Test updating product price"""
-        success, response = self.run_test(
-            f"Update Product Price ({slug})",
-            "PUT",
-            f"products/{slug}",
-            200,
-            data={"our_price": price}
-        )
-        return success, response
-
     def test_dashboard_stats(self):
-        """Test dashboard statistics"""
+        """Test dashboard stats"""
         success, response = self.run_test(
-            "Dashboard Statistics",
+            "Dashboard Stats",
             "GET",
-            "dashboard/stats",
+            "api/dashboard/stats",
+            200
+        )
+        return success
+
+    def test_products_all(self):
+        """Test get all products"""
+        success, response = self.run_test(
+            "Get All Products",
+            "GET",
+            "api/products",
+            200
+        )
+        return success, response
+
+    def test_products_matched_only(self):
+        """Test get matched products only"""
+        success, response = self.run_test(
+            "Get Matched Products Only",
+            "GET",
+            "api/products?matched_only=true",
+            200
+        )
+        return success, response
+
+    def test_products_tracked_categories_only(self):
+        """Test get products from tracked categories only"""
+        success, response = self.run_test(
+            "Get Products from Tracked Categories Only",
+            "GET",
+            "api/products?tracked_categories_only=true",
+            200
+        )
+        return success, response
+
+    def test_set_akakce_match(self, product_slug):
+        """Test setting Akakçe match for a product"""
+        test_url = "https://www.akakce.com/test-product-page.html"
+        success, response = self.run_test(
+            f"Set Akakçe Match for {product_slug}",
+            "POST",
+            f"api/products/{product_slug}/set-akakce-match",
+            200,
+            data={
+                "akakce_product_url": test_url,
+                "akakce_product_name": "Test Product"
+            }
+        )
+        return success
+
+    def test_check_akakce(self, product_slug):
+        """Test checking Akakçe prices for a product"""
+        success, response = self.run_test(
+            f"Check Akakçe Prices for {product_slug}",
+            "POST",
+            f"api/products/{product_slug}/check-akakce",
+            200
+        )
+        return success, response
+
+    def test_seo_generate(self, product_slug):
+        """Test SEO generation for a product"""
+        success, response = self.run_test(
+            f"Generate SEO for {product_slug}",
+            "POST",
+            f"api/seo/generate/{product_slug}",
+            200
+        )
+        return success, response
+
+    def test_categories(self):
+        """Test get categories"""
+        success, response = self.run_test(
+            "Get Categories",
+            "GET",
+            "api/categories",
             200
         )
         return success, response
@@ -195,197 +177,117 @@ class AriAIAPITester:
     def test_price_tracking(self):
         """Test price tracking endpoint"""
         success, response = self.run_test(
-            "Price Tracking Data",
+            "Get Price Tracking Data",
             "GET",
-            "price-tracking?page=1&limit=10",
-            200
-        )
-        return success, response
-
-    def test_check_akakce_price(self, slug):
-        """Test Akakçe price checking for a product"""
-        success, response = self.run_test(
-            f"Check Akakçe Price ({slug})",
-            "POST",
-            f"products/{slug}/check-akakce",
-            200
-        )
-        return success, response
-
-    def test_seo_generation(self, slug):
-        """Test SEO content generation"""
-        success, response = self.run_test(
-            f"Generate SEO Content ({slug})",
-            "POST",
-            f"seo/generate/{slug}",
-            200
-        )
-        return success, response
-
-    def test_get_seo_content(self, slug):
-        """Test getting existing SEO content"""
-        success, response = self.run_test(
-            f"Get SEO Content ({slug})",
-            "GET",
-            f"seo/{slug}",
-            200
-        )
-        return success, response
-
-    def test_feed_status(self):
-        """Test feed status endpoint"""
-        success, response = self.run_test(
-            "Feed Status",
-            "GET",
-            "feed/status",
-            200
-        )
-        return success, response
-
-    def test_sync_prices_from_feed(self):
-        """Test syncing prices from Google Merchant Feed"""
-        success, response = self.run_test(
-            "Sync Prices from Feed",
-            "POST",
-            "feed/sync-prices",
-            200
-        )
-        return success, response
-
-    def test_products_with_search(self, search_term):
-        """Test product search functionality"""
-        success, response = self.run_test(
-            f"Search Products ({search_term})",
-            "GET",
-            f"products?search={search_term}",
+            "api/price-tracking",
             200
         )
         return success, response
 
 def main():
-    print("🚀 Starting ARI AI Admin Panel API Tests")
+    print("🚀 Starting ARI AI API Testing...")
     print("=" * 60)
     
     # Setup
     tester = AriAIAPITester()
     
-    # Test credentials from environment
-    admin_username = "arigastro"
-    admin_password = "Arigastro2026!"
+    # Test credentials from review request
+    username = "arigastro"
+    password = "Arigastro2026!"
+
+    # Run authentication tests
+    print("\n📋 AUTHENTICATION TESTS")
+    print("-" * 30)
     
-    # Test sequence
-    print("\n📋 Phase 1: Basic API & Authentication Tests")
-    
-    # Test root endpoint
-    if not tester.test_root_endpoint():
-        print("❌ Root endpoint failed, stopping tests")
-        return 1
-    
-    # Test login
-    if not tester.test_login(admin_username, admin_password):
+    if not tester.test_login(username, password):
         print("❌ Login failed, stopping tests")
         return 1
-    
-    # Test get current user
-    success, user_data = tester.test_get_me()
-    if not success:
-        print("❌ Get current user failed")
+
+    if not tester.test_auth_me():
+        print("❌ Auth/me failed")
         return 1
-    
-    print(f"\n📋 Phase 2: Sitemap Import Tests")
-    
-    # Test category import
-    cat_success, cat_data = tester.test_import_categories()
-    if cat_success:
-        print(f"   Categories imported: {cat_data.get('imported', 0)}, Total: {cat_data.get('total', 0)}")
-    
-    # Test product import  
-    prod_success, prod_data = tester.test_import_products()
-    if prod_success:
-        print(f"   Products imported: {prod_data.get('imported', 0)}, Total: {prod_data.get('total', 0)}")
-    
-    print(f"\n📋 Phase 3: CRUD Operations Tests")
-    
-    # Test list categories
-    cat_list_success, categories = tester.test_list_categories()
-    first_category_slug = None
-    if cat_list_success and categories:
-        first_category_slug = categories[0].get('slug') if categories else None
-        print(f"   Found {len(categories)} categories")
-    
-    # Test toggle category tracking if we have categories
-    if first_category_slug:
-        tester.test_toggle_category_tracking(first_category_slug)
-    
-    # Test list products
-    prod_list_success, products_data = tester.test_list_products()
-    first_product_slug = None
-    if prod_list_success and products_data.get('products'):
-        first_product_slug = products_data['products'][0].get('slug')
-        print(f"   Found {products_data.get('total', 0)} products")
-    
-    # Test update product price if we have products
-    if first_product_slug:
-        tester.test_update_product_price(first_product_slug, 1500.0)
-    
-    print(f"\n📋 Phase 4: Feed Sync Tests (NEW FEATURES)")
-    
-    # Test feed status
-    tester.test_feed_status()
-    
-    # Test feed sync functionality
-    feed_success, feed_data = tester.test_sync_prices_from_feed()
-    if feed_success:
-        print(f"   Feed sync result: {feed_data.get('updated', 0)} updated, {feed_data.get('new_products', 0)} new products")
-        print(f"   Products with prices: {feed_data.get('products_with_price', 0)}")
-    
-    # Test product search
-    tester.test_products_with_search("tava")
-    
-    print(f"\n📋 Phase 5: Dashboard & Analytics Tests")
-    
-    # Test dashboard stats
+
+    # Test dashboard
+    print("\n📊 DASHBOARD TESTS")
+    print("-" * 30)
     tester.test_dashboard_stats()
+
+    # Test product endpoints
+    print("\n📦 PRODUCT TESTS")
+    print("-" * 30)
     
+    # Get all products first
+    success, all_products = tester.test_products_all()
+    if not success:
+        print("❌ Failed to get products")
+        return 1
+
+    # Test filtering
+    tester.test_products_matched_only()
+    tester.test_products_tracked_categories_only()
+
+    # Test categories
+    print("\n📂 CATEGORY TESTS")
+    print("-" * 30)
+    success, categories = tester.test_categories()
+
     # Test price tracking
+    print("\n💰 PRICE TRACKING TESTS")
+    print("-" * 30)
     tester.test_price_tracking()
+
+    # Test Akakçe functionality with a real product if available
+    print("\n🔗 AKAKÇE INTEGRATION TESTS")
+    print("-" * 30)
     
-    print(f"\n📋 Phase 6: Advanced Features Tests")
-    
-    # Test Akakçe price checking (may fail due to bot protection)
-    if first_product_slug:
-        print("   Note: Akakçe checking may fail due to bot protection")
-        tester.test_check_akakce_price(first_product_slug)
-    
-    # Test SEO generation (requires OpenAI API key)
-    if first_product_slug:
-        print("   Note: SEO generation requires valid OpenAI API key")
-        tester.test_seo_generation(first_product_slug)
-        tester.test_get_seo_content(first_product_slug)
-    
-    print(f"\n📋 Phase 7: Cleanup Tests")
-    
-    # Test logout
-    tester.test_logout()
-    
-    # Print results
+    if all_products and 'products' in all_products and len(all_products['products']) > 0:
+        test_product = all_products['products'][0]
+        product_slug = test_product['slug']
+        print(f"Using test product: {test_product['name']} ({product_slug})")
+        
+        # Test setting Akakçe match
+        tester.test_set_akakce_match(product_slug)
+        
+        # Test checking Akakçe prices (this will likely fail due to 403 as mentioned)
+        success, akakce_result = tester.test_check_akakce(product_slug)
+        
+        # Test SEO generation
+        print("\n✨ SEO GENERATION TESTS")
+        print("-" * 30)
+        success, seo_result = tester.test_seo_generate(product_slug)
+        if success and 'word_count' in seo_result:
+            word_count = seo_result['word_count']
+            keyword_density = seo_result.get('keyword_density', 0)
+            print(f"   SEO Content Generated:")
+            print(f"   - Word count: {word_count} (target: 400+)")
+            print(f"   - Keyword density: {keyword_density}%")
+            if word_count >= 400:
+                print("   ✅ Word count meets requirement (400+)")
+            else:
+                print("   ❌ Word count below requirement")
+    else:
+        print("⚠️  No products available for Akakçe/SEO testing")
+
+    # Print final results
     print("\n" + "=" * 60)
-    print(f"📊 Test Results: {tester.tests_passed}/{tester.tests_run} passed")
+    print("📊 FINAL TEST RESULTS")
+    print("=" * 60)
+    print(f"Tests run: {tester.tests_run}")
+    print(f"Tests passed: {tester.tests_passed}")
+    print(f"Tests failed: {len(tester.failed_tests)}")
+    print(f"Success rate: {(tester.tests_passed/tester.tests_run)*100:.1f}%")
     
     if tester.failed_tests:
-        print(f"\n❌ Failed Tests:")
-        for failure in tester.failed_tests:
-            print(f"   - {failure['test']}: {failure.get('error', 'Unknown error')}")
+        print("\n❌ FAILED TESTS:")
+        for i, test in enumerate(tester.failed_tests, 1):
+            print(f"{i}. {test['test']}")
+            if 'error' in test:
+                print(f"   Error: {test['error']}")
+            else:
+                print(f"   Expected: {test['expected']}, Got: {test['actual']}")
+                print(f"   Response: {test['response']}")
     
-    success_rate = (tester.tests_passed / tester.tests_run) * 100 if tester.tests_run > 0 else 0
-    print(f"📈 Success Rate: {success_rate:.1f}%")
-    
-    if success_rate >= 80:
-        print("🎉 Backend API tests mostly successful!")
-        return 0
-    else:
-        print("⚠️  Backend API has significant issues")
-        return 1
+    return 0 if len(tester.failed_tests) == 0 else 1
 
 if __name__ == "__main__":
     sys.exit(main())

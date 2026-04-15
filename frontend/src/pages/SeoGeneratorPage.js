@@ -238,7 +238,19 @@ export default function SeoGeneratorPage() {
                   <Card className="border-slate-200 shadow-sm">
                     <CardHeader className="pb-2">
                       <div className="flex items-center justify-between">
-                        <p className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Urun Aciklamasi</p>
+                        <div className="flex items-center gap-3">
+                          <p className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Urun Aciklamasi</p>
+                          {seoContent.word_count && (
+                            <div className="flex items-center gap-2">
+                              <Badge variant="outline" className={`text-[10px] ${seoContent.word_count >= 400 ? "border-emerald-300 text-emerald-700" : "border-red-300 text-red-700"}`}>
+                                {seoContent.word_count} kelime
+                              </Badge>
+                              <Badge variant="outline" className={`text-[10px] ${seoContent.keyword_density >= 1 && seoContent.keyword_density <= 2 ? "border-emerald-300 text-emerald-700" : "border-amber-300 text-amber-700"}`}>
+                                %{seoContent.keyword_density} keyword
+                              </Badge>
+                            </div>
+                          )}
+                        </div>
                         <Button
                           variant="ghost"
                           size="sm"

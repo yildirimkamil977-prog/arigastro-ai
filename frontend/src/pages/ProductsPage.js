@@ -6,7 +6,10 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
-import { Download, Search, Package, Loader2, ExternalLink, Eye, ChevronLeft, ChevronRight, DollarSign, RefreshCw } from "lucide-react";
+import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "../components/ui/dialog";
+import { Label } from "../components/ui/label";
+import { Download, Search, Package, Loader2, ExternalLink, Eye, ChevronLeft, ChevronRight, DollarSign, RefreshCw, Link2, Check, X, Pencil } from "lucide-react";
 import { toast } from "sonner";
 
 export default function ProductsPage() {
@@ -15,17 +18,25 @@ export default function ProductsPage() {
   const [pages, setPages] = useState(1);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("all");
   const [loading, setLoading] = useState(true);
   const [importing, setImporting] = useState(false);
   const [fetchingPrices, setFetchingPrices] = useState(false);
   const [editingPrice, setEditingPrice] = useState(null);
   const [priceValue, setPriceValue] = useState("");
+  // Akakçe match dialog
+  const [matchDialog, setMatchDialog] = useState(null);
+  const [akakceUrl, setAkakceUrl] = useState("");
 
   const fetchProducts = useCallback(async () => {
     setLoading(true);
     try {
+      const params = { search, page, limit: 50 };
+      if (filter === "tracked") params.tracked_categories_only = true;
+      if (filter === "matched") params.matched_only = true;
+      if (filter === "unmatched") { params.tracked_categories_only = true; params.unmatched_only = true; }
       const { data } = await axios.get(`${API}/products`, {
-        params: { search, page, limit: 50 },
+        params,
         headers: getAuthHeaders(),
         withCredentials: true,
       });
@@ -37,7 +48,7 @@ export default function ProductsPage() {
     } finally {
       setLoading(false);
     }
-  }, [search, page]);
+  }, [search, page, filter]);
 
   useEffect(() => { fetchProducts(); }, [fetchProducts]);
 
@@ -67,26 +78,6 @@ export default function ProductsPage() {
     }
   };
 
-  const fetchSinglePrice = async (slug) => {
-    try {
-      toast.info("Feed'den fiyat senkronizasyonu baslatiliyor...");
-      const { data } = await axios.post(`${API}/feed/sync-prices`, {}, { headers: getAuthHeaders(), withCredentials: true });
-      toast.success(`${data.updated} urun guncellendi`);
-      fetchProducts();
-    } catch (err) {
-      toast.error("Fiyat senkronizasyonu basarisiz");
-    }
-  };
-
-  const toggleTracking = async (slug) => {
-    try {
-      const { data } = await axios.put(`${API}/products/${slug}/toggle-tracking`, {}, { headers: getAuthHeaders(), withCredentials: true });
-      setProducts((prev) => prev.map((p) => p.slug === slug ? { ...p, is_tracked: data.is_tracked } : p));
-    } catch (err) {
-      toast.error("Guncelleme basarisiz");
-    }
-  };
-
   const savePrice = async (slug) => {
     if (!priceValue) return;
     try {
@@ -100,16 +91,41 @@ export default function ProductsPage() {
     }
   };
 
-  const checkAkakce = async (slug) => {
+  const openMatchDialog = (product) => {
+    setMatchDialog(product);
+    setAkakceUrl(product.akakce_product_url || "");
+  };
+
+  const saveAkakceMatch = async () => {
+    if (!matchDialog || !akakceUrl) return;
     try {
-      toast.info("Akakce kontrol ediliyor...");
+      await axios.post(`${API}/products/${matchDialog.slug}/set-akakce-match`, 
+        { akakce_product_url: akakceUrl, akakce_product_name: "" },
+        { headers: getAuthHeaders(), withCredentials: true }
+      );
+      toast.success("Akakce eslestirmesi kaydedildi");
+      setMatchDialog(null);
+      fetchProducts();
+    } catch (err) {
+      toast.error("Eslestirme kaydedilemedi");
+    }
+  };
+
+  const checkAkakce = async (slug) => {
+    const product = products.find(p => p.slug === slug);
+    if (!product?.akakce_product_url) {
+      toast.error("Once Akakce eslestirmesi yapilmali. Link ikonuna tiklayarak URL girin.");
+      return;
+    }
+    try {
+      toast.info("Akakce fiyatlari kontrol ediliyor...");
       const { data } = await axios.post(`${API}/products/${slug}/check-akakce`, {}, { headers: getAuthHeaders(), withCredentials: true });
-      if (data.akakce_result?.success) {
-        toast.success("Akakce eslesmesi bulundu!");
+      if (data.success) {
+        toast.success(`${data.sellers?.length || 0} satici bulundu!`);
       } else {
-        const err = data.akakce_result?.error || "Esleme bulunamadi";
+        const err = data.error || "Fiyat kontrolu basarisiz";
         if (err.includes("403")) {
-          toast.error("Akakce Cloudflare korumasi aktif. Proxy ayari gerekli.", { duration: 5000 });
+          toast.error("Akakce Cloudflare korumasi aktif. Proxy veya residential IP gerekli.", { duration: 5000 });
         } else {
           toast.warning(err);
         }
@@ -149,15 +165,26 @@ export default function ProductsPage() {
         </div>
       </div>
 
-      <div className="relative max-w-md">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-        <Input
-          data-testid="product-search-input"
-          placeholder="Urun ara..."
-          value={search}
-          onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-          className="pl-10 h-9 border-slate-300"
-        />
+      {/* Filters */}
+      <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+        <Tabs value={filter} onValueChange={(v) => { setFilter(v); setPage(1); }}>
+          <TabsList className="bg-slate-100">
+            <TabsTrigger value="all" data-testid="filter-all" className="text-xs">Tum Urunler</TabsTrigger>
+            <TabsTrigger value="tracked" data-testid="filter-tracked" className="text-xs">Aktif Kategoriler</TabsTrigger>
+            <TabsTrigger value="matched" data-testid="filter-matched" className="text-xs">Eslesmis</TabsTrigger>
+            <TabsTrigger value="unmatched" data-testid="filter-unmatched" className="text-xs">Eslesmemis</TabsTrigger>
+          </TabsList>
+        </Tabs>
+        <div className="relative flex-1 max-w-md">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+          <Input
+            data-testid="product-search-input"
+            placeholder="Urun ara..."
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+            className="pl-10 h-9 border-slate-300"
+          />
+        </div>
       </div>
 
       <Card className="border-slate-200 shadow-sm overflow-hidden">
@@ -169,8 +196,7 @@ export default function ProductsPage() {
                 <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Urun Adi</TableHead>
                 <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Marka</TableHead>
                 <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 text-right">Fiyatimiz</TableHead>
-                <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 text-right">En Ucuz Rakip</TableHead>
-                <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Durum</TableHead>
+                <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Akakce Eslesmesi</TableHead>
                 <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 text-right">Islemler</TableHead>
               </TableRow>
             </TableHeader>
@@ -180,83 +206,79 @@ export default function ProductsPage() {
               ) : products.length === 0 ? (
                 <TableRow><TableCell colSpan={6} className="text-center py-12">
                   <Package className="h-8 w-8 mx-auto text-slate-300 mb-2" />
-                  <p className="text-sm text-slate-500">Urun bulunamadi</p>
+                  <p className="text-sm text-slate-500">{filter === "tracked" ? "Aktif kategorilerde urun yok. Once Kategoriler sayfasindan kategori aktif edin." : "Urun bulunamadi"}</p>
                 </TableCell></TableRow>
               ) : (
-                products.map((p) => {
-                  const isCheaper = p.cheapest_price && p.our_price && p.cheapest_price < p.our_price;
-                  return (
-                    <TableRow
-                      key={p.slug}
-                      data-testid={`product-row-${p.slug}`}
-                      className={`${isCheaper ? "bg-red-50/50" : ""} hover:bg-slate-50/80 transition-colors`}
-                    >
-                      <TableCell className="w-12 p-2">
-                        {p.image_url && (
-                          <img src={p.image_url} alt="" className="w-10 h-10 rounded object-cover bg-slate-100" />
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <p className="text-sm font-medium text-slate-900 line-clamp-1">{p.name}</p>
-                        <p className="text-[10px] text-slate-400 mt-0.5 truncate max-w-xs">{p.category_path || p.slug}</p>
-                      </TableCell>
-                      <TableCell>
-                        <p className="text-xs text-slate-600">{p.brand || "-"}</p>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {editingPrice === p.slug ? (
-                          <div className="flex items-center gap-1 justify-end">
-                            <Input
-                              data-testid={`price-input-${p.slug}`}
-                              type="number"
-                              value={priceValue}
-                              onChange={(e) => setPriceValue(e.target.value)}
-                              className="w-24 h-7 text-xs"
-                              placeholder="Fiyat"
-                              autoFocus
-                              onKeyDown={(e) => e.key === "Enter" && savePrice(p.slug)}
-                            />
-                            <Button size="sm" className="h-7 text-xs px-2" onClick={() => savePrice(p.slug)}>OK</Button>
+                products.map((p) => (
+                  <TableRow
+                    key={p.slug}
+                    data-testid={`product-row-${p.slug}`}
+                    className="hover:bg-slate-50/80 transition-colors"
+                  >
+                    <TableCell className="w-12 p-2">
+                      {p.image_url && <img src={p.image_url} alt="" className="w-10 h-10 rounded object-cover bg-slate-100" />}
+                    </TableCell>
+                    <TableCell>
+                      <p className="text-sm font-medium text-slate-900 line-clamp-1">{p.name}</p>
+                      <p className="text-[10px] text-slate-400 mt-0.5 truncate max-w-xs">{p.category_path || p.slug}</p>
+                    </TableCell>
+                    <TableCell>
+                      <p className="text-xs text-slate-600">{p.brand || "-"}</p>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {editingPrice === p.slug ? (
+                        <div className="flex items-center gap-1 justify-end">
+                          <Input
+                            data-testid={`price-input-${p.slug}`}
+                            type="number"
+                            value={priceValue}
+                            onChange={(e) => setPriceValue(e.target.value)}
+                            className="w-24 h-7 text-xs"
+                            autoFocus
+                            onKeyDown={(e) => e.key === "Enter" && savePrice(p.slug)}
+                          />
+                          <Button size="sm" className="h-7 text-xs px-2" onClick={() => savePrice(p.slug)}>OK</Button>
+                          <Button size="sm" variant="ghost" className="h-7 text-xs px-1" onClick={() => setEditingPrice(null)}><X className="h-3 w-3" /></Button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => { setEditingPrice(p.slug); setPriceValue(p.our_price || ""); }}
+                          className="text-sm font-mono text-slate-900 hover:text-blue-600 cursor-pointer"
+                        >
+                          {p.our_price ? `${p.our_price.toLocaleString('tr-TR')} TL` : <span className="text-slate-400 text-xs">-</span>}
+                        </button>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        {p.akakce_matched ? (
+                          <div className="flex items-center gap-1.5">
+                            <Badge className="bg-emerald-100 text-emerald-700 border-0 text-[10px]">
+                              <Check className="h-3 w-3 mr-0.5" /> Eslesti
+                            </Badge>
+                            <button
+                              onClick={() => openMatchDialog(p)}
+                              className="text-blue-500 hover:text-blue-700 flex items-center gap-0.5"
+                              data-testid={`edit-match-${p.slug}`}
+                              title="Akakce eslestirmesini duzenle"
+                            >
+                              <Pencil className="h-3 w-3" />
+                            </button>
                           </div>
                         ) : (
                           <button
-                            data-testid={`edit-price-${p.slug}`}
-                            onClick={() => { setEditingPrice(p.slug); setPriceValue(p.our_price || ""); }}
-                            className="text-sm font-mono text-slate-900 hover:text-blue-600 cursor-pointer"
+                            onClick={() => openMatchDialog(p)}
+                            className="flex items-center gap-1 text-amber-600 hover:text-amber-700 text-xs font-medium"
+                            data-testid={`set-match-${p.slug}`}
                           >
-                            {p.our_price ? `${p.our_price.toLocaleString('tr-TR')} TL` : (
-                              <button
-                                onClick={(e) => { e.stopPropagation(); fetchSinglePrice(p.slug); }}
-                                className="text-amber-600 hover:text-amber-700 text-xs font-medium flex items-center gap-1"
-                                data-testid={`fetch-price-${p.slug}`}
-                              >
-                                <RefreshCw className="h-3 w-3" /> Feed Sync
-                              </button>
-                            )}
+                            <Link2 className="h-3 w-3" /> Eslesir
                           </button>
                         )}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {p.cheapest_price ? (
-                          <div>
-                            <p className={`text-sm font-mono ${isCheaper ? "text-red-600 font-semibold" : "text-emerald-600"}`}>
-                              {p.cheapest_price.toLocaleString('tr-TR')} TL
-                            </p>
-                            <p className="text-[10px] text-slate-400 truncate max-w-[120px]">{p.cheapest_competitor}</p>
-                          </div>
-                        ) : (
-                          <span className="text-xs text-slate-400">-</span>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        {p.akakce_matched ? (
-                          <Badge className="bg-emerald-100 text-emerald-700 border-0 text-[10px]">Eslesti</Badge>
-                        ) : (
-                          <Badge variant="outline" className="text-[10px] text-slate-500">Eslesmedi</Badge>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex items-center gap-1 justify-end">
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex items-center gap-1 justify-end">
+                        {p.akakce_product_url && (
                           <Button
                             variant="outline"
                             size="sm"
@@ -264,45 +286,73 @@ export default function ProductsPage() {
                             onClick={() => checkAkakce(p.slug)}
                             className="h-7 text-[10px] px-2 bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100"
                           >
-                            Kontrol
+                            Fiyat Kontrol
                           </Button>
-                          {p.is_tracked ? (
-                            <Button variant="outline" size="sm" className="h-7 text-[10px] px-2 text-emerald-600 border-emerald-200" onClick={() => toggleTracking(p.slug)}>
-                              <Eye className="h-3 w-3" />
-                            </Button>
-                          ) : (
-                            <Button variant="ghost" size="sm" className="h-7 text-[10px] px-2 text-slate-400" onClick={() => toggleTracking(p.slug)}>
-                              <Eye className="h-3 w-3" />
-                            </Button>
-                          )}
-                          <a href={p.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center justify-center h-7 w-7 rounded-md border border-slate-200 text-slate-400 hover:text-slate-600 hover:bg-slate-50">
-                            <ExternalLink className="h-3 w-3" />
-                          </a>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })
+                        )}
+                        <a href={p.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center justify-center h-7 w-7 rounded-md border border-slate-200 text-slate-400 hover:text-slate-600 hover:bg-slate-50">
+                          <ExternalLink className="h-3 w-3" />
+                        </a>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))
               )}
             </TableBody>
           </Table>
         </div>
       </Card>
 
-      {/* Pagination */}
       {pages > 1 && (
         <div className="flex items-center justify-between">
           <p className="text-xs text-slate-500">Sayfa {page} / {pages}</p>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)} data-testid="prev-page-button">
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-            <Button variant="outline" size="sm" disabled={page >= pages} onClick={() => setPage(page + 1)} data-testid="next-page-button">
-              <ChevronRight className="h-4 w-4" />
-            </Button>
+            <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)} data-testid="prev-page-button"><ChevronLeft className="h-4 w-4" /></Button>
+            <Button variant="outline" size="sm" disabled={page >= pages} onClick={() => setPage(page + 1)} data-testid="next-page-button"><ChevronRight className="h-4 w-4" /></Button>
           </div>
         </div>
       )}
+
+      {/* Akakçe Match Dialog */}
+      <Dialog open={!!matchDialog} onOpenChange={(open) => !open && setMatchDialog(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="font-heading text-lg">Akakce Urun Eslestirmesi</DialogTitle>
+          </DialogHeader>
+          {matchDialog && (
+            <div className="space-y-4">
+              <div className="bg-slate-50 rounded-lg p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Bizim Urun</p>
+                <p className="text-sm font-medium text-slate-900 mt-1">{matchDialog.name}</p>
+                <a href={matchDialog.url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline">{matchDialog.url}</a>
+              </div>
+              <div className="space-y-2">
+                <Label className="text-sm font-medium text-slate-700">Akakce Urun Sayfasi URL'si</Label>
+                <Input
+                  data-testid="akakce-url-input"
+                  value={akakceUrl}
+                  onChange={(e) => setAkakceUrl(e.target.value)}
+                  placeholder="https://www.akakce.com/...fiyati,123456.html"
+                  className="text-sm"
+                />
+                <p className="text-[10px] text-slate-400">Akakce'de urun sayfasini acin ve URL'yi buraya yapisirin. Urun sayfasinda Arigastro satici olarak gorunmeli.</p>
+              </div>
+              {matchDialog.akakce_product_url && (
+                <div className="bg-emerald-50 rounded-lg p-3">
+                  <p className="text-[10px] uppercase tracking-wider text-emerald-600 font-semibold">Mevcut Eslestirme</p>
+                  <p className="text-xs text-emerald-800 mt-1 break-all">{matchDialog.akakce_product_url}</p>
+                  {matchDialog.akakce_product_name && <p className="text-xs text-emerald-700 mt-0.5">{matchDialog.akakce_product_name}</p>}
+                </div>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMatchDialog(null)}>Iptal</Button>
+            <Button onClick={saveAkakceMatch} disabled={!akakceUrl} className="bg-slate-900 hover:bg-slate-800 text-white" data-testid="save-match-button">
+              Eslestirmeyi Kaydet
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

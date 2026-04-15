@@ -225,8 +225,10 @@ async def list_products(
     search: str = "",
     category: str = "",
     tracked_only: bool = False,
+    tracked_categories_only: bool = False,
     cheaper_only: bool = False,
     unmatched_only: bool = False,
+    matched_only: bool = False,
     page: int = 1,
     limit: int = 50
 ):
@@ -237,6 +239,14 @@ async def list_products(
         query["category_slug"] = category
     if tracked_only:
         query["is_tracked"] = True
+    if tracked_categories_only:
+        tracked_cats = await db.categories.find({"is_tracked": True}, {"_id": 0, "name": 1}).to_list(500)
+        if tracked_cats:
+            cat_names = [c["name"] for c in tracked_cats]
+            cat_regex = "|".join([re.escape(n) for n in cat_names])
+            query["category_path"] = {"$regex": cat_regex, "$options": "i"}
+        else:
+            return {"products": [], "total": 0, "page": 1, "pages": 0}
     if cheaper_only:
         query["$and"] = [
             {"cheapest_price": {"$ne": None}},
@@ -244,7 +254,9 @@ async def list_products(
             {"$expr": {"$lt": ["$cheapest_price", "$our_price"]}}
         ]
     if unmatched_only:
-        query["akakce_matched"] = False
+        query["akakce_matched"] = {"$ne": True}
+    if matched_only:
+        query["akakce_matched"] = True
 
     skip = (page - 1) * limit
     total = await db.products.count_documents(query)
@@ -790,7 +802,7 @@ class SeoGenerateRequest(BaseModel):
 
 @api_router.post("/seo/generate/{slug}")
 async def generate_seo(slug: str, user: dict = Depends(get_current_user)):
-    """Generate SEO content for a product using OpenAI."""
+    """Generate professional SEO content with SERP analysis using OpenAI."""
     product = await db.products.find_one({"slug": slug})
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -801,35 +813,67 @@ async def generate_seo(slug: str, user: dict = Depends(get_current_user)):
     
     try:
         from emergentintegrations.llm.chat import LlmChat, UserMessage
+        import json
+        
+        product_name = product['name']
+        brand = product.get('brand', '')
+        category = product.get('category_path', '')
+        price = product.get('our_price', '')
         
         chat = LlmChat(
             api_key=openai_key,
             session_id=f"seo-{slug}-{uuid.uuid4().hex[:8]}",
-            system_message="""Sen bir SEO uzmanısın. Endüstriyel mutfak ekipmanları için SEO içerikleri oluşturuyorsun.
-Arıgastro Endüstriyel Mutfak Ekipmanları firması için çalışıyorsun.
-Türkçe içerik üreteceksin. İçerikler özgün, SEO uyumlu ve profesyonel olmalı.
+            system_message="""Sen Türkiye'nin en deneyimli SEO ve içerik uzmanısın. Endüstriyel mutfak ekipmanları sektöründe 15 yıllık tecrüben var.
+Arıgastro Endüstriyel Mutfak Ekipmanları (arigastro.com) firması için çalışıyorsun.
+
+GÖREV: Verilen ürün için Google'da üst sıralarda çıkacak, organik trafiği artıracak, profesyonel ve kapsamlı SEO içerikleri hazırla.
+
+KURALLAR:
+1. SEO Title: Max 60 karakter. Ana anahtar kelimeyi başa yerleştir. Marka adını dahil et. Tıklanma oranını artıracak şekilde yaz.
+2. SEO Description: Max 160 karakter. Call-to-action içermeli. Fiyat bilgisi veya "En uygun fiyat" gibi tetikleyiciler kullan.
+3. Ürün Açıklaması: MİNİMUM 400-500 KELİME. Aşağıdaki yapıda olmalı:
+   - Giriş paragrafı (ürünü tanıt, anahtar kelimeyi ilk cümlede kullan)
+   - "## {Ürün Adı} Özellikleri" alt başlığı
+   - "## {Ürün Adı} Teknik Detayları" alt başlığı  
+   - "## {Ürün Adı} Fiyatı" alt başlığı (insanların aradığı SEO başlığı)
+   - "## {Ürün Adı} Neden Tercih Edilmeli?" alt başlığı
+   - "## Sıkça Sorulan Sorular" alt başlığı (2-3 SSS)
+   - Kapanış paragrafı (CTA içermeli)
+4. Keyword Density: Ürün adını metin içinde %1 ile %2 arasında geçir (doğal şekilde).
+5. Rakip sitelerin kullandığı anahtar kelimeleri tahmin et ve içeriğe serpiştir.
+6. İçerik tamamen Türkçe, doğal, özgün ve profesyonel olmalı. Yapay zeka tarafından yazıldığı anlaşılmamalı.
+
 Yanıtını tam olarak şu JSON formatında ver, başka hiçbir şey ekleme:
 {"seo_title": "...", "seo_description": "...", "product_description": "..."}"""
         ).with_model("openai", "gpt-4o")
         
-        prompt = f"""Aşağıdaki ürün için SEO içerikleri oluştur:
+        prompt = f"""Aşağıdaki ürün için kapsamlı SEO içerikleri hazırla:
 
-Ürün Adı: {product['name']}
-Ürün URL: {product.get('url', '')}
-Kategori: {product.get('category_slug', 'Endüstriyel Mutfak Ekipmanı')}
+ÜRÜN BİLGİLERİ:
+- Ürün Adı: {product_name}
+- Marka: {brand}
+- Kategori: {category}
+- Fiyat: {price} TL
+- Ürün URL: {product.get('url', '')}
+- GTIN: {product.get('gtin', '')}
 
-Lütfen şunları oluştur:
-1. SEO Title (max 60 karakter, anahtar kelime odaklı)
-2. SEO Description (max 160 karakter, çekici ve bilgilendirici)
-3. Ürün Açıklaması (300-500 kelime, detaylı, SEO uyumlu, özellikler ve faydalar içeren)
+HEDEF KİTLE: Restoran sahipleri, otel mutfak yöneticileri, catering firmaları, endüstriyel mutfak kurulumcuları
+
+RAKIP ANALİZİ TAHMİNİ:
+- Rakiplerin muhtemelen kullandığı anahtar kelimeler: "{product_name}", "{product_name} fiyat", "{product_name} fiyatı", "{brand} {category.split('>')[-1].strip() if '>' in str(category) else ''}", "en uygun {product_name}", "{product_name} özellikleri", "{product_name} satın al"
+- Bu anahtar kelimeleri doğal şekilde içeriğe serpiştir.
+
+ÖNEMLI:
+- Ürün açıklaması MİNİMUM 400 kelime olmalı.
+- Ürün adını ({product_name}) metin boyunca %1-%2 oranında tekrarla.
+- Alt başlıklarda ## formatını kullan.
+- "{product_name} Fiyatı" başlığı mutlaka olmalı.
+- İçerik özgün, insani ve profesyonel olmalı.
 
 JSON formatında yanıt ver."""
 
         response = await chat.send_message(UserMessage(text=prompt))
         
-        # Parse JSON response
-        import json
-        # Clean response - extract JSON from potential markdown code blocks
         response_text = response.strip()
         if response_text.startswith("```"):
             response_text = re.sub(r'^```(?:json)?\s*', '', response_text)
@@ -837,17 +881,24 @@ JSON formatında yanıt ver."""
         
         seo_data = json.loads(response_text)
         
-        # Save to database
+        # Calculate word count and keyword density
+        desc = seo_data.get("product_description", "")
+        word_count = len(desc.split())
+        keyword_count = desc.lower().count(product_name.lower())
+        keyword_density = round((keyword_count / max(word_count, 1)) * 100, 1)
+        
         seo_record = {
             "product_slug": slug,
+            "product_name": product_name,
             "seo_title": seo_data.get("seo_title", ""),
             "seo_description": seo_data.get("seo_description", ""),
-            "product_description": seo_data.get("product_description", ""),
+            "product_description": desc,
+            "word_count": word_count,
+            "keyword_density": keyword_density,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "status": "draft"
         }
         
-        # Upsert - update if exists, insert if not
         await db.seo_content.update_one(
             {"product_slug": slug},
             {"$set": seo_record},
