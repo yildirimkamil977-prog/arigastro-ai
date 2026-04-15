@@ -789,7 +789,7 @@ async def fetch_akakce_product_page(url: str) -> dict:
             if resp.status_code == 403:
                 return {"success": False, "error": "Cloudflare 403", "sellers": []}
             if resp.status_code in [410, 404, 500] and attempt == 0:
-                await asyncio.sleep(3)
+                await asyncio.sleep(1)
                 continue  # Retry
             if resp.status_code != 200:
                 return {"success": False, "error": f"HTTP {resp.status_code}", "sellers": []}
@@ -835,13 +835,13 @@ async def fetch_akakce_product_page(url: str) -> dict:
             if sellers:
                 return {"success": True, "product_name": product_name, "sellers": sellers, "error": None}
             elif attempt == 0:
-                await asyncio.sleep(3)
+                await asyncio.sleep(1)
                 continue  # Retry
             else:
                 return {"success": False, "product_name": product_name, "sellers": [], "error": "Satici bilgisi okunamadi"}
         except Exception as e:
             if attempt == 0:
-                await asyncio.sleep(3)
+                await asyncio.sleep(1)
                 continue
             logger.error(f"Akakce product page error: {e}")
             return {"success": False, "error": str(e), "sellers": []}
@@ -1318,7 +1318,7 @@ async def bulk_check_akakce(user: dict = Depends(get_current_user)):
     return {"started": True, "message": f"Fiyat kontrolu basladi. {count} eslesmis urun kontrol edilecek."}
 
 async def run_bulk_price_check(cat_regex: str):
-    """Background task for bulk price checking."""
+    """Background task for bulk price checking with parallel workers."""
     try:
         products = await db.products.find(
             {
@@ -1333,38 +1333,46 @@ async def run_bulk_price_check(cat_regex: str):
         checked = 0
         success = 0
         failed = 0
+        semaphore = asyncio.Semaphore(3)  # 3 parallel workers
         
-        for i, product in enumerate(products):
-            try:
-                await db.system_status.update_one({"task": "price_check"}, {"$set": {"current": i + 1, "current_product": product["name"][:50]}})
-                
-                result = await fetch_akakce_product_page(product["akakce_product_url"])
-                update_data = {"last_price_check": datetime.now(timezone.utc).isoformat(), "updated_at": datetime.now(timezone.utc).isoformat()}
-                
-                if result["success"] and result["sellers"]:
-                    competitors = [s for s in result["sellers"] if "arigastro" not in s["seller"].lower()]
-                    all_sellers = result["sellers"]
-                    our_pos = next((j+1 for j,s in enumerate(all_sellers) if "arigastro" in s["seller"].lower()), None)
-                    if competitors:
-                        cheapest = competitors[0]
-                        update_data.update({
-                            "cheapest_competitor": cheapest["seller"], "cheapest_price": cheapest["price"],
-                            "competitors": competitors, "all_sellers": all_sellers,
-                            "our_position": our_pos, "total_sellers": len(all_sellers),
-                        })
-                        if product.get("our_price"):
-                            update_data["price_difference"] = round(product["our_price"] - cheapest["price"], 2)
-                    success += 1
-                else:
+        async def check_single(product, idx):
+            nonlocal checked, success, failed
+            async with semaphore:
+                try:
+                    result = await fetch_akakce_product_page(product["akakce_product_url"])
+                    update_data = {"last_price_check": datetime.now(timezone.utc).isoformat(), "updated_at": datetime.now(timezone.utc).isoformat()}
+                    
+                    if result["success"] and result["sellers"]:
+                        competitors = [s for s in result["sellers"] if "arigastro" not in s["seller"].lower()]
+                        all_sellers = result["sellers"]
+                        our_pos = next((j+1 for j,s in enumerate(all_sellers) if "arigastro" in s["seller"].lower()), None)
+                        if competitors:
+                            cheapest = competitors[0]
+                            update_data.update({
+                                "cheapest_competitor": cheapest["seller"], "cheapest_price": cheapest["price"],
+                                "competitors": competitors, "all_sellers": all_sellers,
+                                "our_position": our_pos, "total_sellers": len(all_sellers),
+                            })
+                            if product.get("our_price"):
+                                update_data["price_difference"] = round(product["our_price"] - cheapest["price"], 2)
+                        success += 1
+                    else:
+                        failed += 1
+                    
+                    await db.products.update_one({"slug": product["slug"]}, {"$set": update_data})
+                    checked += 1
+                    await db.system_status.update_one({"task": "price_check"}, {"$set": {"current": checked, "checked": checked, "success": success, "failed": failed, "current_product": product["name"][:50]}})
+                    await asyncio.sleep(random.uniform(0.5, 1.5))
+                except Exception as e:
+                    logger.error(f"Price check error for {product.get('slug','?')}: {e}")
                     failed += 1
-                
-                await db.products.update_one({"slug": product["slug"]}, {"$set": update_data})
-                checked += 1
-                await db.system_status.update_one({"task": "price_check"}, {"$set": {"checked": checked, "success": success, "failed": failed}})
-                await asyncio.sleep(random.uniform(3, 6))
-            except Exception as e:
-                logger.error(f"Price check error for {product.get('slug','?')}: {e}")
-                failed += 1
+        
+        # Process in batches of 3 parallel
+        batch_size = 3
+        for i in range(0, len(products), batch_size):
+            batch = products[i:i+batch_size]
+            tasks = [check_single(p, i+j) for j, p in enumerate(batch)]
+            await asyncio.gather(*tasks)
         
         await db.system_status.update_one({"task": "price_check"}, {"$set": {
             "running": False, "checked": checked, "success": success, "failed": failed,
@@ -1397,7 +1405,7 @@ async def bulk_ai_match(request: Request, user: dict = Depends(get_current_user)
     return {"started": True, "message": "AI eslestirme basladi. İlerlemeyi takip edebilirsiniz."}
 
 async def run_bulk_ai_match():
-    """Background task for AI matching."""
+    """Background task for AI matching with parallel workers."""
     try:
         tracked_cats = await db.categories.find({"is_tracked": True}, {"_id": 0, "name": 1}).to_list(500)
         if not tracked_cats:
@@ -1415,7 +1423,7 @@ async def run_bulk_ai_match():
                 "excluded_from_tracking": {"$ne": True},
             },
             {"_id": 0, "slug": 1, "name": 1, "brand": 1, "gtin": 1}
-        ).to_list(5000)  # No limit - process all unmatched products
+        ).to_list(5000)
         
         await db.system_status.update_one({"task": "ai_match"}, {"$set": {"total": len(products)}})
         
@@ -1427,31 +1435,35 @@ async def run_bulk_ai_match():
         matched = 0
         failed = 0
         skipped = 0
+        processed = 0
+        semaphore = asyncio.Semaphore(2)  # 2 parallel AI matches (limited by API rate)
         
-        for i, product in enumerate(products):
-            try:
-                await db.system_status.update_one({"task": "ai_match"}, {"$set": {"current": i + 1, "current_product": product["name"][:50]}})
-                
-                loop = asyncio.get_event_loop()
-                search_result = await loop.run_in_executor(None, search_akakce_sync, product["name"])
-                if not search_result["success"] or not search_result.get("competitors"):
-                    await db.products.update_one({"slug": product["slug"]}, {"$set": {
-                        "akakce_matched": False, "akakce_match_confidence": "not_found",
-                        "akakce_product_name": "Akakce'de bulunamadi",
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                    }})
-                    failed += 1
-                    await asyncio.sleep(random.uniform(3, 5))
-                    continue
-                
-                candidates = search_result["competitors"]
-                from emergentintegrations.llm.chat import LlmChat, UserMessage
-                import json as json_mod
-                
-                chat = LlmChat(
-                    api_key=openai_key,
-                    session_id=f"match-{product['slug'][:20]}-{uuid.uuid4().hex[:6]}",
-                    system_message="""Ürün eşleştirme uzmanısın. Bizim ürünümüzle Akakçe'deki AYNI ürünü bulmalısın.
+        async def match_single(product):
+            nonlocal matched, failed, skipped, processed
+            async with semaphore:
+                try:
+                    loop = asyncio.get_event_loop()
+                    search_result = await loop.run_in_executor(None, search_akakce_sync, product["name"])
+                    if not search_result["success"] or not search_result.get("competitors"):
+                        await db.products.update_one({"slug": product["slug"]}, {"$set": {
+                            "akakce_matched": False, "akakce_match_confidence": "not_found",
+                            "akakce_product_name": "Akakce'de bulunamadi",
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                        }})
+                        failed += 1
+                        processed += 1
+                        await db.system_status.update_one({"task": "ai_match"}, {"$set": {"current": processed, "matched": matched, "failed": failed, "skipped": skipped}})
+                        await asyncio.sleep(random.uniform(1, 2))
+                        return
+                    
+                    candidates = search_result["competitors"]
+                    from emergentintegrations.llm.chat import LlmChat, UserMessage
+                    import json as json_mod
+                    
+                    chat = LlmChat(
+                        api_key=openai_key,
+                        session_id=f"match-{product['slug'][:20]}-{uuid.uuid4().hex[:6]}",
+                        system_message="""Ürün eşleştirme uzmanısın. Bizim ürünümüzle Akakçe'deki AYNI ürünü bulmalısın.
 
 KRİTİK KURALLAR:
 - Marka AYNI olmalı (Öztiryakiler = Öztiryakiler)
@@ -1463,39 +1475,48 @@ KRİTİK KURALLAR:
 - Sadece tamamen farklı bir ürünse veya boyut/ölçü uyuşmuyorsa -1 döndür
 
 JSON yanıt: {"match_index": 0, "confidence": "high/medium/low"} veya {"match_index": -1, "confidence": "none"}"""
-                ).with_model("openai", "gpt-4o")
-                
-                cands = "\n".join([f"{i}. {c['name']} ({c.get('url','')})" for i, c in enumerate(candidates[:8])])
-                resp_ai = await chat.send_message(UserMessage(text=f"Urun: {product['name']}\nMarka: {product.get('brand','')}\nGTIN: {product.get('gtin','')}\n\nAdaylar:\n{cands}"))
-                resp_text = resp_ai.strip()
-                if resp_text.startswith("```"):
-                    resp_text = re.sub(r'^```(?:json)?\s*', '', resp_text)
-                    resp_text = re.sub(r'\s*```$', '', resp_text)
-                ai_result = json_mod.loads(resp_text)
-                
-                idx = ai_result.get("match_index", -1)
-                conf = ai_result.get("confidence", "none")
-                if idx >= 0 and idx < len(candidates) and conf in ["high", "medium"]:
-                    m = candidates[idx]
-                    await db.products.update_one({"slug": product["slug"]}, {"$set": {
-                        "akakce_product_url": m.get("url", ""), "akakce_product_name": m["name"],
-                        "akakce_matched": True, "akakce_match_confidence": conf, "is_tracked": True,
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                    }})
-                    matched += 1
-                else:
-                    await db.products.update_one({"slug": product["slug"]}, {"$set": {
-                        "akakce_matched": False, "akakce_match_confidence": "ai_uncertain",
-                        "akakce_product_name": "AI eslestirme basarisiz - manuel eslestirme gerekli",
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                    }})
-                    skipped += 1
-                
-                await db.system_status.update_one({"task": "ai_match"}, {"$set": {"matched": matched, "failed": failed, "skipped": skipped}})
-                await asyncio.sleep(random.uniform(3, 5))
-            except Exception as e:
-                logger.error(f"Bulk AI match error for {product.get('slug','?')}: {e}")
-                failed += 1
+                    ).with_model("openai", "gpt-4o")
+                    
+                    cands = "\n".join([f"{j}. {c['name']} ({c.get('url','')})" for j, c in enumerate(candidates[:8])])
+                    resp_ai = await chat.send_message(UserMessage(text=f"Urun: {product['name']}\nMarka: {product.get('brand','')}\nGTIN: {product.get('gtin','')}\n\nAdaylar:\n{cands}"))
+                    resp_text = resp_ai.strip()
+                    if resp_text.startswith("```"):
+                        resp_text = re.sub(r'^```(?:json)?\s*', '', resp_text)
+                        resp_text = re.sub(r'\s*```$', '', resp_text)
+                    ai_result = json_mod.loads(resp_text)
+                    
+                    idx = ai_result.get("match_index", -1)
+                    conf = ai_result.get("confidence", "none")
+                    if idx >= 0 and idx < len(candidates) and conf in ["high", "medium"]:
+                        m = candidates[idx]
+                        await db.products.update_one({"slug": product["slug"]}, {"$set": {
+                            "akakce_product_url": m.get("url", ""), "akakce_product_name": m["name"],
+                            "akakce_matched": True, "akakce_match_confidence": conf, "is_tracked": True,
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                        }})
+                        matched += 1
+                    else:
+                        await db.products.update_one({"slug": product["slug"]}, {"$set": {
+                            "akakce_matched": False, "akakce_match_confidence": "ai_uncertain",
+                            "akakce_product_name": "AI eslestirme basarisiz - manuel eslestirme gerekli",
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                        }})
+                        skipped += 1
+                    
+                    processed += 1
+                    await db.system_status.update_one({"task": "ai_match"}, {"$set": {"current": processed, "matched": matched, "failed": failed, "skipped": skipped}})
+                    await asyncio.sleep(random.uniform(1, 2))
+                except Exception as e:
+                    logger.error(f"Bulk AI match error for {product.get('slug','?')}: {e}")
+                    failed += 1
+                    processed += 1
+        
+        # Process in batches of 2 parallel
+        batch_size = 2
+        for i in range(0, len(products), batch_size):
+            batch = products[i:i+batch_size]
+            tasks = [match_single(p) for p in batch]
+            await asyncio.gather(*tasks)
         
         await db.system_status.update_one({"task": "ai_match"}, {"$set": {
             "running": False, "matched": matched, "failed": failed, "skipped": skipped,

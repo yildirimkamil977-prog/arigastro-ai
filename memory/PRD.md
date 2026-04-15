@@ -1,64 +1,42 @@
 # ARI AI - Competitor Price Tracking System PRD
 
 ## Original Problem Statement
-Arıgastro e-commerce site needs a competitor price tracking system that:
-- Fetches 3-4k products from Google Merchant feed.xml
-- Matches products with Akakçe price comparison site using AI
-- Tracks competitor prices, highlights where Arıgastro is more expensive
-- Identifies cheapest competitor
-- Allows tracking by specific categories only
-- AI-powered SEO Content Generator analyzing SERP results and product specs
-- Admin panel with JWT authentication
-- Daily automated price checks, robust bot-protection bypass
-
-## User Language
-Turkish (Tüm UI metinleri Türkçe)
+Arıgastro e-commerce competitor price tracking: feed.xml → AI matching with Akakçe → price tracking → SEO generator. Admin panel with JWT auth.
 
 ## Tech Stack
-- Frontend: React + Tailwind CSS + Shadcn/UI
-- Backend: FastAPI + Motor (MongoDB async)
-- Database: MongoDB
-- External: ScraperAPI (Cloudflare bypass - PAID FALLBACK ONLY), OpenAI GPT-4o (Emergent LLM Key)
-- Scheduler: APScheduler (AsyncIO)
-- Scraping Strategy: curl_cffi (free) → httpx (free) → ScraperAPI (paid fallback)
+React + FastAPI + MongoDB + ScraperAPI (paid fallback) + OpenAI GPT-4o + APScheduler
 
-## Core Features (All DONE)
-1. **JWT Authentication** - Admin login with seeded credentials
-2. **Product Import** - From sitemap XML and Google Merchant Feed
-3. **Category Management** - Track/untrack categories
-4. **AI Product Matching** - Google SERP (free first) + GPT-4o for Akakçe matching
-5. **Price Tracking** - Bulk and single product Akakçe price checking
-6. **SEO Generator** - Scrapes product specs, generates SEO content with GPT-4o
-7. **Dashboard** - Stats overview + price alerts + ScraperAPI credit tracking
-8. **Settings Page** - System status, scheduler, API keys, User Management (CRUD)
-9. **Guide Page** - Step-by-step system usage guide (5 steps)
-10. **Automated Scheduler** - APScheduler: Feed sync (12h), Price check (24h)
-11. **ScraperAPI Credit Tracking** - Dashboard card showing used/remaining credits
-12. **User Management** - Create, list, change password, delete users
-13. **Category Filter on Price Tracking** - Dropdown to filter by specific tracked category
-14. **Individual Product Exclusion** - Eye icon to exclude/include products from tracking
-15. **Free-First Scraping** - curl_cffi/httpx first, ScraperAPI only as fallback
+## Scraping Strategy (Free-First)
+1. curl_cffi direct (FREE) - works on residential IP
+2. httpx direct (FREE) - fallback
+3. ScraperAPI (PAID) - last resort only
+- Google SERP: Free search first → ScraperAPI structured SERP (25 credits/req) as fallback
+- Akakçe pages: curl_cffi first → ScraperAPI (~10 credits/req) as fallback
+- **Residential IP = completely free operation** (no Cloudflare blocks)
+
+## All Features (DONE)
+1. JWT Auth + admin seeding
+2. Product Import (sitemap + Google Merchant Feed)
+3. Category Management (track/untrack)
+4. AI Product Matching (parallel, 2 workers)
+5. Price Tracking (parallel, 3 workers, category filter, individual exclusion)
+6. SEO Generator (specs scraping + GPT-4o)
+7. Dashboard (stats + ScraperAPI credits)
+8. Settings (system status, scheduler, user management CRUD)
+9. Guide Page (5-step guide + residential IP info)
+10. APScheduler (12h feed sync, 24h price check)
+11. Stuck task auto-recovery (20min timeout + startup reset)
+
+## Speed Improvements
+- Bulk price check: 3 parallel workers, 0.5-1.5s delay (was 3-6s sequential)
+- AI matching: 2 parallel workers, 1-2s delay (was 3-5s sequential)
+- ~3x faster than before
 
 ## Key Credentials
 - Admin: arigastro / Arigastro2026!
-- ScraperAPI Key: c214e73952e0b11ef5c0398aed5b55be
+- ScraperAPI: c214e73952e0b11ef5c0398aed5b55be
 
-## API Endpoints
-- Auth: POST /api/auth/login, GET /api/auth/me, POST /api/auth/logout
-- Categories: GET /api/categories, PUT /api/categories/{slug}/toggle-tracking
-- Products: GET /api/products, PUT /api/products/{slug}
-- AI Match: POST /api/products/bulk-ai-match, GET /api/products/ai-match-status
-- Price Check: POST /api/products/bulk-check-akakce, GET /api/products/price-check-status
-- Single: POST /api/products/{slug}/check-akakce, POST /api/products/{slug}/set-akakce-match
-- Exclude: PUT /api/products/{slug}/exclude-tracking
-- Feed: POST /api/feed/sync-prices, GET /api/feed/status
-- SEO: POST /api/seo/generate/{slug}, GET /api/seo/{slug}
-- Dashboard: GET /api/dashboard/stats
-- ScraperAPI: GET /api/scraperapi/account
-- Users: GET /api/users, POST /api/users, PUT /api/users/{username}/password, DELETE /api/users/{username}
-- Scheduler: GET /api/scheduler/status
-- Price Tracking: GET /api/price-tracking (params: filter_type, search, category, page, limit)
-
-## Remaining/Backlog (P2)
-- Manuel eşleştirme akışı doğrulama
-- Fiyat değişiklik bildirimleri (e-posta/Telegram)
+## Backlog
+- Fiyat değişiklik bildirimleri (Telegram/e-posta)
+- Fiyat geçmişi grafiği
+- Excel/CSV export

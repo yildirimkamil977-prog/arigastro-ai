@@ -84,15 +84,16 @@ export default function GuidePage() {
         </CardContent>
       </Card>
 
-      {/* ScraperAPI Info */}
+      {/* ScraperAPI & Residential IP Info */}
       <Card className="border-amber-200 bg-amber-50/50">
         <CardHeader className="pb-3">
-          <CardTitle className="text-base font-heading">ScraperAPI Hakkinda</CardTitle>
+          <CardTitle className="text-base font-heading">Akakce Erisimi ve ScraperAPI</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-sm text-slate-600">
-          <p>Akakce erisimi icin <strong>ScraperAPI</strong> kullanilmaktadir. Her arama ve sayfa kontrolu 1 kredi harcar.</p>
-          <p>Ucretsiz plan: Kayitta 5.000 kredi + ayda 1.000 ucretsiz kredi.</p>
-          <p>Kredi durumunuzu <a href="https://dashboard.scraperapi.com" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">ScraperAPI Dashboard</a>'dan takip edebilirsiniz.</p>
+          <p>Sistem once <strong>ucretsiz yontemlerle</strong> (dogrudan HTTP istegi) Akakce ve Google'a erisir. Sadece engel alinirsa ScraperAPI devreye girer.</p>
+          <p className="text-emerald-700 bg-emerald-50 p-2 rounded"><strong>Ucretsiz calistirma:</strong> Sistemi ev/ofis internet baglantisi olan bir bilgisayara (residential IP) kurarsaniz, Cloudflare engeli olusmadigindan ScraperAPI hic kullanilmaz ve sistem tamamen ucretsiz calisir.</p>
+          <p className="text-amber-700 bg-amber-100 p-2 rounded"><strong>Datacenter sunucu:</strong> Hetzner, DigitalOcean gibi bulut sunucularda Cloudflare engeli olusabilir. Bu durumda ScraperAPI otomatik devreye girer. Google SERP aramalari istek basina 25 kredi, Akakce sayfa kontrolleri ~10 kredi harcar.</p>
+          <p>IP tipinizi ogrenmek icin sunucuda <code className="bg-slate-200 px-1 rounded text-xs">curl https://ipinfo.io</code> calistirin. "org" alaninda ISP adi (Turk Telekom, Superonline vb.) yaziyorsa residential IP'niz vardir.</p>
         </CardContent>
       </Card>
     </div>
