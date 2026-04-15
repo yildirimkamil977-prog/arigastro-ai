@@ -1,0 +1,98 @@
+{
+  "theme": "light",
+  "archetype": "4 (Swiss & High-Contrast)",
+  "design_philosophy": "Industrial precision meets data clarity. The UI acts as a high-density 'Control Room' for Arıgastro's e-commerce operations. Every pixel must serve a functional purpose to track prices and manage SEO effectively. We use stark contrasts, tight grids, and structured tabular data to empower the user.",
+  "typography": {
+    "heading_font": "Cabinet Grotesk",
+    "body_font": "IBM Plex Sans",
+    "mono_font": "IBM Plex Mono",
+    "rules": [
+      "Headings must use tight letter spacing (tracking-tight).",
+      "Overlines and table headers must be uppercase, tiny, and wide spaced (tracking-widest).",
+      "Never use Inter or generic sans-serif fonts for headings.",
+      "Data and numbers should use IBM Plex Sans or Mono for tabular alignment."
+    ],
+    "hierarchy": {
+      "h1": "text-4xl font-bold tracking-tight",
+      "h2": "text-2xl font-semibold tracking-tight",
+      "h3": "text-xl font-medium",
+      "h4": "text-lg font-medium",
+      "body": "text-sm leading-relaxed",
+      "small": "text-xs text-slate-500",
+      "overline": "text-[10px] uppercase tracking-wider font-semibold text-slate-500"
+    }
+  },
+  "colors": {
+    "background": "#F8FAFC",
+    "surface": "#FFFFFF",
+    "surface_hover": "#F1F5F9",
+    "border": "#E2E8F0",
+    "text_primary": "#0F172A",
+    "text_secondary": "#475569",
+    "primary": "#0F172A",
+    "primary_foreground": "#FFFFFF",
+    "accent_brand": "#F59E0B",
+    "accent_foreground": "#000000",
+    "success": "#10B981",
+    "danger": "#EF4444",
+    "warning": "#F59E0B",
+    "info": "#3B82F6",
+    "rules": [
+      "Use Accent Brand (Yellow) strictly for AI actions (SEO Generation, AI Match) to highlight 'smart' features.",
+      "Use Primary (Slate 900) for standard standard actions like Save, Import.",
+      "Use Danger (Red) for rows where competitors are cheaper.",
+      "Use Success (Green) for rows where Arıgastro is cheapest."
+    ]
+  },
+  "layout_spacing": {
+    "grid_strategy": "Control Room Grid",
+    "rules": [
+      "Use grid-cols-1 md:grid-cols-4 lg:grid-cols-12 for the main dashboard.",
+      "Maintain tight gaps (gap-4 or gap-6) between metric cards.",
+      "Containers must have internal padding (p-6) to prevent text collision.",
+      "Sidebar should be collapsible to maximize horizontal space for complex price comparison tables."
+    ]
+  },
+  "components": {
+    "buttons": "Flat, sharp edges or rounded-md. Hover state must translate-y-[-1px] and increase shadow slightly. Primary CTA is dark slate, AI CTA is yellow.",
+    "cards": "Solid background (bg-white), 1px border (border-slate-200), subtle shadow-sm. No glassmorphism.",
+    "tables": "Dense rows. Sticky header on desktop. Alternate row background colors (bg-slate-50 / bg-white) for readability. Align numbers to the right.",
+    "inputs": "Shadcn UI defaults with ring-slate-900 focus state. rounded-md.",
+    "badges": "Flat background with high contrast text (e.g., bg-red-100 text-red-700 for 'Competitor Cheaper').",
+    "testing": "All interactive elements MUST include a data-testid attribute in kebab-case."
+  },
+  "media": {
+    "images": [
+      {
+        "category": "login_background",
+        "url": "https://static.prod-images.emergentagent.com/jobs/cb4e3230-7652-4b11-9c5b-7808dab23992/images/69c897685665909e97d0ba6d3c187f76d9a0ea3463351f1b12359a5ac26e50f5.png",
+        "description": "Cinematic shot of a pristine industrial commercial kitchen with stainless steel equipment. To be used as the right-side cover image on the login screen.",
+        "usage": "Split-screen login layout (50/50). The image goes on the right side, object-cover, h-full. Add a subtle bg-black/20 overlay."
+      }
+    ],
+    "icons": {
+      "library": "lucide-react",
+      "rules": "Use for UI navigation, table actions, and status indicators. Keep stroke width to 1.5 or 2 for clarity."
+    }
+  },
+  "animations": {
+    "micro_interactions": "Fast and snappy. 150ms ease-out for button hovers and dropdowns.",
+    "page_transitions": "Fade in with a slight upward translation (framer-motion opacity: 0 -> 1, y: 10 -> 0)."
+  },
+  "page_specific_instructions": {
+    "login": "Split screen layout. Left: minimal form with Arıgastro branding. Right: immersive kitchen image.",
+    "dashboard_overview": "Top row: 4 stat cards (Total Products, Unmatched, Competitor Cheaper, We are Cheaper). Below: A chart showing price matching progress and a feed of recent price alerts.",
+    "sitemap_import": "A stepper or split-pane view. Input XML URL -> Fetch -> Show tree of categories -> Select -> Import.",
+    "price_tracking": "A highly dense data table. Columns: Product Name, Our Price, Cheapest Competitor, Price Diff, Action. Highlight rows in light red background (bg-red-50) if we are more expensive.",
+    "seo_generator": "Side panel (drawer) when clicking a product. Left column: Current content. Right column: AI generated content (Title, Desc, Long Desc) with a 'Generate' button (Yellow CTA). Show SERP preview component."
+  },
+  "instructions_to_main_agent": [
+    "Build the dashboard using pure React + Tailwind CSS + Shadcn UI.",
+    "Ensure the layout is responsive, but optimize primarily for desktop/tablet as it's an admin panel.",
+    "Implement a persistent sidebar navigation.",
+    "Use mock data for Akakçe matching and sitemap parsing if the backend is not provided, but structure the UI as if it's connected.",
+    "Include 'data-testid' on ALL buttons, links, inputs, and table rows.",
+    "Apply the font families strictly. Install @fontsource/cabinet-grotesk and @fontsource/ibm-plex-sans if needed, or import from Google Fonts.",
+    "Strictly follow the color palette, especially avoiding generic blues unless specified for info states."
+  ]
+}
