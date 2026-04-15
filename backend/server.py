@@ -452,12 +452,44 @@ AKAKCE_PROXY = os.environ.get("AKAKCE_PROXY", "")
 SCRAPERAPI_KEY = os.environ.get("SCRAPERAPI_KEY", "")
 
 def akakce_request(url: str):
-    """Make request to Akakçe. Tries: 1) ScraperAPI 2) curl_cffi+proxy 3) curl_cffi direct."""
+    """Make request to Akakçe. Tries: 1) curl_cffi direct (free) 2) ScraperAPI (paid fallback)."""
     
-    # Method 1: ScraperAPI (most reliable for VPS)
+    # Method 1: curl_cffi direct (FREE - works well from residential/home IPs)
+    try:
+        from curl_cffi import requests as cffi_requests
+        kwargs = {
+            "impersonate": random.choice(["chrome", "chrome110", "chrome120"]),
+            "timeout": 12,
+        }
+        if AKAKCE_PROXY:
+            kwargs["proxies"] = {"http": AKAKCE_PROXY, "https": AKAKCE_PROXY}
+        resp = cffi_requests.get(url, **kwargs)
+        if resp.status_code == 200:
+            logger.info(f"Akakce UCRETSIZ erisim basarili: {url[:60]}")
+            return resp
+        if resp.status_code != 403:
+            logger.warning(f"curl_cffi returned {resp.status_code} for {url[:60]}")
+    except ImportError:
+        # curl_cffi not available, try httpx
+        try:
+            import httpx as httpx_sync
+            resp = httpx_sync.get(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+            }, timeout=12, follow_redirects=True)
+            if resp.status_code == 200:
+                logger.info(f"Akakce UCRETSIZ (httpx) erisim basarili: {url[:60]}")
+                return resp
+        except Exception as e:
+            logger.warning(f"httpx direct error: {e}")
+    except Exception as e:
+        logger.warning(f"curl_cffi direct error: {e}")
+    
+    # Method 2: ScraperAPI (PAID fallback - only used when free methods fail)
     if SCRAPERAPI_KEY:
         try:
             import requests as req_sync
+            logger.info(f"Ucretsiz yontem basarisiz, ScraperAPI kullaniliyor: {url[:60]}")
             resp = req_sync.get("http://api.scraperapi.com", params={
                 "api_key": SCRAPERAPI_KEY, "url": url, "country_code": "tr",
             }, timeout=45)
@@ -467,31 +499,14 @@ def akakce_request(url: str):
         except Exception as e:
             logger.warning(f"ScraperAPI error: {e}")
     
-    # Method 2: curl_cffi with proxy or direct
-    try:
-        from curl_cffi import requests as cffi_requests
-        kwargs = {
-            "impersonate": random.choice(["chrome", "chrome110", "chrome120"]),
-            "timeout": 10,
-        }
-        if AKAKCE_PROXY:
-            kwargs["proxies"] = {"http": AKAKCE_PROXY, "https": AKAKCE_PROXY}
-        resp = cffi_requests.get(url, **kwargs)
-        return resp
-    except ImportError:
-        import httpx as httpx_sync
-        resp = httpx_sync.get(url, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-        }, timeout=10, follow_redirects=True)
-        return resp
+    # All methods failed
+    raise Exception(f"Tum yontemler basarisiz: {url[:60]}")
 
 # Cache the block status to avoid repeated slow failures
 _akakce_blocked = {"status": None, "checked_at": None}
 
 def is_akakce_blocked() -> bool:
-    """Check if Akakçe is blocking us. If ScraperAPI is configured, always return False."""
-    if SCRAPERAPI_KEY:
-        return False  # ScraperAPI handles Cloudflare bypass
+    """Check if Akakçe is blocking us. Tests free methods first."""
     if _akakce_blocked["status"] is not None and _akakce_blocked["checked_at"]:
         elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(_akakce_blocked["checked_at"])).total_seconds()
         if elapsed < 600:
@@ -513,13 +528,50 @@ def get_akakce_access_error() -> str:
     return "Akakce'ye erisim engellendi (Cloudflare 403). Proxy/ScraperAPI ayarlarinizi kontrol edin."
 
 def search_akakce_via_google(product_name: str) -> dict:
-    """Search Google for the product on Akakçe using ScraperAPI structured SERP API."""
-    if not SCRAPERAPI_KEY:
-        return {"success": False, "error": "SCRAPERAPI_KEY gerekli", "candidates": []}
+    """Search Google for the product on Akakçe. Tries free first, then ScraperAPI."""
+    import requests as req_sync
+    
+    query = f"{product_name} akakçe"
+    
+    # Method 1: Free Google search via direct request
     try:
-        import requests as req_sync
-        
-        query = f"{product_name} akakçe"
+        import urllib.parse
+        encoded_q = urllib.parse.quote_plus(query)
+        google_url = f"https://www.google.com.tr/search?q={encoded_q}&num=10&hl=tr"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        resp = req_sync.get(google_url, headers=headers, timeout=12, allow_redirects=True)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            candidates = []
+            seen_urls = set()
+            for a_tag in soup.find_all("a", href=True):
+                href = a_tag["href"]
+                # Extract URL from Google redirect
+                if "/url?q=" in href:
+                    href = href.split("/url?q=")[1].split("&")[0]
+                    href = urllib.parse.unquote(href)
+                if "akakce.com" in href and "en-ucuz" in href and href not in seen_urls:
+                    seen_urls.add(href)
+                    title = a_tag.get_text(strip=True)
+                    title = re.sub(r'\s*\|.*$', '', title).strip()
+                    title = re.sub(r'\s*-\s*Akakçe.*$', '', title).strip()
+                    if title and len(title) > 5:
+                        candidates.append({"name": title[:150], "url": href, "price": 0})
+            if candidates:
+                logger.info(f"Google UCRETSIZ arama basarili: {len(candidates)} sonuc ({product_name[:40]})")
+                return {"success": True, "candidates": candidates[:10], "error": None}
+    except Exception as e:
+        logger.warning(f"Free Google search error: {e}")
+    
+    # Method 2: ScraperAPI structured SERP (paid fallback)
+    if not SCRAPERAPI_KEY:
+        return {"success": False, "error": "Google araması başarısız", "candidates": []}
+    try:
+        logger.info(f"Ucretsiz Google basarisiz, ScraperAPI SERP kullaniliyor: {product_name[:40]}")
         resp = req_sync.get("https://api.scraperapi.com/structured/google/search", params={
             "api_key": SCRAPERAPI_KEY,
             "query": query,
@@ -538,11 +590,9 @@ def search_akakce_via_google(product_name: str) -> dict:
         for r in data.get("organic_results", []):
             link = r.get("link", "")
             title = r.get("title", "")
-            # Only akakce.com product pages (with en-ucuz in URL)
             if "akakce.com" in link and "en-ucuz" in link:
                 if link not in seen_urls:
                     seen_urls.add(link)
-                    # Clean title
                     title = re.sub(r'\s*\|.*$', '', title).strip()
                     title = re.sub(r'\s*-\s*Akakçe.*$', '', title).strip()
                     candidates.append({"name": title[:150], "url": link, "price": 0})
@@ -1094,22 +1144,32 @@ async def get_price_tracking(
     user: dict = Depends(get_current_user),
     filter_type: str = "all",
     search: str = "",
+    category: str = "",
     page: int = 1,
     limit: int = 50
 ):
     """Get products from TRACKED CATEGORIES for price comparison."""
     # First get tracked categories
-    tracked_cats = await db.categories.find({"is_tracked": True}, {"_id": 0, "name": 1}).to_list(500)
+    tracked_cats = await db.categories.find({"is_tracked": True}, {"_id": 0, "name": 1, "slug": 1}).to_list(500)
     if not tracked_cats:
-        return {"products": [], "total": 0, "page": 1, "pages": 0, "message": "Aktif kategori yok. Kategoriler sayfasindan kategori aktif edin."}
+        return {"products": [], "total": 0, "page": 1, "pages": 0, "tracked_categories_list": [], "message": "Aktif kategori yok. Kategoriler sayfasindan kategori aktif edin."}
     
-    cat_names = [c["name"] for c in tracked_cats]
+    # If specific category selected, filter only that one
+    if category:
+        selected_cats = [c for c in tracked_cats if c["slug"] == category]
+        if not selected_cats:
+            return {"products": [], "total": 0, "page": 1, "pages": 0, "tracked_categories_list": tracked_cats}
+        cat_names = [c["name"] for c in selected_cats]
+    else:
+        cat_names = [c["name"] for c in tracked_cats]
+    
     cat_regex = "|".join([re.escape(n) for n in cat_names])
     
-    # Base query: products in tracked categories with prices
+    # Base query: products in tracked categories with prices, NOT excluded
     query = {
         "category_path": {"$regex": cat_regex, "$options": "i"},
         "our_price": {"$ne": None},
+        "excluded_from_tracking": {"$ne": True},
     }
     
     if filter_type == "cheaper":
@@ -1122,6 +1182,10 @@ async def get_price_tracking(
         query["akakce_matched"] = True
     elif filter_type == "unmatched":
         query["$or"] = [{"akakce_matched": {"$ne": True}}, {"akakce_product_url": {"$in": [None, ""]}}]
+    elif filter_type == "excluded":
+        # Special: show excluded products
+        query.pop("excluded_from_tracking", None)
+        query["excluded_from_tracking"] = True
     
     if search:
         query["name"] = {"$regex": search, "$options": "i"}
@@ -1140,8 +1204,22 @@ async def get_price_tracking(
         "products": products, "total": total, "page": page,
         "pages": (total + limit - 1) // limit,
         "tracked_categories": len(tracked_cats),
+        "tracked_categories_list": tracked_cats,
         "matched_count": matched_count,
     }
+
+@api_router.put("/products/{slug}/exclude-tracking")
+async def toggle_exclude_tracking(slug: str, user: dict = Depends(get_current_user)):
+    """Toggle exclude a product from price tracking (without losing match data)."""
+    product = await db.products.find_one({"slug": slug})
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    new_val = not product.get("excluded_from_tracking", False)
+    await db.products.update_one({"slug": slug}, {"$set": {
+        "excluded_from_tracking": new_val,
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }})
+    return {"slug": slug, "excluded_from_tracking": new_val}
 
 @api_router.get("/price-history/{slug}")
 async def get_price_history(slug: str, user: dict = Depends(get_current_user)):
@@ -1184,6 +1262,7 @@ async def bulk_check_akakce(user: dict = Depends(get_current_user)):
         "category_path": {"$regex": cat_regex, "$options": "i"},
         "akakce_product_url": {"$exists": True, "$ne": ""},
         "akakce_matched": True,
+        "excluded_from_tracking": {"$ne": True},
     })
     
     if count == 0:
@@ -1206,6 +1285,7 @@ async def run_bulk_price_check(cat_regex: str):
                 "category_path": {"$regex": cat_regex, "$options": "i"},
                 "akakce_product_url": {"$exists": True, "$ne": ""},
                 "akakce_matched": True,
+                "excluded_from_tracking": {"$ne": True},
             },
             {"_id": 0, "slug": 1, "name": 1, "akakce_product_url": 1, "our_price": 1}
         ).to_list(5000)
@@ -1292,6 +1372,7 @@ async def run_bulk_ai_match():
                 "category_path": {"$regex": cat_regex, "$options": "i"},
                 "our_price": {"$ne": None},
                 "akakce_matched": {"$ne": True},
+                "excluded_from_tracking": {"$ne": True},
             },
             {"_id": 0, "slug": 1, "name": 1, "brand": 1, "gtin": 1}
         ).to_list(5000)  # No limit - process all unmatched products

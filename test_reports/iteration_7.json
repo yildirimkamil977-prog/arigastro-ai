@@ -1,0 +1,66 @@
+{
+  "summary": "Completed testing of iteration 7 features: Category filter dropdown, individual product exclusion from tracking, and free-first scraping strategy. All 15 backend tests passed. All frontend UI tests passed.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed_tests": [
+    "Login with credentials arigastro / Arigastro2026!",
+    "GET /api/price-tracking returns tracked_categories_list with 600 Seri and 900 Seri",
+    "GET /api/price-tracking?category=600-seri returns only 600 Seri products (27 products)",
+    "GET /api/price-tracking?category=900-seri returns only 900 Seri products (110 products)",
+    "GET /api/price-tracking (no category) returns all products (137 products) - 'Tum Kategoriler'",
+    "GET /api/price-tracking?filter_type=excluded returns excluded products (initially empty)",
+    "PUT /api/products/{slug}/exclude-tracking toggles excluded_from_tracking to True",
+    "Excluded product appears in filter_type=excluded list",
+    "Excluded product does NOT appear in normal (all) list",
+    "PUT /api/products/{slug}/exclude-tracking called twice re-includes product (toggle)",
+    "PUT /api/products/invalid-slug/exclude-tracking returns 404",
+    "filter_type=matched returns only matched products",
+    "filter_type=unmatched returns only unmatched products",
+    "filter_type=cheaper returns products where competitor is cheaper",
+    "filter_type=expensive returns products where we are cheaper",
+    "akakce_request function uses curl_cffi direct (FREE) as first method",
+    "akakce_request falls back to httpx (FREE) if curl_cffi unavailable",
+    "akakce_request uses ScraperAPI (PAID) only as last resort fallback",
+    "search_akakce_via_google tries free Google search first",
+    "search_akakce_via_google uses ScraperAPI SERP as paid fallback",
+    "UI: Category filter dropdown shows 'Tum Kategoriler', '600 Seri', '900 Seri'",
+    "UI: Selecting 600-seri filters to 27 products",
+    "UI: Selecting 900-seri filters to 110 products",
+    "UI: Selecting 'Tum Kategoriler' shows all 137 products",
+    "UI: 'Takip Disi' tab exists and shows 'Takip disi urun yok' when empty",
+    "UI: Eye icon (EyeOff) on product row - clicking excludes product with toast notification",
+    "UI: Excluded product appears in 'Takip Disi' tab",
+    "UI: Eye icon in 'Takip Disi' tab re-includes product",
+    "UI: Re-included product removed from 'Takip Disi' tab",
+    "UI: All filter tabs work: Tumu, Eslesmis, Eslesmemis, Rakip Daha Ucuz, Biz Daha Ucuz, Takip Disi"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_iteration7_features.py",
+    "/app/test_reports/pytest/pytest_results_iteration7.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/backend/tests/test_iteration7_features.py"
+  ],
+  "success_rate": {
+    "backend": "100% (15/15 tests passed)",
+    "frontend": "100% (all UI features working correctly)"
+  },
+  "test_credentials": {
+    "username": "arigastro",
+    "password": "Arigastro2026!",
+    "role": "admin"
+  },
+  "seed_data_creation": "None - test products excluded and re-included during testing (cleanup performed)",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 7 features fully tested and working: (1) Category filter dropdown on Price Tracking page with 'Tum Kategoriler', '600 Seri' (27 products), '900 Seri' (110 products). (2) Individual product exclusion via Eye/EyeOff icon - PUT /api/products/{slug}/exclude-tracking toggles excluded_from_tracking field. Excluded products appear in 'Takip Disi' tab and are hidden from normal list. (3) Free-first scraping strategy: akakce_request tries curl_cffi direct (free), then httpx (free), then ScraperAPI (paid fallback). search_akakce_via_google tries free Google search first, then ScraperAPI SERP as fallback. All existing filter tabs still work: Tumu, Eslesmis, Eslesmemis, Rakip Daha Ucuz, Biz Daha Ucuz."
+}
