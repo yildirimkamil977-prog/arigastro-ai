@@ -269,6 +269,11 @@ async def ai_match_status(user: dict = Depends(get_current_user)):
     status = await db.system_status.find_one({"task": "ai_match"}, {"_id": 0})
     return status or {"running": False, "matched": 0, "failed": 0, "skipped": 0, "total": 0}
 
+@api_router.get("/products/price-check-status")
+async def price_check_status(user: dict = Depends(get_current_user)):
+    status = await db.system_status.find_one({"task": "price_check"}, {"_id": 0})
+    return status or {"running": False, "checked": 0, "success": 0, "failed": 0, "total": 0}
+
 @api_router.get("/products/{slug}")
 async def get_product(slug: str, user: dict = Depends(get_current_user)):
     product = await db.products.find_one({"slug": slug}, {"_id": 0})
@@ -1171,57 +1176,91 @@ async def bulk_update_prices(data: BulkPriceUpdate, user: dict = Depends(get_cur
 
 @api_router.post("/products/bulk-check-akakce")
 async def bulk_check_akakce(user: dict = Depends(get_current_user)):
-    """Check Akakçe prices for MATCHED products in TRACKED CATEGORIES."""
-    # Quick check if Akakçe is accessible
-    loop = asyncio.get_event_loop()
-    blocked = await loop.run_in_executor(None, is_akakce_blocked)
-    if blocked:
-        return {"checked": 0, "success": 0, "failed": 0, "error": get_akakce_access_error()}
+    """Start bulk price check as background task."""
+    status = await db.system_status.find_one({"task": "price_check"}, {"_id": 0})
+    if status and status.get("running"):
+        return {"started": False, "message": "Fiyat kontrolu zaten calisiyor.", "progress": status}
     
     tracked_cats = await db.categories.find({"is_tracked": True}, {"_id": 0, "name": 1}).to_list(500)
     if not tracked_cats:
-        return {"checked": 0, "success": 0, "failed": 0, "error": "Aktif kategori yok. Kategoriler sayfasindan takip edilecek kategorileri secin."}
+        return {"started": False, "error": "Aktif kategori yok."}
     
     cat_names = [c["name"] for c in tracked_cats]
     cat_regex = "|".join([re.escape(n) for n in cat_names])
     
-    products = await db.products.find(
-        {
-            "category_path": {"$regex": cat_regex, "$options": "i"},
-            "akakce_product_url": {"$exists": True, "$ne": ""},
-            "our_price": {"$ne": None},
-        },
-        {"_id": 0, "slug": 1, "name": 1, "akakce_product_url": 1, "our_price": 1}
-    ).limit(30).to_list(30)
+    count = await db.products.count_documents({
+        "category_path": {"$regex": cat_regex, "$options": "i"},
+        "akakce_product_url": {"$exists": True, "$ne": ""},
+        "akakce_matched": True,
+    })
     
-    results = {"checked": 0, "success": 0, "failed": 0, "total_matched_in_cats": len(products), "tracked_categories": len(tracked_cats)}
+    if count == 0:
+        return {"started": False, "error": "Eslesmis urun yok. Once AI Eslestirme yapin."}
     
-    for product in products:
-        try:
-            result = await fetch_akakce_product_page(product["akakce_product_url"])
-            update_data = {"last_price_check": datetime.now(timezone.utc).isoformat(), "updated_at": datetime.now(timezone.utc).isoformat()}
-            
-            if result["success"] and result["sellers"]:
-                competitors = [s for s in result["sellers"] if "arigastro" not in s["seller"].lower()]
-                all_sellers = result["sellers"]
-                our_pos = next((i+1 for i,s in enumerate(all_sellers) if "arigastro" in s["seller"].lower()), None)
-                if competitors:
-                    cheapest = competitors[0]
-                    update_data.update({"cheapest_competitor": cheapest["seller"], "cheapest_price": cheapest["price"], "competitors": competitors, "all_sellers": all_sellers, "our_position": our_pos, "total_sellers": len(all_sellers)})
-                    if product.get("our_price"):
-                        update_data["price_difference"] = round(product["our_price"] - cheapest["price"], 2)
-                results["success"] += 1
-            else:
-                results["failed"] += 1
-            
-            await db.products.update_one({"slug": product["slug"]}, {"$set": update_data})
-            results["checked"] += 1
-            await asyncio.sleep(random.uniform(5, 10))
-        except Exception as e:
-            logger.error(f"Bulk check error for {product['slug']}: {e}")
-            results["failed"] += 1
+    await db.system_status.update_one(
+        {"task": "price_check"},
+        {"$set": {"running": True, "started_at": datetime.now(timezone.utc).isoformat(), "checked": 0, "success": 0, "failed": 0, "total": count, "current": 0}},
+        upsert=True
+    )
     
-    return results
+    asyncio.ensure_future(run_bulk_price_check(cat_regex))
+    return {"started": True, "message": f"Fiyat kontrolu basladi. {count} eslesmis urun kontrol edilecek."}
+
+async def run_bulk_price_check(cat_regex: str):
+    """Background task for bulk price checking."""
+    try:
+        products = await db.products.find(
+            {
+                "category_path": {"$regex": cat_regex, "$options": "i"},
+                "akakce_product_url": {"$exists": True, "$ne": ""},
+                "akakce_matched": True,
+            },
+            {"_id": 0, "slug": 1, "name": 1, "akakce_product_url": 1, "our_price": 1}
+        ).to_list(5000)
+        
+        checked = 0
+        success = 0
+        failed = 0
+        
+        for i, product in enumerate(products):
+            try:
+                await db.system_status.update_one({"task": "price_check"}, {"$set": {"current": i + 1, "current_product": product["name"][:50]}})
+                
+                result = await fetch_akakce_product_page(product["akakce_product_url"])
+                update_data = {"last_price_check": datetime.now(timezone.utc).isoformat(), "updated_at": datetime.now(timezone.utc).isoformat()}
+                
+                if result["success"] and result["sellers"]:
+                    competitors = [s for s in result["sellers"] if "arigastro" not in s["seller"].lower()]
+                    all_sellers = result["sellers"]
+                    our_pos = next((j+1 for j,s in enumerate(all_sellers) if "arigastro" in s["seller"].lower()), None)
+                    if competitors:
+                        cheapest = competitors[0]
+                        update_data.update({
+                            "cheapest_competitor": cheapest["seller"], "cheapest_price": cheapest["price"],
+                            "competitors": competitors, "all_sellers": all_sellers,
+                            "our_position": our_pos, "total_sellers": len(all_sellers),
+                        })
+                        if product.get("our_price"):
+                            update_data["price_difference"] = round(product["our_price"] - cheapest["price"], 2)
+                    success += 1
+                else:
+                    failed += 1
+                
+                await db.products.update_one({"slug": product["slug"]}, {"$set": update_data})
+                checked += 1
+                await db.system_status.update_one({"task": "price_check"}, {"$set": {"checked": checked, "success": success, "failed": failed}})
+                await asyncio.sleep(random.uniform(5, 10))
+            except Exception as e:
+                logger.error(f"Price check error for {product.get('slug','?')}: {e}")
+                failed += 1
+        
+        await db.system_status.update_one({"task": "price_check"}, {"$set": {
+            "running": False, "checked": checked, "success": success, "failed": failed,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }})
+    except Exception as e:
+        logger.error(f"Bulk price check error: {e}")
+        await db.system_status.update_one({"task": "price_check"}, {"$set": {"running": False, "error": str(e)}})
 
 @api_router.post("/products/bulk-ai-match")
 async def bulk_ai_match(request: Request, user: dict = Depends(get_current_user)):

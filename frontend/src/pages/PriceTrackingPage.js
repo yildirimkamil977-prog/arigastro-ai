@@ -44,16 +44,38 @@ export default function PriceTrackingPage() {
   const handleBulkCheck = async () => {
     setBulkChecking(true);
     try {
-      const { data } = await axios.post(`${API}/products/bulk-check-akakce`, {}, { headers: getAuthHeaders(), withCredentials: true });
+      const { data } = await axios.post(`${API}/products/bulk-check-akakce`, {}, { headers: getAuthHeaders(), withCredentials: true, timeout: 10000 });
       if (data.error) {
-        toast.warning(data.error);
-      } else {
-        toast.success(`${data.checked} urun kontrol edildi (${data.tracked_categories} aktif kategori). ${data.success} basarili, ${data.failed} basarisiz.`);
+        toast.error(data.error, { duration: 6000 });
+        setBulkChecking(false);
+        return;
       }
-      fetchData();
+      if (data.started) {
+        toast.info(data.message, { duration: 5000 });
+        const pollInterval = setInterval(async () => {
+          try {
+            const { data: status } = await axios.get(`${API}/products/price-check-status`, { headers: getAuthHeaders(), withCredentials: true });
+            if (status.running) {
+              toast.info(`Fiyat kontrolu: ${status.current || 0}/${status.total || 0} (${status.success || 0} basarili)`, { id: "price-check-progress", duration: 3000 });
+            } else {
+              clearInterval(pollInterval);
+              toast.success(`Fiyat kontrolu tamamlandi: ${status.success || 0} basarili, ${status.failed || 0} basarisiz`, { id: "price-check-progress", duration: 8000 });
+              setBulkChecking(false);
+              fetchData();
+            }
+          } catch {
+            clearInterval(pollInterval);
+            setBulkChecking(false);
+            fetchData();
+          }
+        }, 8000);
+        setTimeout(() => { clearInterval(pollInterval); setBulkChecking(false); fetchData(); }, 600000);
+      } else {
+        toast.warning(data.message || data.error || "Fiyat kontrolu baslatilamadi");
+        setBulkChecking(false);
+      }
     } catch (err) {
-      toast.error("Toplu kontrol basarisiz");
-    } finally {
+      toast.error(err.response?.data?.detail || "Fiyat kontrolu basarisiz");
       setBulkChecking(false);
     }
   };
