@@ -532,7 +532,8 @@ def akakce_request(url: str):
             logger.info(f"Ucretsiz yontem basarisiz, ScraperAPI kullaniliyor: {url[:60]}")
             resp = req_sync.get("http://api.scraperapi.com", params={
                 "api_key": SCRAPERAPI_KEY, "url": url, "country_code": "tr",
-            }, timeout=45)
+                "render": "true", "premium": "true",
+            }, timeout=60)
             if resp.status_code == 200:
                 return resp
             logger.warning(f"ScraperAPI returned {resp.status_code}")
@@ -1333,7 +1334,7 @@ async def run_bulk_price_check(cat_regex: str):
         checked = 0
         success = 0
         failed = 0
-        semaphore = asyncio.Semaphore(3)  # 3 parallel workers
+        semaphore = asyncio.Semaphore(2)  # 2 parallel workers
         
         async def check_single(product, idx):
             nonlocal checked, success, failed
@@ -1367,8 +1368,8 @@ async def run_bulk_price_check(cat_regex: str):
                     logger.error(f"Price check error for {product.get('slug','?')}: {e}")
                     failed += 1
         
-        # Process in batches of 3 parallel
-        batch_size = 3
+        # Process in batches of 2 parallel
+        batch_size = 2
         for i in range(0, len(products), batch_size):
             batch = products[i:i+batch_size]
             tasks = [check_single(p, i+j) for j, p in enumerate(batch)]
