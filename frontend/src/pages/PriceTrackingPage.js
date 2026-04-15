@@ -49,6 +49,73 @@ export default function PriceTrackingPage() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
+  // Check if bulk operations are already running on page load
+  useEffect(() => {
+    const checkRunningTasks = async () => {
+      try {
+        const [matchRes, priceRes] = await Promise.all([
+          axios.get(`${API}/products/ai-match-status`, { headers: getAuthHeaders(), withCredentials: true }).catch(() => ({ data: {} })),
+          axios.get(`${API}/products/price-check-status`, { headers: getAuthHeaders(), withCredentials: true }).catch(() => ({ data: {} })),
+        ]);
+        if (priceRes.data?.running) {
+          setBulkChecking(true);
+          startPriceCheckPoll();
+        }
+        if (matchRes.data?.running) {
+          setBulkMatching(true);
+          startMatchPoll();
+        }
+      } catch {}
+    };
+    checkRunningTasks();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const startPriceCheckPoll = () => {
+    const pollInterval = setInterval(async () => {
+      try {
+        const { data: status } = await axios.get(`${API}/products/price-check-status`, { headers: getAuthHeaders(), withCredentials: true });
+        if (status.running) {
+          toast.info(`Fiyat kontrolu: ${status.current || 0}/${status.total || 0} (${status.success || 0} basarili)`, { id: "price-check-progress", duration: 4000 });
+          fetchData(); // Refresh product list to show new prices
+        } else {
+          clearInterval(pollInterval);
+          toast.success(`Fiyat kontrolu tamamlandi: ${status.success || 0} basarili, ${status.failed || 0} basarisiz`, { id: "price-check-progress", duration: 8000 });
+          setBulkChecking(false);
+          fetchData();
+        }
+      } catch {
+        clearInterval(pollInterval);
+        setBulkChecking(false);
+        fetchData();
+      }
+    }, 5000);
+    setTimeout(() => { clearInterval(pollInterval); setBulkChecking(false); fetchData(); }, 600000);
+    return pollInterval;
+  };
+
+  const startMatchPoll = () => {
+    const pollInterval = setInterval(async () => {
+      try {
+        const { data: status } = await axios.get(`${API}/products/ai-match-status`, { headers: getAuthHeaders(), withCredentials: true });
+        if (status.running) {
+          toast.info(`Eslestirme: ${status.current || 0}/${status.total || 0} urun isleniyor... (${status.matched || 0} eslesti)`, { id: "ai-match-progress", duration: 4000 });
+          fetchData(); // Refresh to show newly matched products
+        } else {
+          clearInterval(pollInterval);
+          toast.success(`AI Eslestirme tamamlandi: ${status.matched || 0} eslesti, ${status.skipped || 0} belirsiz, ${status.failed || 0} basarisiz`, { id: "ai-match-progress", duration: 8000 });
+          setBulkMatching(false);
+          fetchData();
+        }
+      } catch {
+        clearInterval(pollInterval);
+        setBulkMatching(false);
+        fetchData();
+      }
+    }, 5000);
+    setTimeout(() => { clearInterval(pollInterval); setBulkMatching(false); fetchData(); }, 300000);
+    return pollInterval;
+  };
+
   const handleBulkCheck = async () => {
     setBulkChecking(true);
     try {
@@ -60,24 +127,7 @@ export default function PriceTrackingPage() {
       }
       if (data.started) {
         toast.info(data.message, { duration: 5000 });
-        const pollInterval = setInterval(async () => {
-          try {
-            const { data: status } = await axios.get(`${API}/products/price-check-status`, { headers: getAuthHeaders(), withCredentials: true });
-            if (status.running) {
-              toast.info(`Fiyat kontrolu: ${status.current || 0}/${status.total || 0} (${status.success || 0} basarili)`, { id: "price-check-progress", duration: 3000 });
-            } else {
-              clearInterval(pollInterval);
-              toast.success(`Fiyat kontrolu tamamlandi: ${status.success || 0} basarili, ${status.failed || 0} basarisiz`, { id: "price-check-progress", duration: 8000 });
-              setBulkChecking(false);
-              fetchData();
-            }
-          } catch {
-            clearInterval(pollInterval);
-            setBulkChecking(false);
-            fetchData();
-          }
-        }, 8000);
-        setTimeout(() => { clearInterval(pollInterval); setBulkChecking(false); fetchData(); }, 600000);
+        startPriceCheckPoll();
       } else {
         toast.warning(data.message || data.error || "Fiyat kontrolu baslatilamadi");
         setBulkChecking(false);
@@ -101,24 +151,7 @@ export default function PriceTrackingPage() {
       }
       if (data.started) {
         toast.info("AI Eslestirme basladi. Ilerleme takip ediliyor...", { duration: 5000 });
-        const pollInterval = setInterval(async () => {
-          try {
-            const { data: status } = await axios.get(`${API}/products/ai-match-status`, { headers: getAuthHeaders(), withCredentials: true });
-            if (status.running) {
-              toast.info(`Eslestirme: ${status.current || 0}/${status.total || 0} urun isleniyor... (${status.matched || 0} eslesti)`, { id: "ai-match-progress", duration: 3000 });
-            } else {
-              clearInterval(pollInterval);
-              toast.success(`AI Eslestirme tamamlandi: ${status.matched || 0} eslesti, ${status.skipped || 0} belirsiz, ${status.failed || 0} basarisiz`, { id: "ai-match-progress", duration: 8000 });
-              setBulkMatching(false);
-              fetchData();
-            }
-          } catch {
-            clearInterval(pollInterval);
-            setBulkMatching(false);
-            fetchData();
-          }
-        }, 5000);
-        setTimeout(() => { clearInterval(pollInterval); setBulkMatching(false); fetchData(); }, 300000);
+        startMatchPoll();
       } else {
         toast.warning(data.message || "Eslestirme baslatilamadi");
         setBulkMatching(false);
