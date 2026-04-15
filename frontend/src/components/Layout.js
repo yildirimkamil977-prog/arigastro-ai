@@ -4,7 +4,7 @@ import { useNavigate, useLocation, Link } from "react-router-dom";
 import { Button } from "./ui/button";
 import {
   LayoutDashboard, Package, Tags, TrendingDown, FileText,
-  ChevronLeft, ChevronRight, LogOut, Menu, Sparkles
+  ChevronLeft, ChevronRight, LogOut, Menu, Sparkles, Settings, BookOpen
 } from "lucide-react";
 
 const navItems = [
@@ -13,6 +13,8 @@ const navItems = [
   { path: "/products", label: "Urunler", icon: Package },
   { path: "/price-tracking", label: "Fiyat Takip", icon: TrendingDown },
   { path: "/seo", label: "SEO Uretici", icon: FileText },
+  { path: "/settings", label: "Ayarlar", icon: Settings },
+  { path: "/guide", label: "Rehber", icon: BookOpen },
 ];
 
 export default function Layout({ children }) {

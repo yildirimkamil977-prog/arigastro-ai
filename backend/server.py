@@ -20,6 +20,8 @@ from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from bs4 import BeautifulSoup
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -1382,6 +1384,108 @@ JSON yanıt: {"match_index": 0, "confidence": "high/medium/low"} veya {"match_in
         logger.error(f"Bulk AI match background error: {e}")
         await db.system_status.update_one({"task": "ai_match"}, {"$set": {"running": False, "error": str(e)}})
 
+# ============ SCHEDULED TASKS ============
+
+scheduler = AsyncIOScheduler()
+
+async def scheduled_feed_sync():
+    """Scheduled task: sync prices from feed every 12 hours."""
+    logger.info("CRON: Feed sync basladi")
+    try:
+        feed_items = await fetch_and_parse_feed()
+        if not feed_items:
+            logger.warning("CRON: Feed bos veya okunamadi")
+            return
+        updated = 0
+        for item in feed_items:
+            slug = item.get("slug", "")
+            if not slug:
+                continue
+            update_data = {"updated_at": datetime.now(timezone.utc).isoformat()}
+            if item.get("price"):
+                update_data["our_price"] = item["price"]
+            if item.get("title"):
+                update_data["name"] = item["title"]
+            if item.get("brand"):
+                update_data["brand"] = item["brand"]
+            if item.get("category"):
+                update_data["category_path"] = item["category"]
+            if item.get("gtin"):
+                update_data["gtin"] = item["gtin"]
+            if item.get("image_url"):
+                update_data["image_url"] = item["image_url"]
+            existing = await db.products.find_one({"slug": slug})
+            if existing:
+                await db.products.update_one({"slug": slug}, {"$set": update_data})
+                updated += 1
+        await db.system_status.update_one(
+            {"task": "scheduled_feed_sync"},
+            {"$set": {"last_run": datetime.now(timezone.utc).isoformat(), "updated": updated, "feed_items": len(feed_items)}},
+            upsert=True
+        )
+        logger.info(f"CRON: Feed sync tamamlandi. {updated} urun guncellendi.")
+    except Exception as e:
+        logger.error(f"CRON: Feed sync hatasi: {e}")
+
+async def scheduled_price_check():
+    """Scheduled task: check Akakce prices every 24 hours."""
+    logger.info("CRON: Fiyat kontrolu basladi")
+    try:
+        status = await db.system_status.find_one({"task": "price_check"}, {"_id": 0})
+        if status and status.get("running"):
+            logger.info("CRON: Fiyat kontrolu zaten calisiyor, atlanıyor")
+            return
+
+        tracked_cats = await db.categories.find({"is_tracked": True}, {"_id": 0, "name": 1}).to_list(500)
+        if not tracked_cats:
+            logger.info("CRON: Aktif kategori yok, atlanıyor")
+            return
+        cat_names = [c["name"] for c in tracked_cats]
+        cat_regex = "|".join([re.escape(n) for n in cat_names])
+
+        count = await db.products.count_documents({
+            "category_path": {"$regex": cat_regex, "$options": "i"},
+            "akakce_product_url": {"$exists": True, "$ne": ""},
+            "akakce_matched": True,
+        })
+        if count == 0:
+            logger.info("CRON: Eslesmis urun yok, atlanıyor")
+            return
+
+        await db.system_status.update_one(
+            {"task": "price_check"},
+            {"$set": {"running": True, "started_at": datetime.now(timezone.utc).isoformat(), "checked": 0, "success": 0, "failed": 0, "total": count, "current": 0}},
+            upsert=True
+        )
+        await run_bulk_price_check(cat_regex)
+        await db.system_status.update_one(
+            {"task": "scheduled_price_check"},
+            {"$set": {"last_run": datetime.now(timezone.utc).isoformat(), "products_checked": count}},
+            upsert=True
+        )
+        logger.info(f"CRON: Fiyat kontrolu tamamlandi. {count} urun kontrol edildi.")
+    except Exception as e:
+        logger.error(f"CRON: Fiyat kontrolu hatasi: {e}")
+
+# ============ SCHEDULER STATUS ENDPOINT ============
+
+@api_router.get("/scheduler/status")
+async def get_scheduler_status(user: dict = Depends(get_current_user)):
+    """Get scheduler status and last run times."""
+    feed_sync = await db.system_status.find_one({"task": "scheduled_feed_sync"}, {"_id": 0})
+    price_check = await db.system_status.find_one({"task": "scheduled_price_check"}, {"_id": 0})
+    jobs = []
+    for job in scheduler.get_jobs():
+        trigger = job.trigger
+        next_run = job.next_run_time.isoformat() if job.next_run_time else None
+        jobs.append({"id": job.id, "name": job.name, "next_run": next_run})
+    return {
+        "scheduler_running": scheduler.running,
+        "jobs": jobs,
+        "feed_sync_last": feed_sync,
+        "price_check_last": price_check,
+    }
+
 # ============ ROOT ============
 
 @api_router.get("/")
@@ -1433,7 +1537,14 @@ async def startup():
         f.write(f"# Test Credentials\n\n")
         f.write(f"## Admin\n- Username: {admin_username}\n- Password: {admin_password}\n- Role: admin\n\n")
         f.write(f"## Auth Endpoints\n- POST /api/auth/login\n- GET /api/auth/me\n- POST /api/auth/logout\n")
+    
+    # Start scheduler
+    scheduler.add_job(scheduled_feed_sync, IntervalTrigger(hours=12), id="feed_sync", name="Feed Sync (12 saat)", replace_existing=True)
+    scheduler.add_job(scheduled_price_check, IntervalTrigger(hours=24), id="price_check_cron", name="Fiyat Kontrolu (24 saat)", replace_existing=True)
+    scheduler.start()
+    logger.info("Scheduler basladi: Feed sync (12h), Fiyat kontrolu (24h)")
 
 @app.on_event("shutdown")
 async def shutdown():
+    scheduler.shutdown(wait=False)
     client.close()
