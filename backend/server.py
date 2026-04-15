@@ -505,12 +505,78 @@ def get_akakce_access_error() -> str:
         return "Akakce'ye erisim engellendi (Cloudflare 403). Cozum: ScraperAPI ucretsiz hesap acin (scraperapi.com), API key'i backend .env dosyasina SCRAPERAPI_KEY olarak ekleyin."
     return "Akakce'ye erisim engellendi (Cloudflare 403). Proxy/ScraperAPI ayarlarinizi kontrol edin."
 
+def search_akakce_via_google(product_name: str) -> dict:
+    """Search Google for the product on Akakçe. More accurate than Akakçe's own search (no char limit)."""
+    if not SCRAPERAPI_KEY:
+        return {"success": False, "error": "SCRAPERAPI_KEY gerekli", "candidates": []}
+    try:
+        import requests as req_sync
+        from urllib.parse import quote
+        
+        query = f"{product_name} site:akakce.com"
+        resp = req_sync.get("http://api.scraperapi.com", params={
+            "api_key": SCRAPERAPI_KEY,
+            "url": f"https://www.google.com.tr/search?q={quote(query)}&hl=tr&num=8",
+        }, timeout=60)
+        
+        if resp.status_code != 200:
+            return {"success": False, "error": f"Google HTTP {resp.status_code}", "candidates": []}
+        
+        soup = BeautifulSoup(resp.text, "html.parser")
+        candidates = []
+        seen_urls = set()
+        
+        # Method 1: Structured Google results
+        for div in soup.select("div.g, div[data-sokoban-container]"):
+            a = div.select_one("a[href]")
+            if not a:
+                continue
+            href = a.get("href", "")
+            if "akakce.com" not in href or "en-ucuz" not in href:
+                continue
+            h3 = div.select_one("h3")
+            title = h3.get_text(strip=True) if h3 else ""
+            # Clean title (remove "akakce.com" suffix)
+            title = re.sub(r'akakce\.com.*$', '', title).strip()
+            if href not in seen_urls and title:
+                seen_urls.add(href)
+                candidates.append({"name": title[:150], "url": href, "price": 0})
+        
+        # Method 2: Direct link extraction (fallback)
+        if not candidates:
+            for a in soup.find_all("a", href=True):
+                href = a.get("href", "")
+                if "akakce.com" in href and "en-ucuz" in href:
+                    if href.startswith("/url?q="):
+                        href = href.split("/url?q=")[1].split("&")[0]
+                    if href in seen_urls:
+                        continue
+                    seen_urls.add(href)
+                    title = a.get_text(strip=True)[:150]
+                    title = re.sub(r'akakce\.com.*$', '', title).strip()
+                    if title and len(title) > 5:
+                        candidates.append({"name": title, "url": href, "price": 0})
+        
+        return {
+            "success": len(candidates) > 0,
+            "candidates": candidates[:10],
+            "error": None if candidates else "Google'da Akakce sonucu bulunamadi",
+        }
+    except Exception as e:
+        logger.error(f"Google search error: {e}")
+        return {"success": False, "error": str(e), "candidates": []}
+
 def search_akakce_sync(product_name: str) -> dict:
-    """Search Akakçe for a product and return candidates with URLs."""
+    """Search for product on Akakçe. Tries Google first (better for long names), then Akakçe direct."""
+    # Method 1: Google search (handles full product name, no char limit)
+    google_result = search_akakce_via_google(product_name)
+    if google_result["success"]:
+        return {"success": True, "competitors": google_result["candidates"], "search_url": "", "error": None}
+    
+    # Method 2: Akakçe direct search (fallback)
     try:
         search_query = product_name.replace(" ", "+")
         url = AKAKCE_SEARCH_URL.format(query=search_query)
-        
         resp = akakce_request(url)
         
         if resp.status_code == 403:
@@ -522,33 +588,27 @@ def search_akakce_sync(product_name: str) -> dict:
         results = []
         seen_urls = set()
         
-        # Primary: Find all product detail page links (a[href*='/en-ucuz-'])
         for a_tag in soup.select("a[href*='/en-ucuz-']"):
-            try:
-                title = a_tag.get("title", "") or a_tag.get_text(strip=True)
-                if not title or len(title) < 5:
-                    continue
-                href = a_tag.get("href", "")
-                if href and not href.startswith("http"):
-                    href = f"https://www.akakce.com{href}"
-                if href in seen_urls:
-                    continue
-                seen_urls.add(href)
-                
-                # Try to find price near the link
-                price = 0
-                parent = a_tag.find_parent("li") or a_tag.find_parent("div")
-                if parent:
-                    text = parent.get_text(" ", strip=True)
-                    price_matches = re.findall(r'([\d.]+)\s*,(\d{2})\s*TL', text)
-                    if price_matches:
-                        price = float(price_matches[0][0].replace(".", "") + "." + price_matches[0][1])
-                
-                results.append({"name": title[:120], "price": price, "url": href})
-            except Exception:
+            title = a_tag.get("title", "") or a_tag.get_text(strip=True)
+            if not title or len(title) < 5:
                 continue
+            href = a_tag.get("href", "")
+            if href and not href.startswith("http"):
+                href = f"https://www.akakce.com{href}"
+            if href in seen_urls:
+                continue
+            seen_urls.add(href)
+            
+            price = 0
+            parent = a_tag.find_parent("li") or a_tag.find_parent("div")
+            if parent:
+                text = parent.get_text(" ", strip=True)
+                pm = re.findall(r'([\d.]+)\s*,(\d{2})\s*TL', text)
+                if pm:
+                    price = float(pm[0][0].replace(".", "") + "." + pm[0][1])
+            
+            results.append({"name": title[:120], "price": price, "url": href})
         
-        # Deduplicate by name similarity
         unique = []
         seen_names = set()
         for r in results:
@@ -557,12 +617,7 @@ def search_akakce_sync(product_name: str) -> dict:
                 seen_names.add(key)
                 unique.append(r)
         
-        return {
-            "success": len(unique) > 0,
-            "search_url": url,
-            "competitors": unique[:15],
-            "error": None if unique else "Sonuc bulunamadi",
-        }
+        return {"success": len(unique) > 0, "search_url": url, "competitors": unique[:15], "error": None if unique else "Sonuc bulunamadi"}
     except Exception as e:
         logger.error(f"Akakce search error: {e}")
         return {"success": False, "error": str(e), "competitors": [], "search_url": ""}
@@ -1253,14 +1308,18 @@ async def run_bulk_ai_match():
                 chat = LlmChat(
                     api_key=openai_key,
                     session_id=f"match-{product['slug'][:20]}-{uuid.uuid4().hex[:6]}",
-                    system_message="""Ürün eşleştirme uzmanısın. Verilen ürünle aynı ürünü bul.
-KURALLAR:
-- Marka, ürün tipi ve boyut/kapasite eşleşmeli
-- Küçük format farkları (x vs *, virgül, tire) KABUL EDİLİR
-- İsim sıralaması farklı olabilir, önemli olan AYNI ürün olması
-- Emin değilsen bile en yakın eşleşmeyi "medium" confidence ile seç
-- Sadece tamamen farklı bir ürünse -1 döndür
-JSON: {"match_index": 0, "confidence": "high/medium/low"} veya {"match_index": -1, "confidence": "none"}"""
+                    system_message="""Ürün eşleştirme uzmanısın. Bizim ürünümüzle Akakçe'deki AYNI ürünü bulmalısın.
+
+KRİTİK KURALLAR:
+- Marka AYNI olmalı (Öztiryakiler = Öztiryakiler)
+- Ürün tipi AYNI olmalı (Fritöz = Fritöz, Tava = Tava)
+- BOYUT/ÖLÇÜ KRİTİK: 40x60 ile 60x60 FARKLI üründür! Boyutlar eşleşmeli. * ve x aynı anlamda.
+- Seri numarası eşleşmeli (600 Seri = 600 Seri)
+- Enerji tipi eşleşmeli (Elektrikli = Elektrikli, Gazlı = Gazlı)
+- Emin değilsen bile en yakın eşleşmeyi "medium" ile seç
+- Sadece tamamen farklı bir ürünse veya boyut/ölçü uyuşmuyorsa -1 döndür
+
+JSON yanıt: {"match_index": 0, "confidence": "high/medium/low"} veya {"match_index": -1, "confidence": "none"}"""
                 ).with_model("openai", "gpt-4o")
                 
                 cands = "\n".join([f"{i}. {c['name']} ({c.get('url','')})" for i, c in enumerate(candidates[:8])])
