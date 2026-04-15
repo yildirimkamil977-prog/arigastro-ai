@@ -267,14 +267,54 @@ async def list_products(
 
 @api_router.get("/products/ai-match-status")
 async def ai_match_status(user: dict = Depends(get_current_user)):
-    """Get AI matching progress."""
+    """Get AI matching progress. Auto-resets stuck tasks (>20 min idle)."""
     status = await db.system_status.find_one({"task": "ai_match"}, {"_id": 0})
+    if status and status.get("running"):
+        started = status.get("started_at", "")
+        if started:
+            try:
+                started_dt = datetime.fromisoformat(started)
+                elapsed = (datetime.now(timezone.utc) - started_dt).total_seconds()
+                if elapsed > 1200:  # 20 minutes
+                    logger.warning(f"AI match stuck for {elapsed:.0f}s, auto-resetting")
+                    await db.system_status.update_one({"task": "ai_match"}, {"$set": {
+                        "running": False, "error": "Gorev otomatik sifirlandi (20dk+ yanit yok)",
+                        "completed_at": datetime.now(timezone.utc).isoformat()
+                    }})
+                    status["running"] = False
+                    status["error"] = "Gorev otomatik sifirlandi (20dk+ yanit yok)"
+            except Exception:
+                pass
     return status or {"running": False, "matched": 0, "failed": 0, "skipped": 0, "total": 0}
 
 @api_router.get("/products/price-check-status")
 async def price_check_status(user: dict = Depends(get_current_user)):
     status = await db.system_status.find_one({"task": "price_check"}, {"_id": 0})
+    if status and status.get("running"):
+        started = status.get("started_at", "")
+        if started:
+            try:
+                started_dt = datetime.fromisoformat(started)
+                elapsed = (datetime.now(timezone.utc) - started_dt).total_seconds()
+                if elapsed > 1800:  # 30 minutes
+                    logger.warning(f"Price check stuck for {elapsed:.0f}s, auto-resetting")
+                    await db.system_status.update_one({"task": "price_check"}, {"$set": {
+                        "running": False, "error": "Gorev otomatik sifirlandi (30dk+ yanit yok)",
+                        "completed_at": datetime.now(timezone.utc).isoformat()
+                    }})
+                    status["running"] = False
+            except Exception:
+                pass
     return status or {"running": False, "checked": 0, "success": 0, "failed": 0, "total": 0}
+
+@api_router.post("/products/reset-task-status")
+async def reset_task_status(user: dict = Depends(get_current_user)):
+    """Manually reset stuck task statuses."""
+    await db.system_status.update_many(
+        {"running": True},
+        {"$set": {"running": False, "error": "Manuel sifirlama", "completed_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    return {"message": "Tum gorevler sifirlandi"}
 
 @api_router.get("/products/{slug}")
 async def get_product(slug: str, user: dict = Depends(get_current_user)):
@@ -1682,6 +1722,14 @@ async def startup():
     await db.categories.create_index("slug", unique=True)
     await db.price_history.create_index("product_slug")
     await db.seo_content.create_index("product_slug", unique=True)
+    
+    # Reset any stuck background tasks from previous server runs
+    stuck_reset = await db.system_status.update_many(
+        {"running": True},
+        {"$set": {"running": False, "error": "Sunucu yeniden basladi, gorev sifirlandi", "completed_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    if stuck_reset.modified_count > 0:
+        logger.info(f"Startup: {stuck_reset.modified_count} stuck task(s) reset")
     
     # Seed admin
     admin_username = os.environ.get("ADMIN_USERNAME", "admin").lower()
