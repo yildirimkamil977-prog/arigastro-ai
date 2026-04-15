@@ -511,64 +511,47 @@ def get_akakce_access_error() -> str:
     return "Akakce'ye erisim engellendi (Cloudflare 403). Proxy/ScraperAPI ayarlarinizi kontrol edin."
 
 def search_akakce_via_google(product_name: str) -> dict:
-    """Search Google for the product on Akakçe. More accurate than Akakçe's own search (no char limit)."""
+    """Search Google for the product on Akakçe using ScraperAPI structured SERP API."""
     if not SCRAPERAPI_KEY:
         return {"success": False, "error": "SCRAPERAPI_KEY gerekli", "candidates": []}
     try:
         import requests as req_sync
-        from urllib.parse import quote
         
-        query = f"{product_name} site:akakce.com"
-        resp = req_sync.get("http://api.scraperapi.com", params={
+        query = f"{product_name} akakçe"
+        resp = req_sync.get("https://api.scraperapi.com/structured/google/search", params={
             "api_key": SCRAPERAPI_KEY,
-            "url": f"https://www.google.com.tr/search?q={quote(query)}&hl=tr&num=8",
+            "query": query,
+            "country_code": "tr",
+            "tld": "com.tr",
+            "num": "10",
         }, timeout=60)
         
         if resp.status_code != 200:
-            return {"success": False, "error": f"Google HTTP {resp.status_code}", "candidates": []}
+            return {"success": False, "error": f"Google SERP API HTTP {resp.status_code}", "candidates": []}
         
-        soup = BeautifulSoup(resp.text, "html.parser")
+        data = resp.json()
         candidates = []
         seen_urls = set()
         
-        # Method 1: Structured Google results
-        for div in soup.select("div.g, div[data-sokoban-container]"):
-            a = div.select_one("a[href]")
-            if not a:
-                continue
-            href = a.get("href", "")
-            if "akakce.com" not in href or "en-ucuz" not in href:
-                continue
-            h3 = div.select_one("h3")
-            title = h3.get_text(strip=True) if h3 else ""
-            # Clean title (remove "akakce.com" suffix)
-            title = re.sub(r'akakce\.com.*$', '', title).strip()
-            if href not in seen_urls and title:
-                seen_urls.add(href)
-                candidates.append({"name": title[:150], "url": href, "price": 0})
-        
-        # Method 2: Direct link extraction (fallback)
-        if not candidates:
-            for a in soup.find_all("a", href=True):
-                href = a.get("href", "")
-                if "akakce.com" in href and "en-ucuz" in href:
-                    if href.startswith("/url?q="):
-                        href = href.split("/url?q=")[1].split("&")[0]
-                    if href in seen_urls:
-                        continue
-                    seen_urls.add(href)
-                    title = a.get_text(strip=True)[:150]
-                    title = re.sub(r'akakce\.com.*$', '', title).strip()
-                    if title and len(title) > 5:
-                        candidates.append({"name": title, "url": href, "price": 0})
+        for r in data.get("organic_results", []):
+            link = r.get("link", "")
+            title = r.get("title", "")
+            # Only akakce.com product pages (with en-ucuz in URL)
+            if "akakce.com" in link and "en-ucuz" in link:
+                if link not in seen_urls:
+                    seen_urls.add(link)
+                    # Clean title
+                    title = re.sub(r'\s*\|.*$', '', title).strip()
+                    title = re.sub(r'\s*-\s*Akakçe.*$', '', title).strip()
+                    candidates.append({"name": title[:150], "url": link, "price": 0})
         
         return {
             "success": len(candidates) > 0,
             "candidates": candidates[:10],
-            "error": None if candidates else "Google'da Akakce sonucu bulunamadi",
+            "error": None if candidates else "Google'da Akakce urun sayfasi bulunamadi",
         }
     except Exception as e:
-        logger.error(f"Google search error: {e}")
+        logger.error(f"Google SERP search error: {e}")
         return {"success": False, "error": str(e), "candidates": []}
 
 def search_akakce_sync(product_name: str) -> dict:
