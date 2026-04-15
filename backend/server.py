@@ -453,7 +453,7 @@ def akakce_request(url: str):
             import requests as req_sync
             resp = req_sync.get("http://api.scraperapi.com", params={
                 "api_key": SCRAPERAPI_KEY, "url": url, "country_code": "tr",
-            }, timeout=30)
+            }, timeout=45)
             if resp.status_code == 200:
                 return resp
             logger.warning(f"ScraperAPI returned {resp.status_code}")
@@ -706,7 +706,9 @@ async def fetch_akakce_product_page(url: str) -> dict:
         resp = await loop.run_in_executor(None, lambda: akakce_request(url))
         
         if resp.status_code == 403:
-            return {"success": False, "error": "Akakce Cloudflare korumasi (403). Residential IP veya proxy gerekli.", "sellers": []}
+            return {"success": False, "error": "Akakce Cloudflare korumasi (403).", "sellers": []}
+        if resp.status_code in [410, 404]:
+            return {"success": False, "error": f"Sayfa bulunamadi (HTTP {resp.status_code}). URL gecersiz olabilir.", "sellers": []}
         if resp.status_code != 200:
             return {"success": False, "error": f"HTTP {resp.status_code}", "sellers": []}
         
@@ -717,52 +719,41 @@ async def fetch_akakce_product_page(url: str) -> dict:
         if h1:
             product_name = h1.get_text(strip=True)
         
-        sellers = []
-        # Parse seller listings from Akakçe product page
-        # Each seller block contains price + seller name
-        for li in soup.select("li[class], div[class]"):
-            text = li.get_text(" ", strip=True)
-            price_match = re.search(r'([\d.]+)\s*,(\d{2})\s*TL', text)
-            if not price_match:
+        # Extract seller names from v_v8 class spans
+        seller_names = []
+        for el in soup.find_all("span", class_="v_v8"):
+            text = el.get_text(strip=True)
+            # Skip header seller label (starts with "Satıcı:")
+            if text.startswith("Satıcı:"):
                 continue
-            
-            price_str = price_match.group(1).replace(".", "") + "." + price_match.group(2)
-            try:
-                price = float(price_str)
-            except ValueError:
-                continue
-            
-            # Find seller name - usually bold or in specific elements
-            seller_name = ""
-            bold = li.select_one("b, strong, .v_v8")
-            if bold:
-                seller_name = bold.get_text(strip=True)
-            
-            if not seller_name:
-                # Look for known patterns
-                for pattern in [r'Stokta.*?([A-Za-zğüşıöçĞÜŞİÖÇ0-9.]+\.com[.a-z]*)', r'\*\*([^*]+)\*\*']:
-                    m = re.search(pattern, text)
-                    if m:
-                        seller_name = m.group(1).strip()
-                        break
-            
-            if price > 1 and seller_name and len(seller_name) > 2:
-                sellers.append({"seller": seller_name, "price": price})
+            text = text.strip().strip("/")
+            if text and len(text) > 2 and len(text) < 60:
+                seller_names.append(text)
         
-        # Deduplicate sellers
-        seen = set()
-        unique_sellers = []
-        for s in sellers:
-            key = s["seller"].lower()
-            if key not in seen:
-                seen.add(key)
-                unique_sellers.append(s)
+        # Extract prices from pb_v8 class spans (these are the main listing prices)
+        prices = []
+        for span in soup.find_all("span", class_="pb_v8"):
+            text = span.get_text(strip=True)
+            match = re.match(r'([\d.]+,\d{2})\s*TL', text)
+            if match:
+                price_str = match.group(1)
+                price = float(price_str.replace(".", "").replace(",", "."))
+                if price > 1:
+                    prices.append(price)
+        
+        # Pair sellers with prices (they appear in the same order)
+        sellers = []
+        for i in range(min(len(seller_names), len(prices))):
+            sellers.append({"seller": seller_names[i], "price": prices[i]})
+        
+        # Sort by price
+        sellers.sort(key=lambda x: x["price"])
         
         return {
-            "success": len(unique_sellers) > 0,
+            "success": len(sellers) > 0,
             "product_name": product_name,
-            "sellers": sorted(unique_sellers, key=lambda x: x["price"]),
-            "error": None if unique_sellers else "Satici bilgisi okunamadi"
+            "sellers": sellers,
+            "error": None if sellers else "Satici bilgisi okunamadi"
         }
     except Exception as e:
         logger.error(f"Akakce product page error: {e}")
@@ -1269,10 +1260,10 @@ async def run_bulk_ai_match():
             {
                 "category_path": {"$regex": cat_regex, "$options": "i"},
                 "our_price": {"$ne": None},
-                "$or": [{"akakce_matched": {"$ne": True}}, {"akakce_product_url": {"$in": [None, ""]}}],
+                "akakce_matched": {"$ne": True},
             },
             {"_id": 0, "slug": 1, "name": 1, "brand": 1, "gtin": 1}
-        ).limit(10).to_list(10)
+        ).to_list(5000)  # No limit - process all unmatched products
         
         await db.system_status.update_one({"task": "ai_match"}, {"$set": {"total": len(products)}})
         
