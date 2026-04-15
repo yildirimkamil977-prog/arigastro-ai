@@ -263,6 +263,12 @@ async def list_products(
     products = await db.products.find(query, {"_id": 0}).sort("name", 1).skip(skip).limit(limit).to_list(limit)
     return {"products": products, "total": total, "page": page, "pages": (total + limit - 1) // limit}
 
+@api_router.get("/products/ai-match-status")
+async def ai_match_status(user: dict = Depends(get_current_user)):
+    """Get AI matching progress."""
+    status = await db.system_status.find_one({"task": "ai_match"}, {"_id": 0})
+    return status or {"running": False, "matched": 0, "failed": 0, "skipped": 0, "total": 0}
+
 @api_router.get("/products/{slug}")
 async def get_product(slug: str, user: dict = Depends(get_current_user)):
     product = await db.products.find_one({"slug": slug}, {"_id": 0})
@@ -447,7 +453,7 @@ def akakce_request(url: str):
             import requests as req_sync
             resp = req_sync.get("http://api.scraperapi.com", params={
                 "api_key": SCRAPERAPI_KEY, "url": url, "country_code": "tr",
-            }, timeout=60)
+            }, timeout=30)
             if resp.status_code == 200:
                 return resp
             logger.warning(f"ScraperAPI returned {resp.status_code}")
@@ -476,7 +482,9 @@ def akakce_request(url: str):
 _akakce_blocked = {"status": None, "checked_at": None}
 
 def is_akakce_blocked() -> bool:
-    """Check if Akakçe is blocking us. Cache for 10 minutes."""
+    """Check if Akakçe is blocking us. If ScraperAPI is configured, always return False."""
+    if SCRAPERAPI_KEY:
+        return False  # ScraperAPI handles Cloudflare bypass
     if _akakce_blocked["status"] is not None and _akakce_blocked["checked_at"]:
         elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(_akakce_blocked["checked_at"])).total_seconds()
         if elapsed < 600:
@@ -498,7 +506,7 @@ def get_akakce_access_error() -> str:
     return "Akakce'ye erisim engellendi (Cloudflare 403). Proxy/ScraperAPI ayarlarinizi kontrol edin."
 
 def search_akakce_sync(product_name: str) -> dict:
-    """Search Akakçe for a product. Uses curl_cffi with Chrome impersonation."""
+    """Search Akakçe for a product and return candidates with URLs."""
     try:
         search_query = product_name.replace(" ", "+")
         url = AKAKCE_SEARCH_URL.format(query=search_query)
@@ -506,75 +514,53 @@ def search_akakce_sync(product_name: str) -> dict:
         resp = akakce_request(url)
         
         if resp.status_code == 403:
-            return {
-                "success": False,
-                "error": "Akakce Cloudflare korumasi (403). Bu sunucunun IP'si datacenter IP olarak engelleniyor. Cozum: AKAKCE_PROXY env degiskeniyle bir residential proxy ekleyin veya sistemi kendi sunucunuza deploy edin.",
-                "competitors": [],
-                "search_url": url,
-            }
+            return {"success": False, "error": get_akakce_access_error(), "competitors": [], "search_url": url}
         if resp.status_code != 200:
             return {"success": False, "error": f"HTTP {resp.status_code}", "competitors": [], "search_url": url}
         
         soup = BeautifulSoup(resp.content if hasattr(resp, 'content') else resp.text, "html.parser")
         results = []
+        seen_urls = set()
         
-        # Strategy 1: Find product cards with links and prices (Akakçe typical structure)
+        # Primary: Find all product detail page links (a[href*='/en-ucuz-'])
         for a_tag in soup.select("a[href*='/en-ucuz-']"):
             try:
                 title = a_tag.get("title", "") or a_tag.get_text(strip=True)
-                parent = a_tag.find_parent("li") or a_tag.find_parent("div")
-                if not parent:
+                if not title or len(title) < 5:
                     continue
-                text = parent.get_text(" ", strip=True)
-                price_matches = re.findall(r'([\d.]+)\s*,(\d{2})\s*TL', text)
-                if price_matches:
-                    price_str = price_matches[0][0].replace(".", "") + "." + price_matches[0][1]
-                    price = float(price_str)
-                    href = a_tag.get("href", "")
-                    if href and not href.startswith("http"):
-                        href = f"https://www.akakce.com{href}"
-                    if price > 1 and title and len(title) > 3:
-                        results.append({"name": title[:120], "price": price, "url": href})
+                href = a_tag.get("href", "")
+                if href and not href.startswith("http"):
+                    href = f"https://www.akakce.com{href}"
+                if href in seen_urls:
+                    continue
+                seen_urls.add(href)
+                
+                # Try to find price near the link
+                price = 0
+                parent = a_tag.find_parent("li") or a_tag.find_parent("div")
+                if parent:
+                    text = parent.get_text(" ", strip=True)
+                    price_matches = re.findall(r'([\d.]+)\s*,(\d{2})\s*TL', text)
+                    if price_matches:
+                        price = float(price_matches[0][0].replace(".", "") + "." + price_matches[0][1])
+                
+                results.append({"name": title[:120], "price": price, "url": href})
             except Exception:
                 continue
         
-        # Strategy 2: Product detail page price selectors (from user's bot)
-        if not results:
-            for cls in ["pt_v8", "ps_v8", "pr_v8"]:
-                el = soup.find("span", class_=cls)
-                if el:
-                    price = parse_turkish_price(el.text + " TL")
-                    h1 = soup.find("h1")
-                    name = h1.get_text(strip=True) if h1 else "Akakce urun"
-                    if price and price > 1:
-                        results.append({"name": name[:120], "price": price, "url": url})
-        
-        # Strategy 3: Fallback - find all TL prices on page
-        if not results:
-            page_text = soup.get_text()
-            price_matches = re.findall(r'([\d.]+)\s*,(\d{2})\s*TL', page_text)
-            for pm in price_matches[:5]:
-                price_str = pm[0].replace(".", "") + "." + pm[1]
-                try:
-                    price = float(price_str)
-                    if price > 1:
-                        results.append({"name": "Akakce sonucu", "price": price, "url": url})
-                except (ValueError, TypeError):
-                    continue
-        
-        # Deduplicate
-        seen = set()
+        # Deduplicate by name similarity
         unique = []
+        seen_names = set()
         for r in results:
-            key = f"{r['name'][:30]}_{r['price']}"
-            if key not in seen:
-                seen.add(key)
+            key = r["name"][:40].lower()
+            if key not in seen_names:
+                seen_names.add(key)
                 unique.append(r)
         
         return {
             "success": len(unique) > 0,
             "search_url": url,
-            "competitors": sorted(unique, key=lambda x: x["price"])[:10],
+            "competitors": unique[:15],
             "error": None if unique else "Sonuc bulunamadi",
         }
     except Exception as e:
@@ -1192,90 +1178,130 @@ async def bulk_check_akakce(user: dict = Depends(get_current_user)):
     return results
 
 @api_router.post("/products/bulk-ai-match")
-async def bulk_ai_match(user: dict = Depends(get_current_user)):
-    """AI-match unmatched products in tracked categories with Akakçe."""
-    # Quick check if Akakçe is accessible
-    loop = asyncio.get_event_loop()
-    blocked = await loop.run_in_executor(None, is_akakce_blocked)
-    if blocked:
-        return {"total": 0, "matched": 0, "failed": 0, "skipped": 0, "error": get_akakce_access_error()}
+async def bulk_ai_match(request: Request, user: dict = Depends(get_current_user)):
+    """Start AI matching as background task. Returns immediately."""
+    from fastapi import BackgroundTasks
     
-    tracked_cats = await db.categories.find({"is_tracked": True}, {"_id": 0, "name": 1}).to_list(500)
-    if not tracked_cats:
-        return {"matched": 0, "failed": 0, "error": "Aktif kategori yok."}
+    # Check if already running
+    status = await db.system_status.find_one({"task": "ai_match"}, {"_id": 0})
+    if status and status.get("running"):
+        return {"started": False, "message": "AI eslestirme zaten calisiyor. Lutfen bekleyin.", "progress": status}
     
-    cat_names = [c["name"] for c in tracked_cats]
-    cat_regex = "|".join([re.escape(n) for n in cat_names])
+    # Mark as running
+    await db.system_status.update_one(
+        {"task": "ai_match"},
+        {"$set": {"running": True, "started_at": datetime.now(timezone.utc).isoformat(), "matched": 0, "failed": 0, "skipped": 0, "total": 0, "current": 0}},
+        upsert=True
+    )
     
-    products = await db.products.find(
-        {
-            "category_path": {"$regex": cat_regex, "$options": "i"},
-            "our_price": {"$ne": None},
-            "$or": [{"akakce_matched": {"$ne": True}}, {"akakce_product_url": {"$in": [None, ""]}}],
-        },
-        {"_id": 0, "slug": 1, "name": 1, "brand": 1, "gtin": 1}
-    ).limit(10).to_list(10)
+    # Start background task
+    asyncio.ensure_future(run_bulk_ai_match())
     
-    results = {"total": len(products), "matched": 0, "failed": 0, "skipped": 0}
-    openai_key = os.environ.get("OPENAI_API_KEY")
-    if not openai_key:
-        return {**results, "error": "OpenAI API anahtari bulunamadi"}
-    
-    for product in products:
-        try:
-            search_result = search_akakce_sync(product["name"])
-            if not search_result["success"] or not search_result.get("competitors"):
-                # Mark as "no match found on Akakçe"
-                await db.products.update_one({"slug": product["slug"]}, {"$set": {
-                    "akakce_matched": False, "akakce_match_confidence": "not_found",
-                    "akakce_product_name": "Akakce'de bulunamadi",
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                }})
-                results["failed"] += 1
-                await asyncio.sleep(random.uniform(5, 8))
-                continue
-            
-            candidates = search_result["competitors"]
-            from emergentintegrations.llm.chat import LlmChat, UserMessage
-            import json as json_mod
-            
-            chat = LlmChat(
-                api_key=openai_key,
-                session_id=f"match-{product['slug'][:20]}-{uuid.uuid4().hex[:6]}",
-                system_message="Urun eslestirme uzmanisin. TAMAMEN AYNI urunu bul. JSON: {\"match_index\": 0, \"confidence\": \"high/medium/low\"} veya {\"match_index\": -1, \"confidence\": \"none\"}"
-            ).with_model("openai", "gpt-4o")
-            
-            cands = "\n".join([f"{i}. {c['name']} ({c.get('url','')})" for i, c in enumerate(candidates[:8])])
-            resp_ai = await chat.send_message(UserMessage(text=f"Urun: {product['name']}\nMarka: {product.get('brand','')}\nGTIN: {product.get('gtin','')}\n\nAdaylar:\n{cands}"))
-            resp_text = resp_ai.strip()
-            if resp_text.startswith("```"):
-                resp_text = re.sub(r'^```(?:json)?\s*', '', resp_text)
-                resp_text = re.sub(r'\s*```$', '', resp_text)
-            ai_result = json_mod.loads(resp_text)
-            
-            idx = ai_result.get("match_index", -1)
-            conf = ai_result.get("confidence", "none")
-            if idx >= 0 and idx < len(candidates) and conf in ["high", "medium"]:
-                matched = candidates[idx]
-                await db.products.update_one({"slug": product["slug"]}, {"$set": {
-                    "akakce_product_url": matched.get("url", ""), "akakce_product_name": matched["name"],
-                    "akakce_matched": True, "akakce_match_confidence": conf, "is_tracked": True,
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                }})
-                results["matched"] += 1
-            else:
-                # AI could not confidently match
-                await db.products.update_one({"slug": product["slug"]}, {"$set": {
-                    "akakce_matched": False, "akakce_match_confidence": "ai_uncertain",
-                    "akakce_product_name": "AI eslestirme basarisiz - manuel eslestirme gerekli",
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                }})
-                results["skipped"] += 1
-            await asyncio.sleep(random.uniform(5, 8))
-        except Exception as e:
-            logger.error(f"Bulk AI match error: {e}")
-            results["failed"] += 1
-    return results
+    return {"started": True, "message": "AI eslestirme basladi. İlerlemeyi takip edebilirsiniz."}
+
+async def run_bulk_ai_match():
+    """Background task for AI matching."""
+    try:
+        tracked_cats = await db.categories.find({"is_tracked": True}, {"_id": 0, "name": 1}).to_list(500)
+        if not tracked_cats:
+            await db.system_status.update_one({"task": "ai_match"}, {"$set": {"running": False, "error": "Aktif kategori yok."}})
+            return
+        
+        cat_names = [c["name"] for c in tracked_cats]
+        cat_regex = "|".join([re.escape(n) for n in cat_names])
+        
+        products = await db.products.find(
+            {
+                "category_path": {"$regex": cat_regex, "$options": "i"},
+                "our_price": {"$ne": None},
+                "$or": [{"akakce_matched": {"$ne": True}}, {"akakce_product_url": {"$in": [None, ""]}}],
+            },
+            {"_id": 0, "slug": 1, "name": 1, "brand": 1, "gtin": 1}
+        ).limit(10).to_list(10)
+        
+        await db.system_status.update_one({"task": "ai_match"}, {"$set": {"total": len(products)}})
+        
+        openai_key = os.environ.get("OPENAI_API_KEY")
+        if not openai_key:
+            await db.system_status.update_one({"task": "ai_match"}, {"$set": {"running": False, "error": "OpenAI API key yok"}})
+            return
+        
+        matched = 0
+        failed = 0
+        skipped = 0
+        
+        for i, product in enumerate(products):
+            try:
+                await db.system_status.update_one({"task": "ai_match"}, {"$set": {"current": i + 1, "current_product": product["name"][:50]}})
+                
+                loop = asyncio.get_event_loop()
+                search_result = await loop.run_in_executor(None, search_akakce_sync, product["name"])
+                if not search_result["success"] or not search_result.get("competitors"):
+                    await db.products.update_one({"slug": product["slug"]}, {"$set": {
+                        "akakce_matched": False, "akakce_match_confidence": "not_found",
+                        "akakce_product_name": "Akakce'de bulunamadi",
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }})
+                    failed += 1
+                    await asyncio.sleep(random.uniform(3, 5))
+                    continue
+                
+                candidates = search_result["competitors"]
+                from emergentintegrations.llm.chat import LlmChat, UserMessage
+                import json as json_mod
+                
+                chat = LlmChat(
+                    api_key=openai_key,
+                    session_id=f"match-{product['slug'][:20]}-{uuid.uuid4().hex[:6]}",
+                    system_message="""Ürün eşleştirme uzmanısın. Verilen ürünle aynı ürünü bul.
+KURALLAR:
+- Marka, ürün tipi ve boyut/kapasite eşleşmeli
+- Küçük format farkları (x vs *, virgül, tire) KABUL EDİLİR
+- İsim sıralaması farklı olabilir, önemli olan AYNI ürün olması
+- Emin değilsen bile en yakın eşleşmeyi "medium" confidence ile seç
+- Sadece tamamen farklı bir ürünse -1 döndür
+JSON: {"match_index": 0, "confidence": "high/medium/low"} veya {"match_index": -1, "confidence": "none"}"""
+                ).with_model("openai", "gpt-4o")
+                
+                cands = "\n".join([f"{i}. {c['name']} ({c.get('url','')})" for i, c in enumerate(candidates[:8])])
+                resp_ai = await chat.send_message(UserMessage(text=f"Urun: {product['name']}\nMarka: {product.get('brand','')}\nGTIN: {product.get('gtin','')}\n\nAdaylar:\n{cands}"))
+                resp_text = resp_ai.strip()
+                if resp_text.startswith("```"):
+                    resp_text = re.sub(r'^```(?:json)?\s*', '', resp_text)
+                    resp_text = re.sub(r'\s*```$', '', resp_text)
+                ai_result = json_mod.loads(resp_text)
+                
+                idx = ai_result.get("match_index", -1)
+                conf = ai_result.get("confidence", "none")
+                if idx >= 0 and idx < len(candidates) and conf in ["high", "medium"]:
+                    m = candidates[idx]
+                    await db.products.update_one({"slug": product["slug"]}, {"$set": {
+                        "akakce_product_url": m.get("url", ""), "akakce_product_name": m["name"],
+                        "akakce_matched": True, "akakce_match_confidence": conf, "is_tracked": True,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }})
+                    matched += 1
+                else:
+                    await db.products.update_one({"slug": product["slug"]}, {"$set": {
+                        "akakce_matched": False, "akakce_match_confidence": "ai_uncertain",
+                        "akakce_product_name": "AI eslestirme basarisiz - manuel eslestirme gerekli",
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }})
+                    skipped += 1
+                
+                await db.system_status.update_one({"task": "ai_match"}, {"$set": {"matched": matched, "failed": failed, "skipped": skipped}})
+                await asyncio.sleep(random.uniform(3, 5))
+            except Exception as e:
+                logger.error(f"Bulk AI match error for {product.get('slug','?')}: {e}")
+                failed += 1
+        
+        await db.system_status.update_one({"task": "ai_match"}, {"$set": {
+            "running": False, "matched": matched, "failed": failed, "skipped": skipped,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }})
+    except Exception as e:
+        logger.error(f"Bulk AI match background error: {e}")
+        await db.system_status.update_one({"task": "ai_match"}, {"$set": {"running": False, "error": str(e)}})
 
 # ============ ROOT ============
 

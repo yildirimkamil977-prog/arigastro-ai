@@ -60,26 +60,44 @@ export default function PriceTrackingPage() {
 
   const handleBulkMatch = async () => {
     setBulkMatching(true);
-    toast.info("AI Eslestirme basladi. Bu islem birkaç dakika surebilir...", { duration: 8000 });
     try {
       const { data } = await axios.post(`${API}/products/bulk-ai-match`, {}, { 
-        headers: getAuthHeaders(), withCredentials: true, timeout: 600000 
+        headers: getAuthHeaders(), withCredentials: true, timeout: 10000 
       });
       if (data.error) {
         toast.error(data.error, { duration: 6000 });
+        setBulkMatching(false);
+        return;
+      }
+      if (data.started) {
+        toast.info("AI Eslestirme basladi. Ilerleme takip ediliyor...", { duration: 5000 });
+        // Poll for progress
+        const pollInterval = setInterval(async () => {
+          try {
+            const { data: status } = await axios.get(`${API}/products/ai-match-status`, { headers: getAuthHeaders(), withCredentials: true });
+            if (status.running) {
+              toast.info(`Eslestirme: ${status.current || 0}/${status.total || 0} urun isleniyor... (${status.matched || 0} eslesti)`, { id: "ai-match-progress", duration: 3000 });
+            } else {
+              clearInterval(pollInterval);
+              toast.success(`AI Eslestirme tamamlandi: ${status.matched || 0} eslesti, ${status.skipped || 0} belirsiz, ${status.failed || 0} basarisiz`, { id: "ai-match-progress", duration: 8000 });
+              setBulkMatching(false);
+              fetchData();
+            }
+          } catch {
+            clearInterval(pollInterval);
+            setBulkMatching(false);
+            fetchData();
+          }
+        }, 5000);
+        // Safety timeout after 5 minutes
+        setTimeout(() => { clearInterval(pollInterval); setBulkMatching(false); fetchData(); }, 300000);
       } else {
-        toast.success(`AI Eslestirme tamamlandi: ${data.matched} eslesti, ${data.skipped} belirsiz, ${data.failed} basarisiz (${data.total} urun kontrol edildi)`, { duration: 8000 });
-        fetchData();
+        toast.warning(data.message || "Eslestirme baslatilamadi");
+        setBulkMatching(false);
       }
     } catch (err) {
-      if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
-        toast.info("Eslestirme arka planda devam ediyor. Sayfayi yenileyerek sonuclari gorebilirsiniz.", { duration: 8000 });
-      } else {
-        const detail = err.response?.data?.detail || err.response?.data?.error || "AI eslestirme basarisiz";
-        toast.error(detail, { duration: 6000 });
-      }
-      fetchData();
-    } finally {
+      const detail = err.response?.data?.detail || err.response?.data?.error || "AI eslestirme basarisiz";
+      toast.error(detail, { duration: 6000 });
       setBulkMatching(false);
     }
   };
