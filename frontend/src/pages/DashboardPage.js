@@ -10,18 +10,22 @@ export default function DashboardPage() {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  const fetchStats = async () => {
+    try {
+      const { data } = await axios.get(`${API}/dashboard/stats`, { headers: getAuthHeaders(), withCredentials: true });
+      setStats(data);
+    } catch (err) {
+      console.error("Dashboard stats error:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    const fetchStats = async () => {
-      try {
-        const { data } = await axios.get(`${API}/dashboard/stats`, { headers: getAuthHeaders(), withCredentials: true });
-        setStats(data);
-      } catch (err) {
-        console.error("Dashboard stats error:", err);
-      } finally {
-        setLoading(false);
-      }
-    };
     fetchStats();
+    // Refresh every 30 seconds when page is visible
+    const interval = setInterval(fetchStats, 30000);
+    return () => clearInterval(interval);
   }, []);
 
   if (loading) {

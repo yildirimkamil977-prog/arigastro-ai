@@ -60,17 +60,25 @@ export default function PriceTrackingPage() {
 
   const handleBulkMatch = async () => {
     setBulkMatching(true);
+    toast.info("AI Eslestirme basladi. Bu islem birkaç dakika surebilir...", { duration: 8000 });
     try {
-      const { data } = await axios.post(`${API}/products/bulk-ai-match`, {}, { headers: getAuthHeaders(), withCredentials: true, timeout: 120000 });
+      const { data } = await axios.post(`${API}/products/bulk-ai-match`, {}, { 
+        headers: getAuthHeaders(), withCredentials: true, timeout: 600000 
+      });
       if (data.error) {
         toast.error(data.error, { duration: 6000 });
       } else {
-        toast.success(`AI Eslestirme: ${data.matched} eslesti, ${data.skipped} atlandi, ${data.failed} basarisiz.`);
+        toast.success(`AI Eslestirme tamamlandi: ${data.matched} eslesti, ${data.skipped} belirsiz, ${data.failed} basarisiz (${data.total} urun kontrol edildi)`, { duration: 8000 });
         fetchData();
       }
     } catch (err) {
-      const detail = err.response?.data?.detail || err.response?.data?.error || "AI eslestirme basarisiz. Sunucu zaman asimi olabilir.";
-      toast.error(detail, { duration: 6000 });
+      if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
+        toast.info("Eslestirme arka planda devam ediyor. Sayfayi yenileyerek sonuclari gorebilirsiniz.", { duration: 8000 });
+      } else {
+        const detail = err.response?.data?.detail || err.response?.data?.error || "AI eslestirme basarisiz";
+        toast.error(detail, { duration: 6000 });
+      }
+      fetchData();
     } finally {
       setBulkMatching(false);
     }
