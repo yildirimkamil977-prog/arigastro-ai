@@ -7,7 +7,7 @@ import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
-import { Search, TrendingDown, Loader2, RefreshCw, ChevronLeft, ChevronRight, ExternalLink } from "lucide-react";
+import { Search, TrendingDown, Loader2, RefreshCw, ChevronLeft, ChevronRight, ExternalLink, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
 export default function PriceTrackingPage() {
@@ -19,6 +19,7 @@ export default function PriceTrackingPage() {
   const [filter, setFilter] = useState("all");
   const [loading, setLoading] = useState(true);
   const [bulkChecking, setBulkChecking] = useState(false);
+  const [bulkMatching, setBulkMatching] = useState(false);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -47,7 +48,7 @@ export default function PriceTrackingPage() {
       if (data.error) {
         toast.warning(data.error);
       } else {
-        toast.success(`${data.checked} urun kontrol edildi (${data.tracked_categories} aktif kategori). ${data.matched} eslesti, ${data.failed} basarisiz.`);
+        toast.success(`${data.checked} urun kontrol edildi (${data.tracked_categories} aktif kategori). ${data.success} basarili, ${data.failed} basarisiz.`);
       }
       fetchData();
     } catch (err) {
@@ -57,45 +58,63 @@ export default function PriceTrackingPage() {
     }
   };
 
+  const handleBulkMatch = async () => {
+    setBulkMatching(true);
+    try {
+      const { data } = await axios.post(`${API}/products/bulk-ai-match`, {}, { headers: getAuthHeaders(), withCredentials: true });
+      if (data.error) {
+        toast.warning(data.error);
+      } else {
+        toast.success(`AI Eslestirme: ${data.matched} eslesti, ${data.skipped} atlandı, ${data.failed} basarisiz.`);
+      }
+      fetchData();
+    } catch (err) {
+      toast.error("AI eslestirme basarisiz");
+    } finally {
+      setBulkMatching(false);
+    }
+  };
+
+  const formatDateTime = (dateStr) => {
+    if (!dateStr) return "-";
+    try {
+      const d = new Date(dateStr);
+      return d.toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    } catch { return "-"; }
+  };
+
   return (
     <div className="space-y-6" data-testid="price-tracking-page">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-2xl font-bold tracking-tight text-slate-900 font-heading">Fiyat Takip</h2>
           <p className="text-sm text-slate-500 mt-1">
-            Sadece <strong>aktif kategorilerdeki</strong> urunler Akakce uzerinden kontrol edilir
+            Sadece <strong>aktif kategorilerdeki eslesmis</strong> urunlerin fiyatlari kontrol edilir
           </p>
         </div>
-        <Button
-          onClick={handleBulkCheck}
-          disabled={bulkChecking}
-          data-testid="bulk-check-button"
-          className="bg-amber-500 hover:bg-amber-600 text-black text-sm h-9 font-medium"
-        >
-          {bulkChecking ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-2" />}
-          Toplu Fiyat Kontrolu
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={handleBulkMatch}
+            disabled={bulkMatching}
+            data-testid="bulk-ai-match-button"
+            className="bg-violet-600 hover:bg-violet-700 text-white text-sm h-9 font-medium"
+          >
+            {bulkMatching ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Sparkles className="h-4 w-4 mr-2" />}
+            AI Eslestirme
+          </Button>
+          <Button
+            onClick={handleBulkCheck}
+            disabled={bulkChecking}
+            data-testid="bulk-check-button"
+            className="bg-amber-500 hover:bg-amber-600 text-black text-sm h-9 font-medium"
+          >
+            {bulkChecking ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-2" />}
+            Toplu Fiyat Kontrolu
+          </Button>
+        </div>
       </div>
 
       {/* Filters */}
-      <Card className="border-amber-200 bg-amber-50/50 shadow-sm">
-        <CardContent className="py-3 px-4">
-          <div className="flex items-start gap-3">
-            <div className="w-6 h-6 rounded bg-amber-200 flex items-center justify-center flex-shrink-0 mt-0.5">
-              <TrendingDown className="h-3.5 w-3.5 text-amber-700" />
-            </div>
-            <div className="text-xs text-amber-800">
-              <p className="font-semibold">Akakce Entegrasyonu Bilgilendirme</p>
-              <p className="mt-0.5">
-                Akakce Cloudflare bot korumasi kullanmaktadir. Bu sunucunun datacenter IP'si engellenmektedir.
-                Sistemi kendi sunucunuza (residential IP) deploy ettiginizde veya backend .env dosyasina <code className="bg-amber-100 px-1 rounded">AKAKCE_PROXY</code> ekledignizde tam calısır.
-                curl_cffi + Chrome impersonation altyapisi hazirdir.
-              </p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
       <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
         <Tabs value={filter} onValueChange={(v) => { setFilter(v); setPage(1); }}>
           <TabsList className="bg-slate-100">
@@ -129,18 +148,19 @@ export default function PriceTrackingPage() {
                 <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 text-right">En Ucuz Rakip</TableHead>
                 <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 text-right">Fark</TableHead>
                 <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">En Ucuz Firma</TableHead>
-                <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Satici Sayisi</TableHead>
+                <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Fiyat Guncelleme</TableHead>
+                <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Akakce Kontrol</TableHead>
                 <TableHead className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 w-10"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading ? (
-                <TableRow><TableCell colSpan={8} className="text-center py-12 text-slate-500">Yukleniyor...</TableCell></TableRow>
+                <TableRow><TableCell colSpan={10} className="text-center py-12 text-slate-500">Yukleniyor...</TableCell></TableRow>
               ) : products.length === 0 ? (
-                <TableRow><TableCell colSpan={8} className="text-center py-12">
+                <TableRow><TableCell colSpan={10} className="text-center py-12">
                   <TrendingDown className="h-8 w-8 mx-auto text-slate-300 mb-2" />
                   <p className="text-sm text-slate-500">Fiyat verisi bulunamadi</p>
-                  <p className="text-xs text-slate-400 mt-1">Urunler sayfasindan Akakce kontrolu baslatabilirsiniz</p>
+                  <p className="text-xs text-slate-400 mt-1">Urunler sayfasindan Akakce eslestirmesi yapin</p>
                 </TableCell></TableRow>
               ) : (
                 products.map((p) => {
@@ -170,9 +190,11 @@ export default function PriceTrackingPage() {
                         {p.our_price ? `${p.our_price.toLocaleString('tr-TR')} TL` : <span className="text-slate-400">-</span>}
                       </TableCell>
                       <TableCell className="text-right">
-                        <span className={`font-mono text-sm font-semibold ${isCheaper ? "text-red-600" : "text-emerald-600"}`}>
-                          {p.cheapest_price?.toLocaleString('tr-TR')} TL
-                        </span>
+                        {p.cheapest_price ? (
+                          <span className={`font-mono text-sm font-semibold ${isCheaper ? "text-red-600" : "text-emerald-600"}`}>
+                            {p.cheapest_price.toLocaleString('tr-TR')} TL
+                          </span>
+                        ) : "-"}
                       </TableCell>
                       <TableCell className="text-right">
                         {diff != null ? (
@@ -182,10 +204,13 @@ export default function PriceTrackingPage() {
                         ) : "-"}
                       </TableCell>
                       <TableCell>
-                        <p className="text-xs text-slate-600 truncate max-w-[150px]">{p.cheapest_competitor || "-"}</p>
+                        <p className="text-xs text-slate-600 truncate max-w-[130px]">{p.cheapest_competitor || "-"}</p>
                       </TableCell>
-                      <TableCell className="text-center">
-                        <p className="text-xs text-slate-600">{p.total_sellers ? `${p.total_sellers} satici` : "-"}</p>
+                      <TableCell>
+                        <p className="text-[10px] text-slate-500">{formatDateTime(p.updated_at)}</p>
+                      </TableCell>
+                      <TableCell>
+                        <p className="text-[10px] text-slate-500">{formatDateTime(p.last_price_check)}</p>
                       </TableCell>
                       <TableCell>
                         {(p.akakce_product_url || p.akakce_url) && (

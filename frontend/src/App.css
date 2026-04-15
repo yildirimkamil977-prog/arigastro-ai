@@ -1,5 +1,18 @@
 /* ARI AI - Custom Styles */
 
+/* Hide Emergent badge */
+#emergent-badge {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  overflow: hidden !important;
+  position: absolute !important;
+  left: -9999px !important;
+}
+
 .font-heading {
   font-family: 'Cabinet Grotesk', 'IBM Plex Sans', sans-serif;
 }
