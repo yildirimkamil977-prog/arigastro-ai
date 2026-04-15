@@ -61,15 +61,16 @@ export default function PriceTrackingPage() {
   const handleBulkMatch = async () => {
     setBulkMatching(true);
     try {
-      const { data } = await axios.post(`${API}/products/bulk-ai-match`, {}, { headers: getAuthHeaders(), withCredentials: true });
+      const { data } = await axios.post(`${API}/products/bulk-ai-match`, {}, { headers: getAuthHeaders(), withCredentials: true, timeout: 120000 });
       if (data.error) {
-        toast.warning(data.error);
+        toast.error(data.error, { duration: 6000 });
       } else {
-        toast.success(`AI Eslestirme: ${data.matched} eslesti, ${data.skipped} atlandı, ${data.failed} basarisiz.`);
+        toast.success(`AI Eslestirme: ${data.matched} eslesti, ${data.skipped} atlandi, ${data.failed} basarisiz.`);
+        fetchData();
       }
-      fetchData();
     } catch (err) {
-      toast.error("AI eslestirme basarisiz");
+      const detail = err.response?.data?.detail || err.response?.data?.error || "AI eslestirme basarisiz. Sunucu zaman asimi olabilir.";
+      toast.error(detail, { duration: 6000 });
     } finally {
       setBulkMatching(false);
     }
@@ -119,6 +120,8 @@ export default function PriceTrackingPage() {
         <Tabs value={filter} onValueChange={(v) => { setFilter(v); setPage(1); }}>
           <TabsList className="bg-slate-100">
             <TabsTrigger value="all" data-testid="filter-all" className="text-xs">Tumu ({total})</TabsTrigger>
+            <TabsTrigger value="matched" data-testid="filter-matched" className="text-xs">Eslesmis</TabsTrigger>
+            <TabsTrigger value="unmatched" data-testid="filter-unmatched" className="text-xs">Eslesmemis</TabsTrigger>
             <TabsTrigger value="cheaper" data-testid="filter-cheaper" className="text-xs">Rakip Daha Ucuz</TabsTrigger>
             <TabsTrigger value="expensive" data-testid="filter-expensive" className="text-xs">Biz Daha Ucuz</TabsTrigger>
           </TabsList>
@@ -177,7 +180,14 @@ export default function PriceTrackingPage() {
                       </TableCell>
                       <TableCell>
                         <p className="text-sm font-medium text-slate-900 line-clamp-1">{p.name}</p>
-                        <p className="text-[10px] text-slate-400 truncate max-w-[200px]">{p.akakce_product_name || ""}</p>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          {p.akakce_matched ? (
+                            <Badge className="bg-emerald-100 text-emerald-700 border-0 text-[9px] h-4">Eslesti</Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-[9px] text-slate-400 h-4">Eslesmedi</Badge>
+                          )}
+                          {p.akakce_product_name && <span className="text-[10px] text-slate-400 truncate max-w-[180px]">{p.akakce_product_name}</span>}
+                        </div>
                       </TableCell>
                       <TableCell className="text-center">
                         {p.our_position ? (

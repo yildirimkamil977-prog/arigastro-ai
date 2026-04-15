@@ -443,7 +443,7 @@ def akakce_request(url: str):
         from curl_cffi import requests as cffi_requests
         kwargs = {
             "impersonate": random.choice(["chrome", "chrome110", "chrome120"]),
-            "timeout": 20,
+            "timeout": 8,
         }
         if AKAKCE_PROXY:
             kwargs["proxies"] = {"http": AKAKCE_PROXY, "https": AKAKCE_PROXY}
@@ -454,8 +454,28 @@ def akakce_request(url: str):
         import httpx as httpx_sync
         resp = httpx_sync.get(url, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-        }, timeout=15, follow_redirects=True)
+        }, timeout=8, follow_redirects=True)
         return resp
+
+# Cache the Cloudflare block status to avoid repeated slow failures
+_akakce_blocked = {"status": None, "checked_at": None}
+
+def is_akakce_blocked() -> bool:
+    """Check if Akakçe is blocking us. Cache for 5 minutes."""
+    if _akakce_blocked["status"] is not None and _akakce_blocked["checked_at"]:
+        elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(_akakce_blocked["checked_at"])).total_seconds()
+        if elapsed < 300:  # 5 min cache
+            return _akakce_blocked["status"]
+    try:
+        resp = akakce_request("https://www.akakce.com/")
+        blocked = resp.status_code == 403
+        _akakce_blocked["status"] = blocked
+        _akakce_blocked["checked_at"] = datetime.now(timezone.utc).isoformat()
+        return blocked
+    except Exception:
+        _akakce_blocked["status"] = True
+        _akakce_blocked["checked_at"] = datetime.now(timezone.utc).isoformat()
+        return True
 
 def search_akakce_sync(product_name: str) -> dict:
     """Search Akakçe for a product. Uses curl_cffi with Chrome impersonation."""
@@ -993,26 +1013,51 @@ async def get_price_tracking(
     page: int = 1,
     limit: int = 50
 ):
-    """Get products with price comparison data."""
-    query = {"akakce_matched": True}
+    """Get products from TRACKED CATEGORIES for price comparison."""
+    # First get tracked categories
+    tracked_cats = await db.categories.find({"is_tracked": True}, {"_id": 0, "name": 1}).to_list(500)
+    if not tracked_cats:
+        return {"products": [], "total": 0, "page": 1, "pages": 0, "message": "Aktif kategori yok. Kategoriler sayfasindan kategori aktif edin."}
+    
+    cat_names = [c["name"] for c in tracked_cats]
+    cat_regex = "|".join([re.escape(n) for n in cat_names])
+    
+    # Base query: products in tracked categories with prices
+    query = {
+        "category_path": {"$regex": cat_regex, "$options": "i"},
+        "our_price": {"$ne": None},
+    }
     
     if filter_type == "cheaper":
+        query["cheapest_price"] = {"$ne": None}
         query["$expr"] = {"$lt": ["$cheapest_price", "$our_price"]}
-        query["cheapest_price"] = {"$ne": None}
-        query["our_price"] = {"$ne": None}
     elif filter_type == "expensive":
-        query["$expr"] = {"$gte": ["$cheapest_price", "$our_price"]}
         query["cheapest_price"] = {"$ne": None}
-        query["our_price"] = {"$ne": None}
+        query["$expr"] = {"$gte": ["$cheapest_price", "$our_price"]}
+    elif filter_type == "matched":
+        query["akakce_matched"] = True
+    elif filter_type == "unmatched":
+        query["$or"] = [{"akakce_matched": {"$ne": True}}, {"akakce_product_url": {"$in": [None, ""]}}]
     
     if search:
         query["name"] = {"$regex": search, "$options": "i"}
     
     skip = (page - 1) * limit
     total = await db.products.count_documents(query)
-    products = await db.products.find(query, {"_id": 0}).sort("price_difference", -1).skip(skip).limit(limit).to_list(limit)
     
-    return {"products": products, "total": total, "page": page, "pages": (total + limit - 1) // limit}
+    sort_field = "price_difference" if filter_type in ["cheaper", "expensive"] else "name"
+    sort_dir = -1 if filter_type == "cheaper" else 1
+    products = await db.products.find(query, {"_id": 0}).sort(sort_field, sort_dir).skip(skip).limit(limit).to_list(limit)
+    
+    # Stats
+    matched_count = await db.products.count_documents({**query, "akakce_matched": True}) if filter_type == "all" else 0
+    
+    return {
+        "products": products, "total": total, "page": page,
+        "pages": (total + limit - 1) // limit,
+        "tracked_categories": len(tracked_cats),
+        "matched_count": matched_count,
+    }
 
 @api_router.get("/price-history/{slug}")
 async def get_price_history(slug: str, user: dict = Depends(get_current_user)):
@@ -1039,7 +1084,13 @@ async def bulk_update_prices(data: BulkPriceUpdate, user: dict = Depends(get_cur
 
 @api_router.post("/products/bulk-check-akakce")
 async def bulk_check_akakce(user: dict = Depends(get_current_user)):
-    """Check Akakçe prices for MATCHED products in TRACKED CATEGORIES. Uses saved product page URLs."""
+    """Check Akakçe prices for MATCHED products in TRACKED CATEGORIES."""
+    # Quick check if Akakçe is accessible
+    loop = asyncio.get_event_loop()
+    blocked = await loop.run_in_executor(None, is_akakce_blocked)
+    if blocked:
+        return {"checked": 0, "success": 0, "failed": 0, "error": "Akakce su an bu sunucudan erisilemez (Cloudflare 403). Sistemi kendi sunucunuza deploy edin veya AKAKCE_PROXY ayarlayin."}
+    
     tracked_cats = await db.categories.find({"is_tracked": True}, {"_id": 0, "name": 1}).to_list(500)
     if not tracked_cats:
         return {"checked": 0, "success": 0, "failed": 0, "error": "Aktif kategori yok. Kategoriler sayfasindan takip edilecek kategorileri secin."}
@@ -1088,6 +1139,12 @@ async def bulk_check_akakce(user: dict = Depends(get_current_user)):
 @api_router.post("/products/bulk-ai-match")
 async def bulk_ai_match(user: dict = Depends(get_current_user)):
     """AI-match unmatched products in tracked categories with Akakçe."""
+    # Quick check if Akakçe is accessible
+    loop = asyncio.get_event_loop()
+    blocked = await loop.run_in_executor(None, is_akakce_blocked)
+    if blocked:
+        return {"total": 0, "matched": 0, "failed": 0, "skipped": 0, "error": "Akakce su an bu sunucudan erisilemez (Cloudflare 403). Sistemi kendi sunucunuza deploy edin veya AKAKCE_PROXY ayarlayin."}
+    
     tracked_cats = await db.categories.find({"is_tracked": True}, {"_id": 0, "name": 1}).to_list(500)
     if not tracked_cats:
         return {"matched": 0, "failed": 0, "error": "Aktif kategori yok."}
