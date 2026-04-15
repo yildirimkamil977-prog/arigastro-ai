@@ -14,7 +14,9 @@ certifi==2026.2.25
 cffi==2.0.0
 charset-normalizer==3.4.7
 click==8.3.2
+cloudscraper==1.2.71
 cryptography==46.0.7
+curl_cffi==0.15.0
 distro==1.9.0
 dnspython==2.8.0
 ecdsa==0.19.2
@@ -101,6 +103,7 @@ referencing==0.37.0
 regex==2026.4.4
 requests==2.33.1
 requests-oauthlib==2.0.0
+requests-toolbelt==1.0.0
 rich==14.3.3
 rpds-py==0.30.0
 rsa==4.9.1

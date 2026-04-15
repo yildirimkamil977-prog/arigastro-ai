@@ -107,7 +107,12 @@ export default function ProductsPage() {
       if (data.akakce_result?.success) {
         toast.success("Akakce eslesmesi bulundu!");
       } else {
-        toast.warning(data.akakce_result?.error || "Esleme bulunamadi");
+        const err = data.akakce_result?.error || "Esleme bulunamadi";
+        if (err.includes("403")) {
+          toast.error("Akakce Cloudflare korumasi aktif. Proxy ayari gerekli.", { duration: 5000 });
+        } else {
+          toast.warning(err);
+        }
       }
       fetchProducts();
     } catch (err) {

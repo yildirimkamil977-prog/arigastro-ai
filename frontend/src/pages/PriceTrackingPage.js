@@ -44,7 +44,11 @@ export default function PriceTrackingPage() {
     setBulkChecking(true);
     try {
       const { data } = await axios.post(`${API}/products/bulk-check-akakce`, {}, { headers: getAuthHeaders(), withCredentials: true });
-      toast.success(`${data.checked} urun kontrol edildi. ${data.matched} eslesti, ${data.failed} basarisiz.`);
+      if (data.error) {
+        toast.warning(data.error);
+      } else {
+        toast.success(`${data.checked} urun kontrol edildi (${data.tracked_categories} aktif kategori). ${data.matched} eslesti, ${data.failed} basarisiz.`);
+      }
       fetchData();
     } catch (err) {
       toast.error("Toplu kontrol basarisiz");
@@ -59,7 +63,7 @@ export default function PriceTrackingPage() {
         <div>
           <h2 className="text-2xl font-bold tracking-tight text-slate-900 font-heading">Fiyat Takip</h2>
           <p className="text-sm text-slate-500 mt-1">
-            Akakce uzerindeki rakip fiyatlarini karsilastirin
+            Sadece <strong>aktif kategorilerdeki</strong> urunler Akakce uzerinden kontrol edilir
           </p>
         </div>
         <Button
@@ -74,6 +78,24 @@ export default function PriceTrackingPage() {
       </div>
 
       {/* Filters */}
+      <Card className="border-amber-200 bg-amber-50/50 shadow-sm">
+        <CardContent className="py-3 px-4">
+          <div className="flex items-start gap-3">
+            <div className="w-6 h-6 rounded bg-amber-200 flex items-center justify-center flex-shrink-0 mt-0.5">
+              <TrendingDown className="h-3.5 w-3.5 text-amber-700" />
+            </div>
+            <div className="text-xs text-amber-800">
+              <p className="font-semibold">Akakce Entegrasyonu Bilgilendirme</p>
+              <p className="mt-0.5">
+                Akakce Cloudflare bot korumasi kullanmaktadir. Bu sunucunun datacenter IP'si engellenmektedir.
+                Sistemi kendi sunucunuza (residential IP) deploy ettiginizde veya backend .env dosyasina <code className="bg-amber-100 px-1 rounded">AKAKCE_PROXY</code> ekledignizde tam calısır.
+                curl_cffi + Chrome impersonation altyapisi hazirdir.
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
         <Tabs value={filter} onValueChange={(v) => { setFilter(v); setPage(1); }}>
           <TabsList className="bg-slate-100">

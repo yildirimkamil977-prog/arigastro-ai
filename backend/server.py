@@ -420,134 +420,116 @@ async def feed_status(user: dict = Depends(get_current_user)):
         "products_without_price": unpriced,
     }
 
-# ============ AKAKCE SCRAPING ============
-
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
-]
+# ============ AKAKCE SCRAPING (curl_cffi + proxy support) ============
 
 AKAKCE_SEARCH_URL = "https://www.akakce.com/arama/?q={query}"
+AKAKCE_PROXY = os.environ.get("AKAKCE_PROXY", "")  # Optional: http://user:pass@proxy:port
 
-def get_akakce_headers():
-    return {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-        "Upgrade-Insecure-Requests": "1",
-        "Cache-Control": "max-age=0",
-        "Connection": "keep-alive",
-        "Referer": "https://www.google.com/",
-    }
+def akakce_request(url: str):
+    """Make request to Akakçe using curl_cffi with Chrome impersonation (bypasses Cloudflare TLS fingerprinting)."""
+    try:
+        from curl_cffi import requests as cffi_requests
+        kwargs = {"impersonate": "chrome", "timeout": 15}
+        if AKAKCE_PROXY:
+            kwargs["proxies"] = {"http": AKAKCE_PROXY, "https": AKAKCE_PROXY}
+        resp = cffi_requests.get(url, **kwargs)
+        return resp
+    except ImportError:
+        logger.warning("curl_cffi not installed, falling back to httpx")
+        import httpx as httpx_sync
+        resp = httpx_sync.get(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        }, timeout=15, follow_redirects=True)
+        return resp
 
-async def search_akakce(product_name: str) -> dict:
-    """Search Akakçe for a product and extract prices with improved anti-bot evasion."""
+def search_akakce_sync(product_name: str) -> dict:
+    """Search Akakçe for a product. Uses curl_cffi with Chrome impersonation."""
     try:
         search_query = product_name.replace(" ", "+")
         url = AKAKCE_SEARCH_URL.format(query=search_query)
         
-        async with httpx.AsyncClient(
-            timeout=20.0,
-            follow_redirects=True,
-            http2=True,
-        ) as http_client:
-            # First visit homepage to get cookies
-            try:
-                home_resp = await http_client.get("https://www.akakce.com/", headers=get_akakce_headers())
-                await asyncio.sleep(random.uniform(1, 2))
-            except Exception:
-                pass
-            
-            # Now search
-            headers = get_akakce_headers()
-            headers["Referer"] = "https://www.akakce.com/"
-            headers["Sec-Fetch-Site"] = "same-origin"
-            resp = await http_client.get(url, headers=headers)
-            
-            if resp.status_code == 403:
-                return {"success": False, "error": "Akakce bot korumasi aktif (403). Proxy gerekli olabilir.", "competitors": [], "search_url": url}
-            if resp.status_code != 200:
-                return {"success": False, "error": f"HTTP {resp.status_code}", "competitors": [], "search_url": url}
+        resp = akakce_request(url)
         
-        soup = BeautifulSoup(resp.text, "html.parser")
+        if resp.status_code == 403:
+            return {
+                "success": False,
+                "error": "Akakce Cloudflare korumasi (403). Bu sunucunun IP'si datacenter IP olarak engelleniyor. Cozum: AKAKCE_PROXY env degiskeniyle bir residential proxy ekleyin veya sistemi kendi sunucunuza deploy edin.",
+                "competitors": [],
+                "search_url": url,
+            }
+        if resp.status_code != 200:
+            return {"success": False, "error": f"HTTP {resp.status_code}", "competitors": [], "search_url": url}
+        
+        soup = BeautifulSoup(resp.content if hasattr(resp, 'content') else resp.text, "html.parser")
         results = []
         
-        # Akakçe search results - try multiple selector strategies
-        selectors_to_try = [
-            "li[class]", "div.p", "li.p", ".prc_list li",
-            "[class*='product']", "[class*='result']",
-            "ul li[onclick]", "div[data-id]",
-        ]
-        
-        for selector in selectors_to_try:
-            items = soup.select(selector)
-            for item in items[:15]:
-                try:
-                    text = item.get_text(" ", strip=True)
-                    # Find price in Turkish format
-                    price_matches = re.findall(r'([\d.]+,\d{2})\s*TL', text)
-                    if not price_matches:
-                        price_matches = re.findall(r'₺\s*([\d.,]+)', text)
-                    
-                    if price_matches:
-                        price = parse_turkish_price(price_matches[0] + " TL")
-                        if price and price > 1:
-                            # Try to get product name
-                            name_el = item.select_one("a[title], h3, h2, .pn, span.pn")
-                            name = name_el.get_text(strip=True) if name_el else ""
-                            if not name:
-                                # Take first meaningful text
-                                name = text[:80].split("TL")[0].strip()
-                                name = re.sub(r'[\d.,]+$', '', name).strip()
-                            
-                            link = item.select_one("a[href]")
-                            href = link.get("href", "") if link else ""
-                            if href and not href.startswith("http"):
-                                href = f"https://www.akakce.com{href}"
-                            
-                            if name and len(name) > 3:
-                                results.append({"name": name[:120], "price": price, "url": href})
-                except Exception:
+        # Strategy 1: Find product cards with links and prices (Akakçe typical structure)
+        for a_tag in soup.select("a[href*='/en-ucuz-']"):
+            try:
+                title = a_tag.get("title", "") or a_tag.get_text(strip=True)
+                parent = a_tag.find_parent("li") or a_tag.find_parent("div")
+                if not parent:
                     continue
-            if results:
-                break
+                text = parent.get_text(" ", strip=True)
+                price_matches = re.findall(r'([\d.]+)\s*,(\d{2})\s*TL', text)
+                if price_matches:
+                    price_str = price_matches[0][0].replace(".", "") + "." + price_matches[0][1]
+                    price = float(price_str)
+                    href = a_tag.get("href", "")
+                    if href and not href.startswith("http"):
+                        href = f"https://www.akakce.com{href}"
+                    if price > 1 and title and len(title) > 3:
+                        results.append({"name": title[:120], "price": price, "url": href})
+            except Exception:
+                continue
         
-        # Fallback: search entire page for price patterns
+        # Strategy 2: Product detail page price selectors (from user's bot)
+        if not results:
+            for cls in ["pt_v8", "ps_v8", "pr_v8"]:
+                el = soup.find("span", class_=cls)
+                if el:
+                    price = parse_turkish_price(el.text + " TL")
+                    h1 = soup.find("h1")
+                    name = h1.get_text(strip=True) if h1 else "Akakce urun"
+                    if price and price > 1:
+                        results.append({"name": name[:120], "price": price, "url": url})
+        
+        # Strategy 3: Fallback - find all TL prices on page
         if not results:
             page_text = soup.get_text()
-            price_matches = re.findall(r'([\d.]+,\d{2})\s*TL', page_text)
+            price_matches = re.findall(r'([\d.]+)\s*,(\d{2})\s*TL', page_text)
             for pm in price_matches[:5]:
-                price = parse_turkish_price(pm + " TL")
-                if price and price > 1:
-                    results.append({"name": "Akakce sonucu", "price": price, "url": url})
+                price_str = pm[0].replace(".", "") + "." + pm[1]
+                try:
+                    price = float(price_str)
+                    if price > 1:
+                        results.append({"name": "Akakce sonucu", "price": price, "url": url})
+                except (ValueError, TypeError):
+                    continue
         
-        # Deduplicate by price
-        seen_prices = set()
-        unique_results = []
+        # Deduplicate
+        seen = set()
+        unique = []
         for r in results:
-            if r["price"] not in seen_prices:
-                seen_prices.add(r["price"])
-                unique_results.append(r)
+            key = f"{r['name'][:30]}_{r['price']}"
+            if key not in seen:
+                seen.add(key)
+                unique.append(r)
         
         return {
-            "success": len(unique_results) > 0,
+            "success": len(unique) > 0,
             "search_url": url,
-            "competitors": sorted(unique_results, key=lambda x: x["price"])[:10],
-            "error": None if unique_results else "Sonuc bulunamadi veya sayfa yapisi degisti"
+            "competitors": sorted(unique, key=lambda x: x["price"])[:10],
+            "error": None if unique else "Sonuc bulunamadi",
         }
-    except httpx.TimeoutException:
-        return {"success": False, "error": "Zaman asimi - Akakce yanitlamiyor", "competitors": [], "search_url": ""}
     except Exception as e:
-        logger.error(f"Akakçe search error: {e}")
+        logger.error(f"Akakce search error: {e}")
         return {"success": False, "error": str(e), "competitors": [], "search_url": ""}
+
+async def search_akakce(product_name: str) -> dict:
+    """Async wrapper for Akakçe search (curl_cffi is sync)."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, search_akakce_sync, product_name)
 
 def parse_turkish_price(text: str) -> Optional[float]:
     """Parse Turkish price format: 1.234,56 TL -> 1234.56"""
@@ -810,17 +792,32 @@ async def bulk_update_prices(data: BulkPriceUpdate, user: dict = Depends(get_cur
 
 @api_router.post("/products/bulk-check-akakce")
 async def bulk_check_akakce(user: dict = Depends(get_current_user)):
-    """Check Akakçe prices for all tracked products. Rate limited."""
-    tracked = await db.products.find({"is_tracked": True}, {"_id": 0, "slug": 1, "name": 1}).to_list(100)
-    results = {"checked": 0, "matched": 0, "failed": 0}
+    """Check Akakçe prices for products in TRACKED CATEGORIES only. Rate limited."""
+    # Get tracked category names
+    tracked_cats = await db.categories.find({"is_tracked": True}, {"_id": 0, "name": 1, "slug": 1}).to_list(500)
+    if not tracked_cats:
+        return {"checked": 0, "matched": 0, "failed": 0, "error": "Aktif kategori yok. Once Kategoriler sayfasindan takip edilecek kategorileri secin."}
     
-    for product in tracked[:20]:  # Limit to 20 per batch to avoid blocking
+    # Build regex pattern from tracked category names
+    cat_names = [c["name"] for c in tracked_cats]
+    cat_regex = "|".join([re.escape(name) for name in cat_names])
+    
+    # Find products whose category_path matches any tracked category
+    products = await db.products.find(
+        {"category_path": {"$regex": cat_regex, "$options": "i"}, "our_price": {"$ne": None}},
+        {"_id": 0, "slug": 1, "name": 1}
+    ).limit(20).to_list(20)
+    
+    results = {"checked": 0, "matched": 0, "failed": 0, "total_in_tracked_cats": len(products), "tracked_categories": len(tracked_cats)}
+    
+    for product in products:
         try:
             result = await search_akakce(product["name"])
             update_data = {
                 "last_price_check": datetime.now(timezone.utc).isoformat(),
                 "akakce_matched": result["success"],
-                "updated_at": datetime.now(timezone.utc).isoformat()
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "is_tracked": True,
             }
             if result["success"] and result["competitors"]:
                 cheapest = result["competitors"][0]
@@ -840,8 +837,8 @@ async def bulk_check_akakce(user: dict = Depends(get_current_user)):
             await db.products.update_one({"slug": product["slug"]}, {"$set": update_data})
             results["checked"] += 1
             
-            # Rate limiting - wait between requests
-            await asyncio.sleep(3)
+            # Rate limiting - wait between requests (matching user's bot: 5-8 seconds)
+            await asyncio.sleep(random.uniform(5, 8))
         except Exception as e:
             logger.error(f"Bulk check error for {product['slug']}: {e}")
             results["failed"] += 1
