@@ -83,9 +83,9 @@ export default function SettingsPage() {
             </div>
             <div className="bg-slate-50 rounded-lg p-3">
               <p className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">ScraperAPI</p>
-              <p className="text-sm text-slate-900 mt-1">
+              <div className="text-sm text-slate-900 mt-1">
                 {feedStatus?.feed_url ? <Badge className="bg-emerald-100 text-emerald-700 border-0 text-[10px]">Aktif</Badge> : <Badge variant="outline" className="text-[10px]">Yapilandirilmamis</Badge>}
-              </p>
+              </div>
             </div>
           </div>
         </CardContent>
