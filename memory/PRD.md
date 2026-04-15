@@ -28,10 +28,12 @@ Turkish (Tüm UI metinleri Türkçe)
 4. **AI Product Matching** - Google SERP via ScraperAPI + GPT-4o for Akakçe matching
 5. **Price Tracking** - Bulk and single product Akakçe price checking
 6. **SEO Generator** - Scrapes product specs, generates SEO content with GPT-4o
-7. **Dashboard** - Stats overview with price alerts
-8. **Settings Page** - System status, scheduler status, API keys
-9. **Guide Page** - Step-by-step system usage guide
+7. **Dashboard** - Stats overview with price alerts + ScraperAPI credit tracking
+8. **Settings Page** - System status, scheduler status, API keys, User Management (CRUD)
+9. **Guide Page** - Step-by-step system usage guide (5 steps)
 10. **Automated Scheduler** - APScheduler: Feed sync (12h), Price check (24h)
+11. **ScraperAPI Credit Tracking** - Dashboard card showing used/remaining credits with progress bar
+12. **User Management** - Create, list, change password, delete users (with self-delete protection)
 
 ## Key Credentials
 - Admin: arigastro / Arigastro2026!
@@ -45,17 +47,20 @@ Turkish (Tüm UI metinleri Türkçe)
 /app/frontend/src/pages/   - All page components
 ```
 
-## Completed Tasks
-- JWT Auth & admin seeding
-- Google Merchant XML feed integration
-- ScraperAPI integration for Cloudflare bypass
-- Google Structured SERP API for AI matching
-- Background Tasks for bulk operations
-- SEO Generator with specs scraping
-- Settings page with live scheduler status
-- Guide page with 5-step instructions
-- APScheduler: 12h feed sync + 24h price check
+## API Endpoints
+- POST /api/auth/login, GET /api/auth/me, POST /api/auth/logout
+- GET /api/categories, PUT /api/categories/{slug}/toggle-tracking
+- GET /api/products, PUT /api/products/{slug}
+- POST /api/products/bulk-ai-match, GET /api/products/ai-match-status
+- POST /api/products/bulk-check-akakce, GET /api/products/price-check-status
+- POST /api/products/{slug}/check-akakce, POST /api/products/{slug}/set-akakce-match
+- POST /api/feed/sync-prices, GET /api/feed/status
+- POST /api/seo/generate/{slug}, GET /api/seo/{slug}
+- GET /api/dashboard/stats
+- GET /api/scraperapi/account
+- GET /api/users, POST /api/users, PUT /api/users/{username}/password, DELETE /api/users/{username}
+- GET /api/scheduler/status
 
 ## Remaining/Backlog (P2)
-- User Management in Settings page
-- Manual Match Flow validation (pencil icon -> Akakçe URL -> immediate price check)
+- Manuel eşleştirme akışı doğrulama (pencil icon -> Akakçe URL -> immediate price check)
+- Fiyat değişiklik bildirimleri (e-posta/Telegram)
