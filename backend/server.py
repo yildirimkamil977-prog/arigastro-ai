@@ -1486,6 +1486,94 @@ async def get_scheduler_status(user: dict = Depends(get_current_user)):
         "price_check_last": price_check,
     }
 
+# ============ SCRAPERAPI ACCOUNT ============
+
+@api_router.get("/scraperapi/account")
+async def get_scraperapi_account(user: dict = Depends(get_current_user)):
+    """Get ScraperAPI account info (credits, usage)."""
+    if not SCRAPERAPI_KEY:
+        return {"error": "ScraperAPI key yapilandirilmamis", "configured": False}
+    try:
+        import requests as req_sync
+        resp = req_sync.get(f"http://api.scraperapi.com/account?api_key={SCRAPERAPI_KEY}", timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            return {
+                "configured": True,
+                "request_count": data.get("requestCount", 0),
+                "request_limit": data.get("requestLimit", 0),
+                "concurrent_limit": data.get("concurrencyLimit", 0),
+                "failed_request_count": data.get("failedRequestCount", 0),
+            }
+        return {"configured": True, "error": f"HTTP {resp.status_code}"}
+    except Exception as e:
+        logger.error(f"ScraperAPI account error: {e}")
+        return {"configured": True, "error": str(e)}
+
+# ============ USER MANAGEMENT ============
+
+class CreateUserRequest(BaseModel):
+    username: str
+    password: str
+    name: Optional[str] = ""
+    role: Optional[str] = "admin"
+
+class ChangePasswordRequest(BaseModel):
+    new_password: str
+
+@api_router.get("/users")
+async def list_users(user: dict = Depends(get_current_user)):
+    """List all users."""
+    users = await db.users.find({}, {"_id": 0, "password_hash": 0}).sort("username", 1).to_list(100)
+    # Add string id from username for frontend
+    for u in users:
+        u["id"] = u["username"]
+    return users
+
+@api_router.post("/users")
+async def create_user(req: CreateUserRequest, user: dict = Depends(get_current_user)):
+    """Create a new user."""
+    username = req.username.strip().lower()
+    if not username or len(username) < 3:
+        raise HTTPException(status_code=400, detail="Kullanici adi en az 3 karakter olmali")
+    if not req.password or len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="Sifre en az 6 karakter olmali")
+    existing = await db.users.find_one({"username": username})
+    if existing:
+        raise HTTPException(status_code=400, detail="Bu kullanici adi zaten mevcut")
+    await db.users.insert_one({
+        "username": username,
+        "password_hash": hash_password(req.password),
+        "name": req.name or username,
+        "role": req.role or "admin",
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+    return {"username": username, "name": req.name or username, "role": req.role, "message": "Kullanici olusturuldu"}
+
+@api_router.put("/users/{username}/password")
+async def change_user_password(username: str, req: ChangePasswordRequest, user: dict = Depends(get_current_user)):
+    """Change a user's password."""
+    if not req.new_password or len(req.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Sifre en az 6 karakter olmali")
+    target = await db.users.find_one({"username": username.lower()})
+    if not target:
+        raise HTTPException(status_code=404, detail="Kullanici bulunamadi")
+    await db.users.update_one({"username": username.lower()}, {"$set": {"password_hash": hash_password(req.new_password)}})
+    return {"message": "Sifre guncellendi", "username": username}
+
+@api_router.delete("/users/{username}")
+async def delete_user(username: str, user: dict = Depends(get_current_user)):
+    """Delete a user. Cannot delete yourself."""
+    if username.lower() == user["username"].lower():
+        raise HTTPException(status_code=400, detail="Kendinizi silemezsiniz")
+    total_users = await db.users.count_documents({})
+    if total_users <= 1:
+        raise HTTPException(status_code=400, detail="Son kullaniciyi silemezsiniz")
+    result = await db.users.delete_one({"username": username.lower()})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Kullanici bulunamadi")
+    return {"message": "Kullanici silindi", "username": username}
+
 # ============ ROOT ============
 
 @api_router.get("/")

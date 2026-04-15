@@ -3,17 +3,22 @@ import axios from "axios";
 import { getAuthHeaders, API } from "../context/AuthContext";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
-import { Package, Tags, TrendingDown, TrendingUp, FileText, AlertTriangle, ArrowRight } from "lucide-react";
+import { Package, Tags, TrendingDown, TrendingUp, FileText, AlertTriangle, ArrowRight, Zap } from "lucide-react";
 import { Link } from "react-router-dom";
 
 export default function DashboardPage() {
   const [stats, setStats] = useState(null);
+  const [scraperApi, setScraperApi] = useState(null);
   const [loading, setLoading] = useState(true);
 
   const fetchStats = async () => {
     try {
-      const { data } = await axios.get(`${API}/dashboard/stats`, { headers: getAuthHeaders(), withCredentials: true });
-      setStats(data);
+      const [statsRes, scraperRes] = await Promise.all([
+        axios.get(`${API}/dashboard/stats`, { headers: getAuthHeaders(), withCredentials: true }),
+        axios.get(`${API}/scraperapi/account`, { headers: getAuthHeaders(), withCredentials: true }).catch(() => ({ data: {} })),
+      ]);
+      setStats(statsRes.data);
+      setScraperApi(scraperRes.data);
     } catch (err) {
       console.error("Dashboard stats error:", err);
     } finally {
@@ -23,7 +28,6 @@ export default function DashboardPage() {
 
   useEffect(() => {
     fetchStats();
-    // Refresh every 30 seconds when page is visible
     const interval = setInterval(fetchStats, 30000);
     return () => clearInterval(interval);
   }, []);
@@ -51,6 +55,11 @@ export default function DashboardPage() {
     { label: "SEO Uretilmis", value: stats?.seo_generated || 0, icon: FileText, color: "text-violet-700", bg: "bg-violet-50" },
     { label: "Kategoriler", value: `${stats?.tracked_categories || 0}/${stats?.total_categories || 0}`, icon: Tags, color: "text-teal-700", bg: "bg-teal-50" },
   ];
+
+  const creditUsed = scraperApi?.request_count || 0;
+  const creditLimit = scraperApi?.request_limit || 0;
+  const creditRemaining = creditLimit - creditUsed;
+  const creditPercent = creditLimit > 0 ? Math.round((creditUsed / creditLimit) * 100) : 0;
 
   return (
     <div className="space-y-6" data-testid="dashboard-page">
@@ -91,6 +100,54 @@ export default function DashboardPage() {
           </Card>
         ))}
       </div>
+
+      {/* ScraperAPI Credits */}
+      {scraperApi?.configured && !scraperApi?.error && (
+        <Card className="border-slate-200 shadow-sm" data-testid="scraperapi-credits-card">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-base font-semibold tracking-tight font-heading flex items-center gap-2">
+                <Zap className="h-4 w-4 text-amber-500" />
+                ScraperAPI Kredi Durumu
+              </CardTitle>
+              <a href="https://dashboard.scraperapi.com" target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline flex items-center gap-1" data-testid="scraperapi-dashboard-link">
+                Dashboard <ArrowRight className="h-3 w-3" />
+              </a>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-slate-600">Kullanilan / Toplam</span>
+                <span className="text-sm font-semibold text-slate-900" data-testid="scraperapi-credits-text">
+                  {creditUsed.toLocaleString('tr-TR')} / {creditLimit.toLocaleString('tr-TR')}
+                </span>
+              </div>
+              <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-500 ${creditPercent > 80 ? 'bg-red-500' : creditPercent > 50 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                  style={{ width: `${Math.min(creditPercent, 100)}%` }}
+                  data-testid="scraperapi-credits-bar"
+                />
+              </div>
+              <div className="flex items-center justify-between text-xs text-slate-500">
+                <span>Kalan: <strong className={creditRemaining < 500 ? "text-red-600" : "text-emerald-600"}>{creditRemaining.toLocaleString('tr-TR')}</strong> kredi</span>
+                <span>%{creditPercent} kullanildi</span>
+              </div>
+              {scraperApi?.failed_request_count > 0 && (
+                <div className="text-xs text-orange-600">
+                  Basarisiz istek: {scraperApi.failed_request_count.toLocaleString('tr-TR')}
+                </div>
+              )}
+              {scraperApi?.concurrent_limit > 0 && (
+                <div className="text-xs text-slate-400">
+                  Eslzamanli istek limiti: {scraperApi.concurrent_limit}
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Recent Alerts */}
       <Card className="border-slate-200 shadow-sm">
