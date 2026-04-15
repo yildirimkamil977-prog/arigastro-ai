@@ -706,63 +706,70 @@ async def check_akakce_price(slug: str, user: dict = Depends(get_current_user)):
 
 async def fetch_akakce_product_page(url: str) -> dict:
     """Fetch and parse an Akakçe product detail page to extract all seller prices."""
-    try:
-        loop = asyncio.get_event_loop()
-        resp = await loop.run_in_executor(None, lambda: akakce_request(url))
-        
-        if resp.status_code == 403:
-            return {"success": False, "error": "Akakce Cloudflare korumasi (403).", "sellers": []}
-        if resp.status_code in [410, 404]:
-            return {"success": False, "error": f"Sayfa bulunamadi (HTTP {resp.status_code}). URL gecersiz olabilir.", "sellers": []}
-        if resp.status_code != 200:
-            return {"success": False, "error": f"HTTP {resp.status_code}", "sellers": []}
-        
-        soup = BeautifulSoup(resp.content if hasattr(resp, 'content') else resp.text, "html.parser")
-        
-        product_name = ""
-        h1 = soup.find("h1")
-        if h1:
-            product_name = h1.get_text(strip=True)
-        
-        # Extract seller names from v_v8 class spans
-        seller_names = []
-        for el in soup.find_all("span", class_="v_v8"):
-            text = el.get_text(strip=True)
-            # Skip header seller label (starts with "Satıcı:")
-            if text.startswith("Satıcı:"):
+    for attempt in range(2):  # Retry once on failure
+        try:
+            loop = asyncio.get_event_loop()
+            resp = await loop.run_in_executor(None, lambda: akakce_request(url))
+            
+            if resp.status_code == 403:
+                return {"success": False, "error": "Cloudflare 403", "sellers": []}
+            if resp.status_code in [410, 404, 500] and attempt == 0:
+                await asyncio.sleep(3)
+                continue  # Retry
+            if resp.status_code != 200:
+                return {"success": False, "error": f"HTTP {resp.status_code}", "sellers": []}
+            
+            soup = BeautifulSoup(resp.content if hasattr(resp, 'content') else resp.text, "html.parser")
+            
+            product_name = ""
+            h1 = soup.find("h1")
+            if h1:
+                product_name = h1.get_text(strip=True)
+            
+            # Extract seller names from v_v8 class spans
+            seller_names = []
+            for el in soup.find_all("span", class_="v_v8"):
+                text = el.get_text(strip=True)
+                if text.startswith("Satıcı:") or text.startswith("Satıcı :"):
+                    continue
+                text = text.strip().strip("/")
+                if text and len(text) > 2 and len(text) < 60:
+                    seller_names.append(text)
+            
+            # Extract prices from pb_v8 class spans
+            prices = []
+            for span in soup.find_all("span", class_="pb_v8"):
+                text = span.get_text(strip=True)
+                match = re.match(r'([\d.]+,\d{2})\s*TL', text)
+                if match:
+                    price_str = match.group(1)
+                    price = float(price_str.replace(".", "").replace(",", "."))
+                    if price > 1:
+                        prices.append(price)
+            
+            # Deduplicate prices (sometimes same price appears twice)
+            unique_prices = list(dict.fromkeys(prices))
+            
+            # Pair sellers with prices
+            sellers = []
+            for i in range(min(len(seller_names), len(unique_prices))):
+                sellers.append({"seller": seller_names[i], "price": unique_prices[i]})
+            
+            sellers.sort(key=lambda x: x["price"])
+            
+            if sellers:
+                return {"success": True, "product_name": product_name, "sellers": sellers, "error": None}
+            elif attempt == 0:
+                await asyncio.sleep(3)
+                continue  # Retry
+            else:
+                return {"success": False, "product_name": product_name, "sellers": [], "error": "Satici bilgisi okunamadi"}
+        except Exception as e:
+            if attempt == 0:
+                await asyncio.sleep(3)
                 continue
-            text = text.strip().strip("/")
-            if text and len(text) > 2 and len(text) < 60:
-                seller_names.append(text)
-        
-        # Extract prices from pb_v8 class spans (these are the main listing prices)
-        prices = []
-        for span in soup.find_all("span", class_="pb_v8"):
-            text = span.get_text(strip=True)
-            match = re.match(r'([\d.]+,\d{2})\s*TL', text)
-            if match:
-                price_str = match.group(1)
-                price = float(price_str.replace(".", "").replace(",", "."))
-                if price > 1:
-                    prices.append(price)
-        
-        # Pair sellers with prices (they appear in the same order)
-        sellers = []
-        for i in range(min(len(seller_names), len(prices))):
-            sellers.append({"seller": seller_names[i], "price": prices[i]})
-        
-        # Sort by price
-        sellers.sort(key=lambda x: x["price"])
-        
-        return {
-            "success": len(sellers) > 0,
-            "product_name": product_name,
-            "sellers": sellers,
-            "error": None if sellers else "Satici bilgisi okunamadi"
-        }
-    except Exception as e:
-        logger.error(f"Akakce product page error: {e}")
-        return {"success": False, "error": str(e), "sellers": []}
+            logger.error(f"Akakce product page error: {e}")
+            return {"success": False, "error": str(e), "sellers": []}
 
 # ============ AI-POWERED PRODUCT MATCHING ============
 
@@ -1249,7 +1256,7 @@ async def run_bulk_price_check(cat_regex: str):
                 await db.products.update_one({"slug": product["slug"]}, {"$set": update_data})
                 checked += 1
                 await db.system_status.update_one({"task": "price_check"}, {"$set": {"checked": checked, "success": success, "failed": failed}})
-                await asyncio.sleep(random.uniform(5, 10))
+                await asyncio.sleep(random.uniform(3, 6))
             except Exception as e:
                 logger.error(f"Price check error for {product.get('slug','?')}: {e}")
                 failed += 1
