@@ -492,15 +492,14 @@ AKAKCE_PROXY = os.environ.get("AKAKCE_PROXY", "")
 SCRAPERAPI_KEY = os.environ.get("SCRAPERAPI_KEY", "")
 
 def akakce_request(url: str):
-    """Make request to Akakçe via ScraperAPI with Cloudflare bypass."""
+    """Make request to Akakçe via ScraperAPI."""
     import requests as req_sync
     
-    # ScraperAPI with render + premium for Cloudflare bypass
+    # ScraperAPI (simple mode - no render/premium needed for Akakce)
     if SCRAPERAPI_KEY:
         try:
             resp = req_sync.get("http://api.scraperapi.com", params={
-                "api_key": SCRAPERAPI_KEY, "url": url, "country_code": "tr",
-                "render": "true", "premium": "true",
+                "api_key": SCRAPERAPI_KEY, "url": url,
             }, timeout=90)
             if resp.status_code == 200:
                 logger.info(f"ScraperAPI basarili: {url[:60]}")
@@ -600,8 +599,6 @@ def search_akakce_via_google(product_name: str) -> dict:
         resp = req_sync.get("https://api.scraperapi.com/structured/google/search", params={
             "api_key": SCRAPERAPI_KEY,
             "query": query,
-            "country_code": "tr",
-            "tld": "com.tr",
             "num": "10",
         }, timeout=60)
         
