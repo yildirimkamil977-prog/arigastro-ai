@@ -265,6 +265,20 @@ export default function ProductsPage() {
                               <Pencil className="h-3 w-3" />
                             </button>
                           </div>
+                        ) : p.akakce_match_confidence === "not_found" ? (
+                          <div className="flex items-center gap-1.5">
+                            <Badge className="bg-orange-100 text-orange-700 border-0 text-[10px]">Bulunamadi</Badge>
+                            <button onClick={() => openMatchDialog(p)} className="text-blue-500 hover:text-blue-700">
+                              <Pencil className="h-3 w-3" />
+                            </button>
+                          </div>
+                        ) : p.akakce_match_confidence === "ai_uncertain" ? (
+                          <div className="flex items-center gap-1.5">
+                            <Badge className="bg-amber-100 text-amber-700 border-0 text-[10px]">Belirsiz</Badge>
+                            <button onClick={() => openMatchDialog(p)} className="text-blue-500 hover:text-blue-700">
+                              <Pencil className="h-3 w-3" />
+                            </button>
+                          </div>
                         ) : (
                           <button
                             onClick={() => openMatchDialog(p)}

@@ -432,39 +432,53 @@ async def feed_status(user: dict = Depends(get_current_user)):
         "products_without_price": unpriced,
     }
 
-# ============ AKAKCE SCRAPING (curl_cffi + proxy support) ============
+# ============ AKAKCE SCRAPING (curl_cffi + ScraperAPI + proxy) ============
 
 AKAKCE_SEARCH_URL = "https://www.akakce.com/arama/?q={query}"
-AKAKCE_PROXY = os.environ.get("AKAKCE_PROXY", "")  # Optional: http://user:pass@proxy:port
+AKAKCE_PROXY = os.environ.get("AKAKCE_PROXY", "")
+SCRAPERAPI_KEY = os.environ.get("SCRAPERAPI_KEY", "")
 
 def akakce_request(url: str):
-    """Make request to Akakçe using curl_cffi with Chrome impersonation + proxy + anti-detection."""
+    """Make request to Akakçe. Tries: 1) ScraperAPI 2) curl_cffi+proxy 3) curl_cffi direct."""
+    
+    # Method 1: ScraperAPI (most reliable for VPS)
+    if SCRAPERAPI_KEY:
+        try:
+            import httpx as httpx_sync
+            api_url = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={url}&country_code=tr"
+            resp = httpx_sync.get(api_url, timeout=30, follow_redirects=True)
+            if resp.status_code == 200:
+                return resp
+            logger.warning(f"ScraperAPI returned {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"ScraperAPI error: {e}")
+    
+    # Method 2: curl_cffi with proxy or direct
     try:
         from curl_cffi import requests as cffi_requests
         kwargs = {
             "impersonate": random.choice(["chrome", "chrome110", "chrome120"]),
-            "timeout": 8,
+            "timeout": 10,
         }
         if AKAKCE_PROXY:
             kwargs["proxies"] = {"http": AKAKCE_PROXY, "https": AKAKCE_PROXY}
         resp = cffi_requests.get(url, **kwargs)
         return resp
     except ImportError:
-        logger.warning("curl_cffi not installed, falling back to httpx")
         import httpx as httpx_sync
         resp = httpx_sync.get(url, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-        }, timeout=8, follow_redirects=True)
+        }, timeout=10, follow_redirects=True)
         return resp
 
-# Cache the Cloudflare block status to avoid repeated slow failures
+# Cache the block status to avoid repeated slow failures
 _akakce_blocked = {"status": None, "checked_at": None}
 
 def is_akakce_blocked() -> bool:
-    """Check if Akakçe is blocking us. Cache for 5 minutes."""
+    """Check if Akakçe is blocking us. Cache for 10 minutes."""
     if _akakce_blocked["status"] is not None and _akakce_blocked["checked_at"]:
         elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(_akakce_blocked["checked_at"])).total_seconds()
-        if elapsed < 300:  # 5 min cache
+        if elapsed < 600:
             return _akakce_blocked["status"]
     try:
         resp = akakce_request("https://www.akakce.com/")
@@ -476,6 +490,11 @@ def is_akakce_blocked() -> bool:
         _akakce_blocked["status"] = True
         _akakce_blocked["checked_at"] = datetime.now(timezone.utc).isoformat()
         return True
+
+def get_akakce_access_error() -> str:
+    if not SCRAPERAPI_KEY and not AKAKCE_PROXY:
+        return "Akakce'ye erisim engellendi (Cloudflare 403). Cozum: ScraperAPI ucretsiz hesap acin (scraperapi.com), API key'i backend .env dosyasina SCRAPERAPI_KEY olarak ekleyin."
+    return "Akakce'ye erisim engellendi (Cloudflare 403). Proxy/ScraperAPI ayarlarinizi kontrol edin."
 
 def search_akakce_sync(product_name: str) -> dict:
     """Search Akakçe for a product. Uses curl_cffi with Chrome impersonation."""
@@ -1089,7 +1108,7 @@ async def bulk_check_akakce(user: dict = Depends(get_current_user)):
     loop = asyncio.get_event_loop()
     blocked = await loop.run_in_executor(None, is_akakce_blocked)
     if blocked:
-        return {"checked": 0, "success": 0, "failed": 0, "error": "Akakce su an bu sunucudan erisilemez (Cloudflare 403). Sistemi kendi sunucunuza deploy edin veya AKAKCE_PROXY ayarlayin."}
+        return {"checked": 0, "success": 0, "failed": 0, "error": get_akakce_access_error()}
     
     tracked_cats = await db.categories.find({"is_tracked": True}, {"_id": 0, "name": 1}).to_list(500)
     if not tracked_cats:
@@ -1143,7 +1162,7 @@ async def bulk_ai_match(user: dict = Depends(get_current_user)):
     loop = asyncio.get_event_loop()
     blocked = await loop.run_in_executor(None, is_akakce_blocked)
     if blocked:
-        return {"total": 0, "matched": 0, "failed": 0, "skipped": 0, "error": "Akakce su an bu sunucudan erisilemez (Cloudflare 403). Sistemi kendi sunucunuza deploy edin veya AKAKCE_PROXY ayarlayin."}
+        return {"total": 0, "matched": 0, "failed": 0, "skipped": 0, "error": get_akakce_access_error()}
     
     tracked_cats = await db.categories.find({"is_tracked": True}, {"_id": 0, "name": 1}).to_list(500)
     if not tracked_cats:
@@ -1170,6 +1189,12 @@ async def bulk_ai_match(user: dict = Depends(get_current_user)):
         try:
             search_result = search_akakce_sync(product["name"])
             if not search_result["success"] or not search_result.get("competitors"):
+                # Mark as "no match found on Akakçe"
+                await db.products.update_one({"slug": product["slug"]}, {"$set": {
+                    "akakce_matched": False, "akakce_match_confidence": "not_found",
+                    "akakce_product_name": "Akakce'de bulunamadi",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }})
                 results["failed"] += 1
                 await asyncio.sleep(random.uniform(5, 8))
                 continue
@@ -1203,6 +1228,12 @@ async def bulk_ai_match(user: dict = Depends(get_current_user)):
                 }})
                 results["matched"] += 1
             else:
+                # AI could not confidently match
+                await db.products.update_one({"slug": product["slug"]}, {"$set": {
+                    "akakce_matched": False, "akakce_match_confidence": "ai_uncertain",
+                    "akakce_product_name": "AI eslestirme basarisiz - manuel eslestirme gerekli",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }})
                 results["skipped"] += 1
             await asyncio.sleep(random.uniform(5, 8))
         except Exception as e:
