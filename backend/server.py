@@ -245,8 +245,8 @@ async def list_products(
         tracked_cats = await db.categories.find({"is_tracked": True}, {"_id": 0, "name": 1}).to_list(500)
         if tracked_cats:
             cat_names = [c["name"] for c in tracked_cats]
-            cat_regex = "|".join([re.escape(n) for n in cat_names])
-            query["category_path"] = {"$regex": cat_regex, "$options": "i"}
+            tracked_filter = build_tracked_query(cat_names)
+            query.update(tracked_filter)
         else:
             return {"products": [], "total": 0, "page": 1, "pages": 0}
     if cheaper_only:
@@ -1099,13 +1099,13 @@ async def get_seo_content(slug: str, user: dict = Depends(get_current_user)):
 async def get_dashboard_stats(user: dict = Depends(get_current_user)):
     total_products = await db.products.count_documents({})
     
-    # Count tracked = products in tracked categories
+    # Count tracked = products in tracked categories or matching brand
     tracked_cats = await db.categories.find({"is_tracked": True}, {"_id": 0, "name": 1}).to_list(500)
     tracked_products = 0
     if tracked_cats:
         cat_names = [c["name"] for c in tracked_cats]
-        cat_regex = "|".join([re.escape(n) for n in cat_names])
-        tracked_products = await db.products.count_documents({"category_path": {"$regex": cat_regex, "$options": "i"}, "our_price": {"$ne": None}})
+        tracked_filter = build_tracked_query(cat_names)
+        tracked_products = await db.products.count_documents({**tracked_filter, "our_price": {"$ne": None}})
     
     matched_products = await db.products.count_documents({"akakce_matched": True})
     unmatched = tracked_products - matched_products if tracked_products > matched_products else 0
@@ -1161,6 +1161,14 @@ async def get_dashboard_stats(user: dict = Depends(get_current_user)):
 
 # ============ PRICE TRACKING ============
 
+def build_tracked_query(cat_names: list) -> dict:
+    """Build MongoDB query that matches products by category_path OR brand name."""
+    cat_regex = "|".join([re.escape(n) for n in cat_names])
+    return {"$or": [
+        {"category_path": {"$regex": cat_regex, "$options": "i"}},
+        {"brand": {"$regex": cat_regex, "$options": "i"}},
+    ]}
+
 @api_router.get("/price-tracking")
 async def get_price_tracking(
     user: dict = Depends(get_current_user),
@@ -1185,11 +1193,10 @@ async def get_price_tracking(
     else:
         cat_names = [c["name"] for c in tracked_cats]
     
-    cat_regex = "|".join([re.escape(n) for n in cat_names])
-    
-    # Base query: products in tracked categories with prices, NOT excluded
+    # Base query: products matching category_path OR brand, with prices, NOT excluded
+    tracked_filter = build_tracked_query(cat_names)
     query = {
-        "category_path": {"$regex": cat_regex, "$options": "i"},
+        **tracked_filter,
         "our_price": {"$ne": None},
         "excluded_from_tracking": {"$ne": True},
     }
@@ -1278,10 +1285,10 @@ async def bulk_check_akakce(user: dict = Depends(get_current_user)):
         return {"started": False, "error": "Aktif kategori yok."}
     
     cat_names = [c["name"] for c in tracked_cats]
-    cat_regex = "|".join([re.escape(n) for n in cat_names])
+    tracked_filter = build_tracked_query(cat_names)
     
     count = await db.products.count_documents({
-        "category_path": {"$regex": cat_regex, "$options": "i"},
+        **tracked_filter,
         "akakce_product_url": {"$exists": True, "$ne": ""},
         "akakce_matched": True,
         "excluded_from_tracking": {"$ne": True},
@@ -1296,15 +1303,16 @@ async def bulk_check_akakce(user: dict = Depends(get_current_user)):
         upsert=True
     )
     
-    asyncio.ensure_future(run_bulk_price_check(cat_regex))
+    asyncio.ensure_future(run_bulk_price_check(cat_names))
     return {"started": True, "message": f"Fiyat kontrolu basladi. {count} eslesmis urun kontrol edilecek."}
 
-async def run_bulk_price_check(cat_regex: str):
+async def run_bulk_price_check(cat_names: list):
     """Background task for bulk price checking."""
     try:
+        tracked_filter = build_tracked_query(cat_names)
         products = await db.products.find(
             {
-                "category_path": {"$regex": cat_regex, "$options": "i"},
+                **tracked_filter,
                 "akakce_product_url": {"$exists": True, "$ne": ""},
                 "akakce_matched": True,
                 "excluded_from_tracking": {"$ne": True},
@@ -1388,11 +1396,11 @@ async def run_bulk_ai_match():
             return
         
         cat_names = [c["name"] for c in tracked_cats]
-        cat_regex = "|".join([re.escape(n) for n in cat_names])
+        tracked_filter = build_tracked_query(cat_names)
         
         products = await db.products.find(
             {
-                "category_path": {"$regex": cat_regex, "$options": "i"},
+                **tracked_filter,
                 "our_price": {"$ne": None},
                 "akakce_matched": {"$ne": True},
                 "excluded_from_tracking": {"$ne": True},
@@ -1546,10 +1554,10 @@ async def scheduled_price_check():
             logger.info("CRON: Aktif kategori yok, atlanıyor")
             return
         cat_names = [c["name"] for c in tracked_cats]
-        cat_regex = "|".join([re.escape(n) for n in cat_names])
+        tracked_filter = build_tracked_query(cat_names)
 
         count = await db.products.count_documents({
-            "category_path": {"$regex": cat_regex, "$options": "i"},
+            **tracked_filter,
             "akakce_product_url": {"$exists": True, "$ne": ""},
             "akakce_matched": True,
         })
@@ -1562,7 +1570,7 @@ async def scheduled_price_check():
             {"$set": {"running": True, "started_at": datetime.now(timezone.utc).isoformat(), "checked": 0, "success": 0, "failed": 0, "total": count, "current": 0}},
             upsert=True
         )
-        await run_bulk_price_check(cat_regex)
+        await run_bulk_price_check(cat_names)
         await db.system_status.update_one(
             {"task": "scheduled_price_check"},
             {"$set": {"last_run": datetime.now(timezone.utc).isoformat(), "products_checked": count}},
