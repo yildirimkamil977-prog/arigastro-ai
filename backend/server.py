@@ -491,44 +491,70 @@ AKAKCE_EMAIL = os.environ.get("AKAKCE_EMAIL", "")
 AKAKCE_PASSWORD = os.environ.get("AKAKCE_PASSWORD", "")
 
 async def scrape_akakce_panel() -> dict:
-    """Login to Akakçe seller panel and scrape all product links. FREE - no ScraperAPI credits!"""
+    """Login to Akakçe seller panel via ScraperAPI and scrape all product links."""
     import requests as req_sync
     
     if not AKAKCE_EMAIL or not AKAKCE_PASSWORD:
         return {"success": False, "error": "AKAKCE_EMAIL ve AKAKCE_PASSWORD .env dosyasinda tanimlanmali"}
     
+    if not SCRAPERAPI_KEY:
+        return {"success": False, "error": "SCRAPERAPI_KEY gerekli"}
+    
     session = req_sync.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8",
-    })
     
     try:
-        # Step 1: Login
-        logger.info("Akakce panel: Giris yapiliyor...")
-        login_resp = session.post("https://www.akakce.com/akakcem/online-store/giris.asp", data={
+        # Step 1: Login via ScraperAPI
+        logger.info("Akakce panel: ScraperAPI ile giris yapiliyor...")
+        login_resp = session.post("http://api.scraperapi.com", params={
+            "api_key": SCRAPERAPI_KEY,
+            "url": "https://www.akakce.com/akakcem/giris.asp",
+            "method": "POST",
+        }, data={
             "email": AKAKCE_EMAIL,
             "password": AKAKCE_PASSWORD,
-        }, allow_redirects=True, timeout=30)
+        }, timeout=60, allow_redirects=True)
         
-        if login_resp.status_code != 200 or "giris" in login_resp.url.lower():
-            # Try alternative login endpoint
-            login_resp = session.post("https://www.akakce.com/akakcem/giris.asp", data={
-                "email": AKAKCE_EMAIL,
-                "sifre": AKAKCE_PASSWORD,
-            }, allow_redirects=True, timeout=30)
+        logger.info(f"Akakce panel login attempt: status={login_resp.status_code}, len={len(login_resp.text)}")
         
-        logger.info(f"Akakce panel login: status={login_resp.status_code}, url={login_resp.url[:80]}")
+        # Try getting cookies from response for session
+        # ScraperAPI may not forward cookies properly, so try direct session approach
+        # Step 1b: Try using ScraperAPI session/cookie support
+        # First get the login page to get any CSRF tokens
+        login_page = session.get("http://api.scraperapi.com", params={
+            "api_key": SCRAPERAPI_KEY,
+            "url": "https://www.akakce.com/akakcem/giris.asp",
+            "keep_headers": "true",
+        }, timeout=60)
         
-        # Step 2: Fetch product list pages
+        # Extract any hidden form fields
+        soup_login = BeautifulSoup(login_page.text, "html.parser")
+        form_data = {}
+        for inp in soup_login.find_all("input", {"type": "hidden"}):
+            name = inp.get("name", "")
+            value = inp.get("value", "")
+            if name:
+                form_data[name] = value
+        form_data["email"] = AKAKCE_EMAIL
+        form_data["password"] = AKAKCE_PASSWORD
+        form_data["sifre"] = AKAKCE_PASSWORD
+        
+        logger.info(f"Login form fields: {list(form_data.keys())}")
+        
+        # Step 2: Try to access product list directly via ScraperAPI
+        # Akakce panel might use different auth - try with cookies
         products = []
         page_num = 1
-        max_pages = 200  # 4000 products / ~20 per page
+        max_pages = 250
+        consecutive_empty = 0
         
         while page_num <= max_pages:
             list_url = f"https://www.akakce.com/akakcem/online-store/urun-yonetimi/urun-listesi.asp?sayfa={page_num}"
-            resp = session.get(list_url, timeout=30)
+            
+            resp = req_sync.get("http://api.scraperapi.com", params={
+                "api_key": SCRAPERAPI_KEY,
+                "url": list_url,
+                "session_number": "12345",
+            }, timeout=60)
             
             if resp.status_code != 200:
                 logger.warning(f"Akakce panel page {page_num}: HTTP {resp.status_code}")
@@ -536,24 +562,38 @@ async def scrape_akakce_panel() -> dict:
             
             soup = BeautifulSoup(resp.text, "html.parser")
             
-            # Find product rows - look for links to akakce.com product pages
+            # Check if we're on login page (not authenticated)
+            if "giris" in resp.text.lower()[:500] and page_num == 1:
+                # Try posting login through ScraperAPI
+                logger.info("Login gerekli, ScraperAPI session ile deneniyor...")
+                login_post = req_sync.post("http://api.scraperapi.com", params={
+                    "api_key": SCRAPERAPI_KEY,
+                    "url": "https://www.akakce.com/akakcem/giris.asp",
+                    "session_number": "12345",
+                }, json=form_data, timeout=60)
+                logger.info(f"Session login: status={login_post.status_code}")
+                
+                # Retry the product list
+                resp = req_sync.get("http://api.scraperapi.com", params={
+                    "api_key": SCRAPERAPI_KEY,
+                    "url": list_url,
+                    "session_number": "12345",
+                }, timeout=60)
+                soup = BeautifulSoup(resp.text, "html.parser")
+            
             found_on_page = 0
             for a_tag in soup.find_all("a", href=True):
                 href = a_tag["href"]
-                # Product links contain /en-ucuz- pattern
                 if "/en-ucuz-" in href and "fiyati," in href:
                     if not href.startswith("http"):
                         href = f"https://www.akakce.com{href}"
                     
-                    # Get product name from the link text or parent row
                     name = a_tag.get_text(strip=True)
                     if not name or len(name) < 3:
-                        # Try parent td
                         td = a_tag.find_parent("td")
                         if td:
                             name = td.get_text(strip=True)
                     
-                    # Get price from the row
                     price = None
                     row = a_tag.find_parent("tr")
                     if row:
@@ -562,7 +602,6 @@ async def scrape_akakce_panel() -> dict:
                         if pm:
                             price = float(pm[0][0].replace(".", "") + "." + pm[0][1])
                     
-                    # Get category and brand from row
                     category = ""
                     brand = ""
                     if row:
@@ -580,15 +619,19 @@ async def scrape_akakce_panel() -> dict:
                     })
                     found_on_page += 1
             
-            logger.info(f"Akakce panel sayfa {page_num}: {found_on_page} urun bulundu")
+            logger.info(f"Akakce panel sayfa {page_num}: {found_on_page} urun bulundu (toplam: {len(products)})")
             
             if found_on_page == 0:
-                break
+                consecutive_empty += 1
+                if consecutive_empty >= 2:
+                    break
+            else:
+                consecutive_empty = 0
             
             page_num += 1
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1)
         
-        return {"success": True, "products": products, "total": len(products)}
+        return {"success": len(products) > 0, "products": products, "total": len(products)}
     except Exception as e:
         logger.error(f"Akakce panel scrape error: {e}")
         return {"success": False, "error": str(e), "products": []}
