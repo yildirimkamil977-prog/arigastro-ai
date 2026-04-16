@@ -1162,11 +1162,40 @@ async def get_dashboard_stats(user: dict = Depends(get_current_user)):
 # ============ PRICE TRACKING ============
 
 def build_tracked_query(cat_names: list) -> dict:
-    """Build MongoDB query that matches products by category_path OR brand name."""
-    cat_regex = "|".join([re.escape(n) for n in cat_names])
+    """Build MongoDB query that matches products by category_path, brand, or url with Turkish char support."""
+    patterns = []
+    for name in cat_names:
+        # Build Turkish-aware regex: ö↔o, ü↔u, ş↔s, ç↔c, ğ↔g, ı↔i, İ↔I
+        turkish_map = {
+            'o': '[oöOÖ]', 'ö': '[oöOÖ]', 'O': '[oöOÖ]', 'Ö': '[oöOÖ]',
+            'u': '[uüUÜ]', 'ü': '[uüUÜ]', 'U': '[uüUÜ]', 'Ü': '[uüUÜ]',
+            's': '[sşSŞ]', 'ş': '[sşSŞ]', 'S': '[sşSŞ]', 'Ş': '[sşSŞ]',
+            'c': '[cçCÇ]', 'ç': '[cçCÇ]', 'C': '[cçCÇ]', 'Ç': '[cçCÇ]',
+            'g': '[gğGĞ]', 'ğ': '[gğGĞ]', 'G': '[gğGĞ]', 'Ğ': '[gğGĞ]',
+            'i': '[iıİI]', 'ı': '[iıİI]', 'I': '[iıİI]', 'İ': '[iıİI]',
+        }
+        pattern = ""
+        for ch in name:
+            if ch in turkish_map:
+                pattern += turkish_map[ch]
+            else:
+                pattern += re.escape(ch)
+        patterns.append(pattern)
+    
+    combined = "|".join(patterns)
+    # Also create slug version for URL matching (lowercase, spaces→hyphens)
+    slug_patterns = []
+    for name in cat_names:
+        slug = name.lower().replace(" ", "-")
+        for tr_char, latin in [('ö','o'),('ü','u'),('ş','s'),('ç','c'),('ğ','g'),('ı','i'),('İ','i')]:
+            slug = slug.replace(tr_char, latin)
+        slug_patterns.append(re.escape(slug))
+    slug_combined = "|".join(slug_patterns)
+    
     return {"$or": [
-        {"category_path": {"$regex": cat_regex, "$options": "i"}},
-        {"brand": {"$regex": cat_regex, "$options": "i"}},
+        {"category_path": {"$regex": combined, "$options": "i"}},
+        {"brand": {"$regex": combined, "$options": "i"}},
+        {"url": {"$regex": slug_combined, "$options": "i"}},
     ]}
 
 @api_router.get("/price-tracking")
