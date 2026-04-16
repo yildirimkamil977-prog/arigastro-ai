@@ -193,6 +193,42 @@ export default function PriceTrackingPage() {
     }
   };
 
+  const [panelImporting, setPanelImporting] = useState(false);
+
+  const handlePanelImport = async () => {
+    setPanelImporting(true);
+    try {
+      const { data } = await axios.post(`${API}/akakce-panel/import`, {}, { headers: getAuthHeaders(), withCredentials: true, timeout: 10000 });
+      if (data.started) {
+        toast.info("Akakce panel aktarimi basladi (UCRETSIZ). Urunler eslestirilecek...", { duration: 5000 });
+        const pollInterval = setInterval(async () => {
+          try {
+            const { data: status } = await axios.get(`${API}/akakce-panel/status`, { headers: getAuthHeaders(), withCredentials: true });
+            if (status.running) {
+              toast.info(`Panel aktarimi: ${status.current || 0}/${status.total || 0} (${status.matched || 0} eslesti)`, { id: "panel-import-progress", duration: 4000 });
+            } else {
+              clearInterval(pollInterval);
+              toast.success(`Panel aktarimi tamamlandi: ${status.matched || 0} eslesti, ${status.not_found || 0} eslesemedi`, { id: "panel-import-progress", duration: 8000 });
+              setPanelImporting(false);
+              fetchData();
+            }
+          } catch {
+            clearInterval(pollInterval);
+            setPanelImporting(false);
+            fetchData();
+          }
+        }, 5000);
+        setTimeout(() => { clearInterval(pollInterval); setPanelImporting(false); fetchData(); }, 600000);
+      } else {
+        toast.warning(data.message || "Aktarim baslatilamadi");
+        setPanelImporting(false);
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Panel aktarimi basarisiz");
+      setPanelImporting(false);
+    }
+  };
+
   const formatDateTime = (dateStr) => {
     if (!dateStr) return "-";
     try {
@@ -210,7 +246,16 @@ export default function PriceTrackingPage() {
             Sadece <strong>aktif kategorilerdeki eslesmis</strong> urunlerin fiyatlari kontrol edilir
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button
+            onClick={handlePanelImport}
+            disabled={panelImporting}
+            data-testid="panel-import-button"
+            className="bg-emerald-600 hover:bg-emerald-700 text-white text-sm h-9 font-medium"
+          >
+            {panelImporting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Sparkles className="h-4 w-4 mr-2" />}
+            Akakce Panel (Ucretsiz)
+          </Button>
           <Button
             onClick={handleBulkMatch}
             disabled={bulkMatching}
