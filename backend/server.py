@@ -629,20 +629,29 @@ def search_akakce_via_google(product_name: str) -> dict:
         return {"success": False, "error": str(e), "candidates": []}
 
 def search_akakce_sync(product_name: str) -> dict:
-    """Search for product on Akakçe. Tries Google first (better for long names), then Akakçe direct."""
-    # Method 1: Google search (handles full product name, no char limit)
-    google_result = search_akakce_via_google(product_name)
-    if google_result["success"]:
-        return {"success": True, "competitors": google_result["candidates"], "search_url": "", "error": None}
-    
-    # Method 2: Akakçe direct search (fallback)
+    """Search for product on Akakçe directly via ScraperAPI (1 credit per search)."""
     try:
+        import requests as req_sync
         search_query = product_name.replace(" ", "+")
         url = AKAKCE_SEARCH_URL.format(query=search_query)
-        resp = akakce_request(url)
+        
+        # Use ScraperAPI for Akakce search (1 credit, no render needed)
+        if SCRAPERAPI_KEY:
+            resp = req_sync.get("http://api.scraperapi.com", params={
+                "api_key": SCRAPERAPI_KEY, "url": url,
+            }, timeout=60)
+        else:
+            # Direct access (works from residential IPs)
+            try:
+                from curl_cffi import requests as cffi_requests
+                resp = cffi_requests.get(url, impersonate="chrome", timeout=15)
+            except Exception:
+                resp = req_sync.get(url, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                }, timeout=15)
         
         if resp.status_code == 403:
-            return {"success": False, "error": get_akakce_access_error(), "competitors": [], "search_url": url}
+            return {"success": False, "error": "Akakce erisim engellendi (403)", "competitors": [], "search_url": url}
         if resp.status_code != 200:
             return {"success": False, "error": f"HTTP {resp.status_code}", "competitors": [], "search_url": url}
         
