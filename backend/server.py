@@ -665,92 +665,90 @@ async def import_from_akakce_panel(user: dict = Depends(get_current_user)):
     return {"started": True, "message": f"Akakce aktarimi basladi. {len(akakce_data)} urun eslestirilecek."}
 
 async def run_akakce_json_import(akakce_data: list):
-    """Background task: match Akakce JSON data with our products."""
+    """Background task: match Akakce JSON data with our products using product names."""
     try:
         matched = 0
         not_found = 0
+        search_url_count = 0
         
-        # Get all our products for matching
         our_products = await db.products.find({}, {"_id": 0, "slug": 1, "name": 1, "gtin": 1, "brand": 1}).to_list(10000)
         
-        # Build search index: lowercase name words -> product
-        product_index = {}
+        if not our_products:
+            await db.system_status.update_one({"task": "akakce_panel_import"}, {"$set": {"running": False, "error": "Veritabaninda urun yok"}})
+            return
+        
+        def normalize(text):
+            return text.lower().replace("ö", "o").replace("ü", "u").replace("ş", "s").replace("ç", "c").replace("ğ", "g").replace("ı", "i").replace("İ", "i").replace(",", " ").replace(".", " ").replace("-", " ").replace("*", "x").strip()
+        
+        def get_words(text):
+            return [w for w in normalize(text).split() if len(w) > 1]
+        
+        our_index = []
         for p in our_products:
-            name_lower = p.get("name", "").lower()
-            product_index[name_lower] = p
+            words = get_words(p.get("name", ""))
+            our_index.append({"product": p, "words": set(words), "name_norm": normalize(p.get("name", ""))})
         
         for i, ap in enumerate(akakce_data):
             akakce_url = ap.get("url", "")
             akakce_name = ap.get("name", "")
             akakce_price = ap.get("price", "")
-            akakce_category = ap.get("category", "")
-            akakce_brand = ap.get("brand", "")
             
-            if not akakce_url or "/en-ucuz-" not in akakce_url:
+            if not akakce_url:
                 not_found += 1
                 continue
             
-            # Extract product name from URL if name is empty
-            if not akakce_name:
-                try:
-                    url_part = akakce_url.split("/en-ucuz-")[1].split("-fiyati,")[0]
-                    akakce_name = url_part.replace("-", " ").title()
-                except Exception:
-                    pass
+            is_product_url = "/en-ucuz-" in akakce_url and "fiyati," in akakce_url
+            if not is_product_url:
+                search_url_count += 1
             
-            # Try to match with our products
-            our_product = None
+            ak_words = set(get_words(akakce_name))
+            best_match = None
+            best_score = 0
             
-            # Strategy 1: Extract key identifying words from URL and match
-            url_slug = akakce_url.split("/en-ucuz-")[-1].split("-fiyati,")[0] if "/en-ucuz-" in akakce_url else ""
-            url_words = [w for w in url_slug.split("-") if len(w) > 2]
+            for entry in our_index:
+                if not entry["words"]:
+                    continue
+                common = ak_words & entry["words"]
+                if len(common) < 2:
+                    continue
+                score = len(common) / max(len(ak_words), len(entry["words"]))
+                if len(common) >= 4:
+                    score += 0.1
+                if len(common) >= 6:
+                    score += 0.1
+                if score > best_score:
+                    best_score = score
+                    best_match = entry["product"]
             
-            if url_words and len(url_words) >= 3:
-                # Try matching first 4-5 significant words
-                for match_count in [5, 4, 3]:
-                    if our_product:
-                        break
-                    search_words = url_words[:match_count]
-                    for p_name_lower, p in product_index.items():
-                        p_name_normalized = p_name_lower.replace("ö", "o").replace("ü", "u").replace("ş", "s").replace("ç", "c").replace("ğ", "g").replace("ı", "i")
-                        matches = sum(1 for w in search_words if w in p_name_normalized)
-                        if matches >= match_count - 1 and matches >= 3:
-                            our_product = p
-                            break
-            
-            # Strategy 2: Brand + category keywords
-            if not our_product and akakce_brand:
-                brand_lower = akakce_brand.lower().replace("ö", "o").replace("ü", "u").replace("ş", "s").replace("ç", "c").replace("ğ", "g").replace("ı", "i")
-                for p_name_lower, p in product_index.items():
-                    p_name_normalized = p_name_lower.replace("ö", "o").replace("ü", "u").replace("ş", "s").replace("ç", "c").replace("ğ", "g").replace("ı", "i")
-                    if brand_lower in p_name_normalized:
-                        url_sig_words = [w for w in url_words if len(w) > 3][:3]
-                        if url_sig_words and all(w in p_name_normalized for w in url_sig_words):
-                            our_product = p
-                            break
-            
-            if our_product:
-                await db.products.update_one({"slug": our_product["slug"]}, {"$set": {
-                    "akakce_product_url": akakce_url,
-                    "akakce_product_name": akakce_name or akakce_url.split("/en-ucuz-")[-1].split("-fiyati")[0].replace("-", " "),
+            if best_match and best_score >= 0.35 and len(ak_words & set(get_words(best_match.get("name", "")))) >= 3:
+                update_data = {
+                    "akakce_product_name": akakce_name,
                     "akakce_matched": True,
                     "akakce_match_confidence": "panel_import",
-                    "akakce_category": akakce_category,
-                    "akakce_brand": akakce_brand,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
-                }})
+                }
+                if is_product_url:
+                    update_data["akakce_product_url"] = akakce_url
+                else:
+                    existing = await db.products.find_one({"slug": best_match["slug"]}, {"_id": 0, "akakce_product_url": 1})
+                    if not existing or not existing.get("akakce_product_url") or "fiyati," not in existing.get("akakce_product_url", ""):
+                        update_data["akakce_product_url"] = akakce_url
+                        update_data["akakce_match_confidence"] = "panel_import_search"
+                
+                await db.products.update_one({"slug": best_match["slug"]}, {"$set": update_data})
                 matched += 1
             else:
                 not_found += 1
             
-            if i % 100 == 0:
+            if i % 200 == 0:
                 await db.system_status.update_one({"task": "akakce_panel_import"}, {"$set": {"current": i + 1, "matched": matched, "not_found": not_found}})
         
         await db.system_status.update_one({"task": "akakce_panel_import"}, {"$set": {
             "running": False, "matched": matched, "not_found": not_found, "total": len(akakce_data),
+            "search_urls": search_url_count,
             "completed_at": datetime.now(timezone.utc).isoformat(),
         }})
-        logger.info(f"Akakce JSON import tamamlandi: {matched} eslesti, {not_found} eslesemedi, toplam {len(akakce_data)}")
+        logger.info(f"Akakce JSON import: {matched} eslesti, {not_found} eslesemedi, {search_url_count} arama URL, toplam {len(akakce_data)}")
     except Exception as e:
         logger.error(f"Akakce JSON import error: {e}")
         await db.system_status.update_one({"task": "akakce_panel_import"}, {"$set": {"running": False, "error": str(e)}})
