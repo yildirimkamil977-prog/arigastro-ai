@@ -9,6 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { Textarea } from "../components/ui/textarea";
 import { Search, Sparkles, FileText, Loader2, Copy, Check, X, ChevronLeft, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
+import ReactMarkdown from "react-markdown";
 
 export default function SeoGeneratorPage() {
   const [products, setProducts] = useState([]);
@@ -69,8 +70,20 @@ export default function SeoGeneratorPage() {
     }
   };
 
+  const stripMarkdown = (md) => {
+    if (!md) return "";
+    return md
+      .replace(/^#{1,6}\s+/gm, "")       // Remove headings
+      .replace(/\*\*(.*?)\*\*/g, "$1")    // Remove bold
+      .replace(/\*(.*?)\*/g, "$1")        // Remove italic
+      .replace(/^[-*]\s+/gm, "• ")        // Convert list markers to bullet
+      .replace(/\n{3,}/g, "\n\n")         // Collapse extra newlines
+      .trim();
+  };
+
   const copyToClipboard = (text, field) => {
-    navigator.clipboard.writeText(text);
+    const cleanText = field === "prodDesc" ? stripMarkdown(text) : text;
+    navigator.clipboard.writeText(cleanText);
     setCopied(field);
     setTimeout(() => setCopied(""), 2000);
     toast.success("Panoya kopyalandi");
@@ -263,8 +276,20 @@ export default function SeoGeneratorPage() {
                       </div>
                     </CardHeader>
                     <CardContent className="pt-0">
-                      <div className="prose prose-sm max-w-none text-slate-700 text-sm leading-relaxed whitespace-pre-wrap" data-testid="product-description-content">
-                        {seoContent.product_description}
+                      <div className="prose prose-sm max-w-none text-slate-700 text-sm leading-relaxed" data-testid="product-description-content">
+                        <ReactMarkdown
+                          components={{
+                            h1: ({children}) => <h2 className="text-lg font-bold text-slate-900 mt-4 mb-2">{children}</h2>,
+                            h2: ({children}) => <h3 className="text-base font-bold text-slate-900 mt-4 mb-2">{children}</h3>,
+                            h3: ({children}) => <h4 className="text-sm font-bold text-slate-800 mt-3 mb-1">{children}</h4>,
+                            p: ({children}) => <p className="mb-2 text-sm text-slate-700 leading-relaxed">{children}</p>,
+                            strong: ({children}) => <strong className="font-semibold text-slate-900">{children}</strong>,
+                            ul: ({children}) => <ul className="list-disc list-inside mb-3 space-y-1">{children}</ul>,
+                            li: ({children}) => <li className="text-sm text-slate-700">{children}</li>,
+                          }}
+                        >
+                          {seoContent.product_description}
+                        </ReactMarkdown>
                       </div>
                     </CardContent>
                   </Card>
