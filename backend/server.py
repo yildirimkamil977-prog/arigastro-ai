@@ -638,84 +638,121 @@ async def scrape_akakce_panel() -> dict:
 
 @api_router.post("/akakce-panel/import")
 async def import_from_akakce_panel(user: dict = Depends(get_current_user)):
-    """Import product-Akakce URL mappings from Akakce seller panel. FREE - 0 credits!"""
+    """Import product-Akakce URL mappings from uploaded JSON file. FREE - 0 credits!"""
     status = await db.system_status.find_one({"task": "akakce_panel_import"}, {"_id": 0})
     if status and status.get("running"):
         return {"started": False, "message": "Akakce panel aktarimi zaten calisiyor."}
     
+    # Load the JSON file
+    import json as json_mod
+    json_path = os.path.join(os.path.dirname(__file__), "akakce_products.json")
+    if not os.path.exists(json_path):
+        return {"started": False, "error": "akakce_products.json dosyasi bulunamadi. Dosyayi backend klasorune yukleyin."}
+    
+    with open(json_path, "r", encoding="utf-8") as f:
+        akakce_data = json_mod.load(f)
+    
+    if not akakce_data or not isinstance(akakce_data, list):
+        return {"started": False, "error": "JSON dosyasi bos veya gecersiz."}
+    
     await db.system_status.update_one(
         {"task": "akakce_panel_import"},
-        {"$set": {"running": True, "started_at": datetime.now(timezone.utc).isoformat(), "matched": 0, "total": 0}},
+        {"$set": {"running": True, "started_at": datetime.now(timezone.utc).isoformat(), "matched": 0, "total": len(akakce_data)}},
         upsert=True
     )
     
-    asyncio.ensure_future(run_akakce_panel_import())
-    return {"started": True, "message": "Akakce panel aktarimi basladi. Urunler ve Akakce linkleri eslestirilecek."}
+    asyncio.ensure_future(run_akakce_json_import(akakce_data))
+    return {"started": True, "message": f"Akakce aktarimi basladi. {len(akakce_data)} urun eslestirilecek."}
 
-async def run_akakce_panel_import():
-    """Background task: scrape Akakce panel and match products."""
+async def run_akakce_json_import(akakce_data: list):
+    """Background task: match Akakce JSON data with our products."""
     try:
-        result = await scrape_akakce_panel()
-        
-        if not result["success"]:
-            await db.system_status.update_one({"task": "akakce_panel_import"}, {"$set": {"running": False, "error": result["error"]}})
-            return
-        
-        akakce_products = result["products"]
-        await db.system_status.update_one({"task": "akakce_panel_import"}, {"$set": {"total": len(akakce_products)}})
-        
         matched = 0
         not_found = 0
         
-        for i, ap in enumerate(akakce_products):
-            akakce_url = ap["akakce_url"]
-            akakce_name = ap["akakce_name"]
+        # Get all our products for matching
+        our_products = await db.products.find({}, {"_id": 0, "slug": 1, "name": 1, "gtin": 1, "brand": 1}).to_list(10000)
+        
+        # Build search index: lowercase name words -> product
+        product_index = {}
+        for p in our_products:
+            name_lower = p.get("name", "").lower()
+            product_index[name_lower] = p
+        
+        for i, ap in enumerate(akakce_data):
+            akakce_url = ap.get("url", "")
+            akakce_name = ap.get("name", "")
+            akakce_price = ap.get("price", "")
+            akakce_category = ap.get("category", "")
+            akakce_brand = ap.get("brand", "")
             
-            # Try to match with our products by name similarity
-            # Extract key words from akakce product name for matching
-            search_terms = akakce_name.lower().replace("-", " ").replace(",", " ")
+            if not akakce_url or "/en-ucuz-" not in akakce_url:
+                not_found += 1
+                continue
             
-            # Try exact slug match from URL
-            slug_from_url = akakce_url.split("/en-ucuz-")[-1].split("-fiyati,")[0] if "/en-ucuz-" in akakce_url else ""
+            # Extract product name from URL if name is empty
+            if not akakce_name:
+                try:
+                    url_part = akakce_url.split("/en-ucuz-")[1].split("-fiyati,")[0]
+                    akakce_name = url_part.replace("-", " ").title()
+                except Exception:
+                    pass
             
-            # Search our products by name
+            # Try to match with our products
             our_product = None
-            if slug_from_url:
-                # Try matching by similar name parts
-                words = [w for w in search_terms.split() if len(w) > 2][:5]
-                if words:
-                    name_regex = ".*".join([re.escape(w) for w in words])
-                    our_product = await db.products.find_one({"name": {"$regex": name_regex, "$options": "i"}})
             
-            if not our_product and akakce_name:
-                # Broader search with first few significant words
-                words = [w for w in akakce_name.split() if len(w) > 2][:3]
-                if words:
-                    name_regex = ".*".join([re.escape(w) for w in words])
-                    our_product = await db.products.find_one({"name": {"$regex": name_regex, "$options": "i"}})
+            # Strategy 1: Extract key identifying words from URL and match
+            url_slug = akakce_url.split("/en-ucuz-")[-1].split("-fiyati,")[0] if "/en-ucuz-" in akakce_url else ""
+            url_words = [w for w in url_slug.split("-") if len(w) > 2]
+            
+            if url_words and len(url_words) >= 3:
+                # Try matching first 4-5 significant words
+                for match_count in [5, 4, 3]:
+                    if our_product:
+                        break
+                    search_words = url_words[:match_count]
+                    for p_name_lower, p in product_index.items():
+                        p_name_normalized = p_name_lower.replace("ö", "o").replace("ü", "u").replace("ş", "s").replace("ç", "c").replace("ğ", "g").replace("ı", "i")
+                        matches = sum(1 for w in search_words if w in p_name_normalized)
+                        if matches >= match_count - 1 and matches >= 3:
+                            our_product = p
+                            break
+            
+            # Strategy 2: Brand + category keywords
+            if not our_product and akakce_brand:
+                brand_lower = akakce_brand.lower().replace("ö", "o").replace("ü", "u").replace("ş", "s").replace("ç", "c").replace("ğ", "g").replace("ı", "i")
+                for p_name_lower, p in product_index.items():
+                    p_name_normalized = p_name_lower.replace("ö", "o").replace("ü", "u").replace("ş", "s").replace("ç", "c").replace("ğ", "g").replace("ı", "i")
+                    if brand_lower in p_name_normalized:
+                        url_sig_words = [w for w in url_words if len(w) > 3][:3]
+                        if url_sig_words and all(w in p_name_normalized for w in url_sig_words):
+                            our_product = p
+                            break
             
             if our_product:
                 await db.products.update_one({"slug": our_product["slug"]}, {"$set": {
                     "akakce_product_url": akakce_url,
-                    "akakce_product_name": akakce_name,
+                    "akakce_product_name": akakce_name or akakce_url.split("/en-ucuz-")[-1].split("-fiyati")[0].replace("-", " "),
                     "akakce_matched": True,
-                    "akakce_match_confidence": "panel",
+                    "akakce_match_confidence": "panel_import",
+                    "akakce_category": akakce_category,
+                    "akakce_brand": akakce_brand,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }})
                 matched += 1
             else:
                 not_found += 1
             
-            if i % 50 == 0:
+            if i % 100 == 0:
                 await db.system_status.update_one({"task": "akakce_panel_import"}, {"$set": {"current": i + 1, "matched": matched, "not_found": not_found}})
         
         await db.system_status.update_one({"task": "akakce_panel_import"}, {"$set": {
-            "running": False, "matched": matched, "not_found": not_found, "total": len(akakce_products),
+            "running": False, "matched": matched, "not_found": not_found, "total": len(akakce_data),
             "completed_at": datetime.now(timezone.utc).isoformat(),
         }})
-        logger.info(f"Akakce panel import tamamlandi: {matched} eslesti, {not_found} eslesemedi, toplam {len(akakce_products)}")
+        logger.info(f"Akakce JSON import tamamlandi: {matched} eslesti, {not_found} eslesemedi, toplam {len(akakce_data)}")
     except Exception as e:
-        logger.error(f"Akakce panel import error: {e}")
+        logger.error(f"Akakce JSON import error: {e}")
         await db.system_status.update_one({"task": "akakce_panel_import"}, {"$set": {"running": False, "error": str(e)}})
 
 @api_router.get("/akakce-panel/status")
