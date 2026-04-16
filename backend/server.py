@@ -22,6 +22,7 @@ from typing import Optional, List
 from bs4 import BeautifulSoup
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -1044,71 +1045,56 @@ async def check_akakce_price(slug: str, user: dict = Depends(get_current_user)):
     return {"slug": slug, "success": result["success"], "sellers": result.get("sellers", []), "error": result.get("error")}
 
 async def fetch_akakce_product_page(url: str) -> dict:
-    """Fetch and parse an Akakçe product detail page to extract all seller prices."""
-    for attempt in range(2):  # Retry once on failure
-        try:
-            loop = asyncio.get_event_loop()
-            resp = await loop.run_in_executor(None, lambda: akakce_request(url))
-            
-            if resp.status_code == 403:
-                return {"success": False, "error": "Cloudflare 403", "sellers": []}
-            if resp.status_code in [410, 404, 500] and attempt == 0:
-                await asyncio.sleep(1)
-                continue  # Retry
-            if resp.status_code != 200:
-                return {"success": False, "error": f"HTTP {resp.status_code}", "sellers": []}
-            
-            soup = BeautifulSoup(resp.content if hasattr(resp, 'content') else resp.text, "html.parser")
-            
-            product_name = ""
-            h1 = soup.find("h1")
-            if h1:
-                product_name = h1.get_text(strip=True)
-            
-            # Extract seller names from v_v8 class spans
-            seller_names = []
-            for el in soup.find_all("span", class_="v_v8"):
-                text = el.get_text(strip=True)
-                if text.startswith("Satıcı:") or text.startswith("Satıcı :"):
-                    continue
-                text = text.strip().strip("/")
-                if text and len(text) > 2 and len(text) < 60:
-                    seller_names.append(text)
-            
-            # Extract prices from pb_v8 class spans
-            prices = []
-            for span in soup.find_all("span", class_="pb_v8"):
-                text = span.get_text(strip=True)
-                match = re.match(r'([\d.]+,\d{2})\s*TL', text)
-                if match:
-                    price_str = match.group(1)
-                    price = float(price_str.replace(".", "").replace(",", "."))
-                    if price > 1:
-                        prices.append(price)
-            
-            # Deduplicate prices (sometimes same price appears twice)
-            unique_prices = list(dict.fromkeys(prices))
-            
-            # Pair sellers with prices
-            sellers = []
-            for i in range(min(len(seller_names), len(unique_prices))):
-                sellers.append({"seller": seller_names[i], "price": unique_prices[i]})
-            
-            sellers.sort(key=lambda x: x["price"])
-            
-            if sellers:
-                return {"success": True, "product_name": product_name, "sellers": sellers, "error": None}
-            elif attempt == 0:
-                await asyncio.sleep(1)
-                continue  # Retry
-            else:
-                return {"success": False, "product_name": product_name, "sellers": [], "error": "Satici bilgisi okunamadi"}
-        except Exception as e:
-            if attempt == 0:
-                await asyncio.sleep(1)
+    """Fetch and parse an Akakçe product detail page to extract all seller prices. Single request only."""
+    try:
+        loop = asyncio.get_event_loop()
+        resp = await loop.run_in_executor(None, lambda: akakce_request(url))
+        
+        if resp.status_code == 403:
+            return {"success": False, "error": "Cloudflare 403", "sellers": []}
+        if resp.status_code != 200:
+            return {"success": False, "error": f"HTTP {resp.status_code}", "sellers": []}
+        
+        soup = BeautifulSoup(resp.content if hasattr(resp, 'content') else resp.text, "html.parser")
+        
+        product_name = ""
+        h1 = soup.find("h1")
+        if h1:
+            product_name = h1.get_text(strip=True)
+        
+        # Extract seller names from v_v8 class spans
+        seller_names = []
+        for el in soup.find_all("span", class_="v_v8"):
+            text = el.get_text(strip=True)
+            if text.startswith("Satıcı:") or text.startswith("Satıcı :"):
                 continue
-            logger.error(f"Akakce product page error: {e}")
-            return {"success": False, "error": str(e), "sellers": []}
+            text = text.strip().strip("/")
+            if text and len(text) > 2 and len(text) < 60:
+                seller_names.append(text)
+        
+        # Extract prices from pb_v8 class spans
+        prices = []
+        for span in soup.find_all("span", class_="pb_v8"):
+            text = span.get_text(strip=True)
+            match = re.match(r'([\d.]+,\d{2})\s*TL', text)
+            if match:
+                price_str = match.group(1)
+                price = float(price_str.replace(".", "").replace(",", "."))
+                if price > 1:
+                    prices.append(price)
+        
+        unique_prices = list(dict.fromkeys(prices))
+        
+        sellers = []
+        for i in range(min(len(seller_names), len(unique_prices))):
+            sellers.append({"seller": seller_names[i], "price": unique_prices[i]})
+        
+        sellers.sort(key=lambda x: x["price"])
+        
+        return {"success": len(sellers) > 0, "product_name": product_name, "sellers": sellers, "error": None if sellers else "Satici bilgisi okunamadi"}
+    except Exception as e:
+        logger.error(f"Akakce product page error: {e}")
+        return {"success": False, "error": str(e), "sellers": []}
 
 # ============ AI-POWERED PRODUCT MATCHING ============
 
@@ -2077,10 +2063,10 @@ async def startup():
         f.write(f"## Auth Endpoints\n- POST /api/auth/login\n- GET /api/auth/me\n- POST /api/auth/logout\n")
     
     # Start scheduler
-    scheduler.add_job(scheduled_feed_sync, IntervalTrigger(hours=12), id="feed_sync", name="Feed Sync (12 saat)", replace_existing=True)
-    scheduler.add_job(scheduled_price_check, IntervalTrigger(hours=24), id="price_check_cron", name="Fiyat Kontrolu (24 saat)", replace_existing=True)
+    scheduler.add_job(scheduled_feed_sync, CronTrigger(hour=1, minute=0), id="feed_sync", name="Feed Guncelleme (Her gece 01:00)", replace_existing=True)
+    scheduler.add_job(scheduled_price_check, CronTrigger(day="1,6,11,16,21,26", hour=2, minute=0), id="price_check_cron", name="Fiyat Kontrolu (5 gunde 1, 02:00)", replace_existing=True)
     scheduler.start()
-    logger.info("Scheduler basladi: Feed sync (12h), Fiyat kontrolu (24h)")
+    logger.info("Scheduler basladi: Feed guncelleme (her gece 01:00), Fiyat kontrolu (5 gunde 1, 02:00)")
 
 @app.on_event("shutdown")
 async def shutdown():
