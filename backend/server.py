@@ -2064,9 +2064,9 @@ async def startup():
     
     # Start scheduler
     scheduler.add_job(scheduled_feed_sync, CronTrigger(hour=1, minute=0), id="feed_sync", name="Feed Guncelleme (Her gece 01:00)", replace_existing=True)
-    scheduler.add_job(scheduled_price_check, CronTrigger(day="1,6,11,16,21,26", hour=2, minute=0), id="price_check_cron", name="Fiyat Kontrolu (5 gunde 1, 02:00)", replace_existing=True)
+    scheduler.add_job(scheduled_price_check, CronTrigger(hour=21, minute=0), id="price_check_cron", name="Fiyat Kontrolu (Her gece 00:00 TR)", replace_existing=True)
     scheduler.start()
-    logger.info("Scheduler basladi: Feed guncelleme (her gece 01:00), Fiyat kontrolu (5 gunde 1, 02:00)")
+    logger.info("Scheduler basladi: Feed guncelleme (her gece 01:00), Fiyat kontrolu (her gece 00:00 TR)")
 
 @app.on_event("shutdown")
 async def shutdown():
