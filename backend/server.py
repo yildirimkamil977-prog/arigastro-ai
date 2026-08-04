@@ -464,13 +464,28 @@ async def sync_prices_from_feed(user: dict = Depends(get_current_user)):
 
     total = await db.products.count_documents({})
     priced = await db.products.count_documents({"our_price": {"$ne": None}})
+    
+    # Mark products NOT in feed as inactive
+    feed_slugs = set(item.get("slug", "") for item in feed_items if item.get("slug"))
+    all_slugs = await db.products.find({}, {"_id": 0, "slug": 1}).to_list(10000)
+    inactive_count = 0
+    for p in all_slugs:
+        if p["slug"] not in feed_slugs:
+            await db.products.update_one({"slug": p["slug"]}, {"$set": {"feed_active": False}})
+            inactive_count += 1
+        else:
+            await db.products.update_one({"slug": p["slug"]}, {"$set": {"feed_active": True}})
+    
+    active = await db.products.count_documents({"feed_active": True})
     return {
         "updated": updated,
         "new_products": new_products,
         "total_products": total,
+        "active_products": active,
+        "inactive_products": inactive_count,
         "products_with_price": priced,
         "feed_items": len(feed_items),
-        "message": f"{updated} urun guncellendi, {new_products} yeni urun eklendi"
+        "message": f"{updated} urun guncellendi, {new_products} yeni urun eklendi, {inactive_count} urun pasif yapildi"
     }
 
 @api_router.get("/feed/status")
@@ -1578,9 +1593,9 @@ async def get_seo_content(slug: str, user: dict = Depends(get_current_user)):
 @api_router.get("/seo/categories/stats")
 async def seo_category_stats(user: dict = Depends(get_current_user)):
     """Get SEO generation stats per İkas category."""
-    # Get all unique categories from products
+    # Get all unique categories from ACTIVE products only
     pipeline = [
-        {"$match": {"our_price": {"$ne": None}}},
+        {"$match": {"our_price": {"$ne": None}, "feed_active": {"$ne": False}}},
         {"$group": {"_id": "$category_path", "count": {"$sum": 1}}},
         {"$sort": {"count": -1}},
     ]
@@ -1594,9 +1609,9 @@ async def seo_category_stats(user: dict = Depends(get_current_user)):
         # Count SEO generated
         cat_regex = re.escape(cat_name) if cat_name != "Kategori Yok" else "^$"
         if cat_name == "Kategori Yok":
-            slugs = await db.products.find({"category_path": {"$in": [None, ""]}, "our_price": {"$ne": None}}, {"_id": 0, "slug": 1}).to_list(5000)
+            slugs = await db.products.find({"category_path": {"$in": [None, ""]}, "our_price": {"$ne": None}, "feed_active": {"$ne": False}}, {"_id": 0, "slug": 1}).to_list(5000)
         else:
-            slugs = await db.products.find({"category_path": cat_name, "our_price": {"$ne": None}}, {"_id": 0, "slug": 1}).to_list(5000)
+            slugs = await db.products.find({"category_path": cat_name, "our_price": {"$ne": None}, "feed_active": {"$ne": False}}, {"_id": 0, "slug": 1}).to_list(5000)
         slug_list = [s["slug"] for s in slugs]
         
         seo_done = await db.seo_content.count_documents({"product_slug": {"$in": slug_list}})
@@ -1620,7 +1635,7 @@ async def bulk_seo_generate_push(category: str = "", user: dict = Depends(get_cu
         return {"started": False, "message": "Toplu SEO uretimi zaten calisiyor."}
     
     # Find products in this category that don't have SEO content yet
-    query = {"our_price": {"$ne": None}}
+    query = {"our_price": {"$ne": None}, "feed_active": {"$ne": False}}
     if category and category != "Kategori Yok":
         query["category_path"] = category
     elif category == "Kategori Yok":
@@ -2335,6 +2350,10 @@ async def scheduled_feed_sync():
             {"$set": {"last_run": datetime.now(timezone.utc).isoformat(), "updated": updated, "feed_items": len(feed_items)}},
             upsert=True
         )
+        # Mark inactive products
+        feed_slugs = set(item.get("slug", "") for item in feed_items if item.get("slug"))
+        await db.products.update_many({"slug": {"$nin": list(feed_slugs)}}, {"$set": {"feed_active": False}})
+        await db.products.update_many({"slug": {"$in": list(feed_slugs)}}, {"$set": {"feed_active": True}})
         logger.info(f"CRON: Feed sync tamamlandi. {updated} urun guncellendi.")
     except Exception as e:
         logger.error(f"CRON: Feed sync hatasi: {e}")
