@@ -2955,26 +2955,34 @@ async def generate_ai_report(request: Request, user: dict = Depends(get_current_
     if category == "search_terms":
         data_sections["search_terms"] = fetch_search_terms(date_from, date_to, limit=150)
         data_sections["quality_scores"] = fetch_keyword_quality_scores(limit=80)
+        data_sections["ga4"] = fetch_ga4_overview(date_from, date_to)
+        data_sections["ga4_traffic"] = fetch_ga4_traffic_sources(date_from, date_to)
     elif category == "ad_performance":
         data_sections["campaigns"] = fetch_ads_campaigns(date_from, date_to)
         data_sections["competition"] = fetch_campaign_competition(date_from, date_to)
         data_sections["device"] = fetch_device_performance(date_from, date_to)
         data_sections["hourly"] = fetch_hourly_performance(date_from, date_to)
+        data_sections["ga4"] = fetch_ga4_overview(date_from, date_to)
     elif category == "ad_assets":
         data_sections["assets"] = fetch_ad_assets(date_from, date_to)
         data_sections["campaigns"] = fetch_ads_campaigns(date_from, date_to)
+        data_sections["ga4"] = fetch_ga4_overview(date_from, date_to)
     elif category == "competition":
         data_sections["competition"] = fetch_campaign_competition(date_from, date_to)
         data_sections["keywords"] = fetch_ads_keywords(date_from, date_to)
         data_sections["search_terms"] = fetch_search_terms(date_from, date_to, limit=50)
+        data_sections["ga4"] = fetch_ga4_overview(date_from, date_to)
     elif category == "seo":
         data_sections["gsc_queries"] = fetch_gsc_data(date_from, date_to, limit=50)
         data_sections["gsc_pages"] = fetch_gsc_pages(date_from, date_to)
         data_sections["landing_pages"] = fetch_ga4_landing_pages(date_from, date_to)
+        data_sections["ga4"] = fetch_ga4_overview(date_from, date_to)
+        data_sections["ga4_traffic"] = fetch_ga4_traffic_sources(date_from, date_to)
     elif category == "time_device":
         data_sections["device"] = fetch_device_performance(date_from, date_to)
         data_sections["hourly"] = fetch_hourly_performance(date_from, date_to)
         data_sections["campaigns"] = fetch_ads_campaigns(date_from, date_to)
+        data_sections["ga4"] = fetch_ga4_overview(date_from, date_to)
     elif category == "strategy":
         data_sections["campaigns"] = fetch_ads_campaigns(date_from, date_to)
         data_sections["competition"] = fetch_campaign_competition(date_from, date_to)
@@ -2985,170 +2993,79 @@ async def generate_ai_report(request: Request, user: dict = Depends(get_current_
         data_sections["device"] = fetch_device_performance(date_from, date_to)
 
     prompts = {
-        "search_terms": """Sen profesyonel bir Google Ads uzmanısın. Arama terimleri ve anahtar kelime verilerini analiz ediyorsun.
+        "search_terms": """Sen 15 yıllık deneyime sahip bir Google Ads stratejistisin. Arama terimi verilerini analiz edip NEDEN sorunları ve NASIL çözüleceği hakkında derinlemesine içgörüler sunuyorsun.
 
-GÖREV: Detaylı arama terimi ve anahtar kelime raporu oluştur.
+ÖNEMLİ: "Bu kelimeyi kapat" veya "Bunu negatife ekle" gibi yüzeysel tavsiyeler VERME. Bunun yerine:
+- NEDEN bu terim dönüşüm getirmiyor? (kullanıcı niyeti mi farklı, ürün-sayfa uyumu mu yok, fiyat rekabeti mi kaybediliyor)
+- Bu terimi arayan kişinin gerçek niyeti ne? Bilgi mi arıyor, fiyat mı karşılaştırıyor, satın alma niyeti var mı?
+- Kalite puanı düşükse bunun kök nedeni ne? Rakipler bu kelimede ne farklı yapıyor?
+- Hangi terimler NEDEN karlı? Bu başarıyı diğer alanlara nasıl taşıyabiliriz?
 
-## FORMAT:
+Kısa ve öz yaz. Maksimum 600 kelime. Sadece en değerli 5-7 içgörüyü paylaş.""",
 
-### KRİTİK TESPİTLER
-Hemen müdahale gerektiren sorunlar. Her biri için: Ne, Neden, Çözüm.
+        "ad_performance": """Sen üst düzey bir performans pazarlama danışmanısın. Kampanya verilerini analiz edip stratejik içgörüler sunuyorsun.
 
-### BÜTÇE İSRAFI YAPAN TERİMLER
-Tıklama alan ama dönüşüm getirmeyen terimler. Her biri için:
-- Terim ve harcama tutarı
-- Neden dönüşüm getirmediğine dair analiz (hedefleme mi yanlış, sayfa mı uyumsuz, niyet mi farklı)
-- Önerilen aksiyon (negatif kelime olarak ekle, eşleşme tipini değiştir, vb.)
+ÖNEMLİ: "Kampanyayı kapat" gibi basit tavsiyeler VERME. Bunun yerine:
+- Gösterim payı düşükse: NEDEN düşük? Rakipler ne yapıyor farklı? Kalite puanı mı düşük, bütçe mi yetersiz, bid stratejisi mi yanlış?
+- ROAS düşükse: Hangi aşamada kayıp var? Tıklama maliyeti mi yüksek, dönüşüm oranı mı düşük, sepet değeri mi düşük?
+- Cihaz farkı varsa: Mobilde neden farklı performans? Sayfa hızı mı, kullanıcı deneyimi mi, ödeme süreci mi sorunlu?
+- Saat farkı varsa: Neden bazı saatler daha karlı? Hedef kitlenin davranış kalıbı ne?
 
-### KARLI TERİMLER VE FIRSATLAR
-Yüksek ROAS'lı terimler ve potansiyel ölçeklendirme fırsatları.
+Kısa ve öz yaz. Maksimum 600 kelime. GA4 analytics verileriyle çapraz analiz yap.""",
 
-### KALİTE PUANI ANALİZİ
-Düşük kalite puanlı kelimeler ve iyileştirme yolları.
+        "ad_assets": """Sen yaratıcı bir reklam stratejistisin. Reklam öğelerini analiz edip NEDEN bazı başlıkların daha iyi çalıştığını açıklıyorsun.
 
-### NEGATİF ANAHTAR KELİME ÖNERİLERİ
-Eklenmesi gereken negatif kelimeler ve gerekçeleri.
+ÖNEMLİ: Sadece "yeni başlık öner" deme. Bunun yerine:
+- İyi çalışan başlıklarda hangi psikolojik tetikleyiciler var? (aciliyet, sosyal kanıt, fiyat avantajı, güven)
+- Kötü çalışanlar NEDEN kötü? Hangi mesaj eksik?
+- Rakipler benzersiz ne söylüyor ki siz söylemiyorsunuz?
+- Sektöre özel (endüstriyel mutfak) hangi mesajlar etkili olur?
 
-### YENİ ANAHTAR KELİME ÖNERİLERİ
-Mevcut veriye dayanarak eklenmesi önerilen yeni kelimeler.
+10 yeni başlık (max 30 kar.) ve 5 yeni açıklama (max 90 kar.) öner. Her birinin NEDEN etkili olacağını açıkla.
+Kısa ve öz yaz. Maksimum 600 kelime.""",
 
-### EŞLEŞME TİPİ OPTİMİZASYONU
-Hangi kelimelerin eşleşme tipi değiştirilmeli ve neden.
+        "competition": """Sen rekabetçi istihbarat uzmanısın. Gösterim payı ve rekabet verilerini analiz ediyorsun.
 
-### HAFTALIK AKSİYON PLANI
-Bu hafta yapılması gereken en önemli 5 aksiyon.""",
+ÖNEMLİ: "Bütçeyi artır" gibi basit tavsiyeler VERME. Bunun yerine:
+- Gösterim payı NEDEN düşük? Rank kaybı mı, bütçe kaybı mı? Bunlar ne anlama geliyor?
+- Rank kaybı varsa: Rakipler NEDEN önde? Daha yüksek kalite puanı mı, daha iyi reklam uyumu mu, daha güçlü açılış sayfası mı?
+- Bütçe kaybı varsa: Bütçeyi artırmadan gösterim payını artırmanın yolları neler?
+- Bu sektörde (endüstriyel mutfak ekipmanları) rakiplerden ayrışmanın yolları neler?
 
-        "ad_performance": """Sen profesyonel bir dijital pazarlama stratejistisin. ROAS'ı artırmak birincil hedef.
+Kısa ve öz yaz. Maksimum 500 kelime.""",
 
-## FORMAT:
+        "seo": """Sen e-ticaret SEO uzmanısın. Organik arama verilerini analiz ediyorsun.
 
-### GENEL PERFORMANS DEĞERLENDİRMESİ
-Toplam harcama, dönüşüm, ROAS. Trend.
+ÖNEMLİ:
+- Pozisyon 5-15 arası sorgular NEDEN ilk 3'e çıkamıyor? İçerik eksikliği mi, teknik sorun mu, backlink mi?
+- Düşük CTR'li sorgularda: Meta başlığınız NEDEN tıklanmıyor? Rakiplerin snippet'ları ne sunuyor?
+- GA4 bounce rate yüksek sayfalarda: Kullanıcı neden hemen çıkıyor? İçerik beklentiyle örtüşmüyor mu?
+- Hangi organik sayfalar satış getiriyor, hangilerinden yalnızca trafik geliyor?
 
-### KAMPANYA BAZLI ANALİZ
-Her kampanya için: Performans skoru (1-10), güçlü/zayıf yönler, spesifik öneriler.
-
-### BÜTÇE OPTİMİZASYONU
-Hangi kampanyalara daha fazla, hangilerine daha az bütçe. Optimal dağılım.
-
-### CİHAZ PERFORMANSI
-Mobil vs Desktop ROAS. Bid ayarı önerileri.
-
-### SAAT BAZLI PERFORMANS
-En verimli/verimsiz saatler. Zamanlama önerileri.
-
-### REKABET DURUMU
-Gösterim payı. Rank vs bütçe kaybı.
-
-### ROAS ARTIRMA PLANI
-1 hafta, 1 ay, 3 ay vadeli spesifik adımlar.""",
-
-        "ad_assets": """Sen yaratıcı bir Google Ads reklam yazarısın. E-ticaret odaklı reklam öğelerini analiz ediyorsun.
-
-## FORMAT:
-
-### BAŞLIK PERFORMANSI
-En iyi/kötü başlıklar ve neden.
-
-### AÇIKLAMA PERFORMANSI
-En etkili/zayıf açıklamalar.
-
-### YENİ BAŞLIK ÖNERİLERİ (en az 10 adet)
-Her biri max 30 karakter. Neden etkili olacağı.
-
-### YENİ AÇIKLAMA ÖNERİLERİ (en az 5 adet)
-Her biri max 90 karakter. Değer önerisi ve CTA.
-
-### REKLAM UZANTILARI ÖNERİLERİ
-Sitelink, callout, snippet önerileri.
-
-### A/B TEST ÖNERİLERİ
-Test edilecek öğeler, hipotezler, beklenen sonuçlar.""",
-
-        "competition": """Sen rekabetçi istihbarat uzmanısın. Pazar ve rekabet verilerini analiz ediyorsun.
-
-## FORMAT:
-
-### REKABET DURUMU ÖZETİ
-Genel pazar pozisyonu.
-
-### GÖSTERİM PAYI ANALİZİ
-Her kampanya için mevcut pay, kaybedilen pay (rank vs bütçe), öneriler.
-
-### RAKİPLERE KARŞI ZAYIF NOKTALAR
-Geride kalınan alanlar ve kapanması gereken boşluklar.
-
-### PAZAR FIRSATLARI
-Düşük rekabetli yüksek potansiyelli alanlar.
-
-### SAVUNMA STRATEJİSİ
-Marka korunması ve rakip saldırılarına karşı taktikler.
-
-### SALDIRI STRATEJİSİ
-Rakiplerden pay alma yolları.""",
-
-        "seo": """Sen SEO uzmanısın. E-ticaret sitesi için organik arama verilerini analiz ediyorsun.
-
-## FORMAT:
-
-### ORGANİK PERFORMANS ÖZETİ
-Toplam organik trafik, ortalama pozisyon.
-
-### İLK SAYFAYA ÇIKARILACAK SORGULAR
-Pozisyon 5-15 arası yüksek gösterimli sorgular. Her biri için spesifik optimizasyon adımları.
-
-### DÜŞÜK CTR SORUNLARI
-Yüksek gösterimli ama düşük CTR'li sorgular. Meta başlık/açıklama önerileri.
-
-### SAYFA BAZLI PERFORMANS
-En iyi ve en kötü sayfalar. İçerik iyileştirme önerileri.
-
-### İÇERİK STRATEJİSİ
-Eksik konular. Blog/rehber önerileri.
-
-### 30 GÜNLÜK SEO AKSİYON PLANI""",
+GA4 analytics verileriyle (oturum süresi, hemen çıkma, gelir) çapraz analiz yap.
+Kısa ve öz yaz. Maksimum 500 kelime.""",
 
         "time_device": """Sen veri analisti ve medya planlama uzmanısın.
 
-## FORMAT:
+ÖNEMLİ:
+- Mobil-Desktop ROAS farkı NEDEN var? Sadece bid değil, kullanıcı deneyimi açısından analiz et.
+- Saatlik performans farkları NEDEN oluşuyor? Hedef kitlenin gün içi davranış kalıbı ne?
+- Düşük performanslı saatlerde reklam kapatmak yerine, o saatlerde NEDEN düşük ve nasıl iyileştirilebilir?
 
-### CİHAZ ANALİZİ
-Her cihaz: harcama, ROAS, bid ayarı önerisi (%).
+GA4 analytics verileriyle çapraz analiz yap.
+Kısa ve öz yaz. Maksimum 400 kelime.""",
 
-### SAAT BAZLI ANALİZ
-En verimli/verimsiz saatler. Bid ayarı önerileri.
+        "strategy": """Sen dijital pazarlama direktörüsün. Tüm kanalları kapsayan stratejik değerlendirme yap.
 
-### REKLAM ZAMANLAMA ÖNERİLERİ
-Hangi saatlerde bid artır/düşür. Tahmini tasarruf.
+ROAS'ı artırmak ana hedef. Her önerinin NEDEN işe yarayacağını ve tahmini etkisini açıkla.
 
-### MOBİL OPTİMİZASYON
-Mobil dönüşüm sorunları ve çözüm önerileri.""",
+1. Yönetici Özeti (3 cümle): En kritik bulgu
+2. Performans Skoru (Google Ads, SEO, Genel: her biri 1-10)
+3. En Büyük 3 Fırsat: Her birinin NEDEN fırsat olduğu ve tahmini ROAS etkisi
+4. 1 Haftalık Aksiyon Planı (5 madde)
+5. 1 Aylık Aksiyon Planı (5 madde)
 
-        "strategy": """Sen üst düzey dijital pazarlama direktörüsün. Tüm kanalları kapsayan stratejik değerlendirme yap.
-
-## FORMAT:
-
-### YÖNETİCİ ÖZETİ (3-5 cümle)
-En kritik bulgu ve fırsat.
-
-### PERFORMANS SKOR KARTI
-Her kanal için 1-10 puan ve gerekçe.
-
-### KRİTİK SORUNLAR (Acil Müdahale)
-En acil 3-5 sorun ve çözümleri.
-
-### EN BÜYÜK FIRSATLAR
-ROAS'ı en hızlı artıracak 3-5 fırsat.
-
-### BÜTÇE STRATEJİSİ
-Mevcut dağılım, önerilen dağılım, ROI bazlı önceliklendirme.
-
-### 1 HAFTALIK AKSİYON PLANI
-### 1 AYLIK AKSİYON PLANI
-### 3 AYLIK STRATEJİK YOL HARİTASI
-
-### TAHMINI ETKİ
-Önerilen değişikliklerin tahmini ROAS ve gelir etkisi."""
+GA4 analytics verileriyle çapraz analiz yap. Kısa ve öz yaz. Maksimum 600 kelime."""
     }
 
     system_prompt = prompts.get(category, prompts["strategy"])
