@@ -1573,6 +1573,278 @@ async def get_seo_content(slug: str, user: dict = Depends(get_current_user)):
     seo = await db.seo_content.find_one({"product_slug": slug}, {"_id": 0})
     return seo or {}
 
+# ============ BULK SEO GENERATION + IKAS PUSH ============
+
+@api_router.get("/seo/categories/stats")
+async def seo_category_stats(user: dict = Depends(get_current_user)):
+    """Get SEO generation stats per İkas category."""
+    # Get all unique categories from products
+    pipeline = [
+        {"$match": {"our_price": {"$ne": None}}},
+        {"$group": {"_id": "$category_path", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+    ]
+    cat_groups = await db.products.aggregate(pipeline).to_list(500)
+    
+    categories = []
+    for cg in cat_groups:
+        cat_name = cg["_id"] or "Kategori Yok"
+        total = cg["count"]
+        
+        # Count SEO generated
+        cat_regex = re.escape(cat_name) if cat_name != "Kategori Yok" else "^$"
+        if cat_name == "Kategori Yok":
+            slugs = await db.products.find({"category_path": {"$in": [None, ""]}, "our_price": {"$ne": None}}, {"_id": 0, "slug": 1}).to_list(5000)
+        else:
+            slugs = await db.products.find({"category_path": cat_name, "our_price": {"$ne": None}}, {"_id": 0, "slug": 1}).to_list(5000)
+        slug_list = [s["slug"] for s in slugs]
+        
+        seo_done = await db.seo_content.count_documents({"product_slug": {"$in": slug_list}})
+        ikas_pushed = await db.products.count_documents({"slug": {"$in": slug_list}, "ikas_seo_pushed": True})
+        
+        categories.append({
+            "category": cat_name,
+            "total": total,
+            "seo_generated": seo_done,
+            "ikas_pushed": ikas_pushed,
+            "remaining": total - seo_done,
+        })
+    
+    return {"categories": categories}
+
+@api_router.post("/seo/bulk-generate-push")
+async def bulk_seo_generate_push(category: str = "", user: dict = Depends(get_current_user)):
+    """Start bulk SEO generation + İkas push for a category."""
+    status = await db.system_status.find_one({"task": "bulk_seo"}, {"_id": 0})
+    if status and status.get("running"):
+        return {"started": False, "message": "Toplu SEO uretimi zaten calisiyor."}
+    
+    # Find products in this category that don't have SEO content yet
+    query = {"our_price": {"$ne": None}}
+    if category and category != "Kategori Yok":
+        query["category_path"] = category
+    elif category == "Kategori Yok":
+        query["category_path"] = {"$in": [None, ""]}
+    
+    products = await db.products.find(query, {"_id": 0, "slug": 1, "name": 1}).to_list(10000)
+    slug_list = [p["slug"] for p in products]
+    
+    # Filter out already generated
+    existing_seo = await db.seo_content.find({"product_slug": {"$in": slug_list}}, {"_id": 0, "product_slug": 1}).to_list(10000)
+    existing_slugs = set(s["product_slug"] for s in existing_seo)
+    pending = [p for p in products if p["slug"] not in existing_slugs]
+    
+    if not pending:
+        return {"started": False, "message": "Bu kategorideki tum urunlerin SEO icerigi zaten uretilmis."}
+    
+    await db.system_status.update_one(
+        {"task": "bulk_seo"},
+        {"$set": {"running": True, "started_at": datetime.now(timezone.utc).isoformat(), "total": len(pending), "current": 0, "success": 0, "failed": 0, "category": category or "Tumu"}},
+        upsert=True
+    )
+    
+    asyncio.ensure_future(run_bulk_seo_generate(pending, category))
+    return {"started": True, "message": f"{len(pending)} urun icin SEO uretimi basladi ({category or 'Tum kategoriler'})"}
+
+async def run_bulk_seo_generate(products: list, category: str):
+    """Background: Generate SEO for each product and push to İkas."""
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    if not openai_key:
+        await db.system_status.update_one({"task": "bulk_seo"}, {"$set": {"running": False, "error": "OpenAI key yok"}})
+        return
+    
+    success = 0
+    failed = 0
+    
+    for i, prod in enumerate(products):
+        slug = prod["slug"]
+        try:
+            await db.system_status.update_one({"task": "bulk_seo"}, {"$set": {"current": i + 1, "success": success, "failed": failed, "current_product": prod["name"][:50]}})
+            
+            # Generate SEO via existing endpoint logic
+            product = await db.products.find_one({"slug": slug})
+            if not product:
+                failed += 1
+                continue
+            
+            # Scrape product page for specs
+            product_page_data = ""
+            try:
+                product_url = product.get("url", "")
+                if product_url:
+                    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as http_client:
+                        resp = await http_client.get(product_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Accept-Language": "tr-TR,tr;q=0.9"})
+                        if resp.status_code == 200:
+                            page_soup = BeautifulSoup(resp.text, "html.parser")
+                            page_text = page_soup.get_text(" ", strip=True)
+                            specs_section = ""
+                            for keyword in ["Teknik Özellik", "Teknik Detay", "Özellikler", "Tip:", "En (mm):", "Boy (mm):", "Kapasite"]:
+                                idx = page_text.find(keyword)
+                                if idx != -1:
+                                    specs_section = page_text[max(0, idx-50):idx+2000]
+                                    break
+                            desc_section = ""
+                            for keyword in ["Ürün Detayı", "Ürün Açıklama"]:
+                                idx = page_text.find(keyword)
+                                if idx != -1:
+                                    desc_section = page_text[idx:idx+2000]
+                                    break
+                            product_page_data = f"MEVCUT ÜRÜN SAYFASI VERİLERİ:\n{specs_section}\n\n{desc_section}".strip()
+                            if len(product_page_data) < 50:
+                                product_page_data = page_text[:3000]
+            except Exception:
+                pass
+            
+            # Generate SEO with AI
+            from emergentintegrations.llm.chat import LlmChat, UserMessage
+            import json as json_mod
+            
+            product_name = product['name']
+            brand = product.get('brand', '')
+            cat = product.get('category_path', '')
+            
+            chat = LlmChat(
+                api_key=openai_key,
+                session_id=f"seo-bulk-{slug[:15]}-{uuid.uuid4().hex[:6]}",
+                system_message="""Sen Türkiye'nin en deneyimli SEO ve içerik uzmanısın. Endüstriyel mutfak ekipmanları sektöründe 15 yıllık tecrüben var.
+Arıgastro Endüstriyel Mutfak Ekipmanları (arigastro.com) firması için çalışıyorsun.
+
+GÖREV: Verilen ürün için Google'da üst sıralarda çıkacak SEO içerikleri hazırla.
+
+KURALLAR:
+1. SEO Title: Max 60 karakter. Ana anahtar kelimeyi başa yerleştir. FİYAT BİLGİSİ YAZMA.
+2. SEO Description: Max 160 karakter. Call-to-action içermeli. FİYAT BİLGİSİ YAZMA.
+3. Ürün Açıklaması: MİNİMUM 500 KELİME. Başlıklar, maddeler, SSS içermeli. Teknik özellikleri mutlaka ekle.
+4. ASLA FİYAT RAKAMI YAZMA.
+5. İçerik Türkçe, doğal ve profesyonel olmalı.
+
+JSON yanıt: {"seo_title": "...", "seo_description": "...", "product_description": "..."}"""
+            ).with_model("openai", "gpt-4o")
+            
+            prompt = f"Ürün: {product_name}\nMarka: {brand}\nKategori: {cat}\nGTIN: {product.get('gtin', '')}\n\n{product_page_data}\n\nJSON formatında yanıt ver."
+            response = await chat.send_message(UserMessage(text=prompt))
+            
+            response_text = response.strip()
+            if response_text.startswith("```"):
+                response_text = re.sub(r'^```(?:json)?\s*', '', response_text)
+                response_text = re.sub(r'\s*```$', '', response_text)
+            
+            seo_data = json_mod.loads(response_text)
+            desc = seo_data.get("product_description", "")
+            word_count = len(desc.split())
+            
+            seo_record = {
+                "product_slug": slug, "product_name": product_name,
+                "seo_title": seo_data.get("seo_title", ""),
+                "seo_description": seo_data.get("seo_description", ""),
+                "product_description": desc,
+                "word_count": word_count,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "status": "generated"
+            }
+            await db.seo_content.update_one({"product_slug": slug}, {"$set": seo_record}, upsert=True)
+            
+            # Push to İkas
+            ikas_pushed = False
+            if IKAS_CLIENT_ID and IKAS_CLIENT_SECRET:
+                try:
+                    loop = asyncio.get_event_loop()
+                    ikas_products = await loop.run_in_executor(None, ikas_search_product, product_name)
+                    if ikas_products:
+                        ikas_id = ikas_products[0]["id"]
+                        # Convert markdown to HTML
+                        desc_html = desc
+                        html_lines = []
+                        in_list = False
+                        for line in desc_html.split("\n"):
+                            stripped = line.strip()
+                            if not stripped:
+                                if in_list: html_lines.append("</ul>"); in_list = False
+                                html_lines.append("<br>")
+                                continue
+                            if stripped.startswith("### "):
+                                if in_list: html_lines.append("</ul>"); in_list = False
+                                html_lines.append(f"<h3>{stripped[4:]}</h3>")
+                            elif stripped.startswith("## "):
+                                if in_list: html_lines.append("</ul>"); in_list = False
+                                html_lines.append(f"<h2>{stripped[3:]}</h2>")
+                            elif stripped.startswith("# "):
+                                if in_list: html_lines.append("</ul>"); in_list = False
+                                html_lines.append(f"<h1>{stripped[2:]}</h1>")
+                            elif stripped.startswith("- ") or stripped.startswith("* "):
+                                if not in_list: html_lines.append("<ul>"); in_list = True
+                                item = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', stripped[2:])
+                                html_lines.append(f"<li>{item}</li>")
+                            else:
+                                if in_list: html_lines.append("</ul>"); in_list = False
+                                text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', stripped)
+                                html_lines.append(f"<p>{text}</p>")
+                        if in_list: html_lines.append("</ul>")
+                        desc_html = "\n".join(html_lines)
+                        
+                        await loop.run_in_executor(None, ikas_update_product, ikas_id, seo_data.get("seo_title", ""), seo_data.get("seo_description", ""), desc_html)
+                        ikas_pushed = True
+                        await db.products.update_one({"slug": slug}, {"$set": {"ikas_seo_pushed": True, "ikas_product_id": ikas_id, "ikas_pushed_at": datetime.now(timezone.utc).isoformat()}})
+                except Exception as e:
+                    logger.warning(f"Ikas push failed for {slug}: {e}")
+            
+            # Log
+            await db.seo_logs.insert_one({
+                "product_slug": slug, "product_name": product_name, "category": cat,
+                "seo_generated": True, "ikas_pushed": ikas_pushed,
+                "word_count": word_count, "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+            
+            success += 1
+            await asyncio.sleep(2)
+        except Exception as e:
+            logger.error(f"Bulk SEO error for {slug}: {e}")
+            await db.seo_logs.insert_one({
+                "product_slug": slug, "product_name": prod.get("name", ""),
+                "seo_generated": False, "ikas_pushed": False, "error": str(e)[:200],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+            failed += 1
+            await asyncio.sleep(1)
+    
+    await db.system_status.update_one({"task": "bulk_seo"}, {"$set": {
+        "running": False, "success": success, "failed": failed, "total": len(products),
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+    }})
+    logger.info(f"Bulk SEO tamamlandi: {success} basarili, {failed} basarisiz")
+
+@api_router.get("/seo/bulk-status")
+async def seo_bulk_status(user: dict = Depends(get_current_user)):
+    status = await db.system_status.find_one({"task": "bulk_seo"}, {"_id": 0})
+    if status and status.get("running"):
+        started = status.get("started_at", "")
+        if started:
+            try:
+                elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(started)).total_seconds()
+                if elapsed > 7200:
+                    await db.system_status.update_one({"task": "bulk_seo"}, {"$set": {"running": False, "error": "Zaman asimi"}})
+                    status["running"] = False
+            except Exception:
+                pass
+    return status or {"running": False}
+
+@api_router.get("/seo/logs")
+async def get_seo_logs(page: int = 1, limit: int = 50, user: dict = Depends(get_current_user)):
+    """Get SEO generation logs."""
+    skip = (page - 1) * limit
+    total = await db.seo_logs.count_documents({})
+    logs = await db.seo_logs.find({}, {"_id": 0}).sort("timestamp", -1).skip(skip).limit(limit).to_list(limit)
+    
+    # Stats
+    total_generated = await db.seo_logs.count_documents({"seo_generated": True})
+    total_pushed = await db.seo_logs.count_documents({"ikas_pushed": True})
+    total_failed = await db.seo_logs.count_documents({"seo_generated": False})
+    
+    return {
+        "logs": logs, "total": total, "page": page, "pages": (total + limit - 1) // limit,
+        "stats": {"generated": total_generated, "pushed": total_pushed, "failed": total_failed}
+    }
+
 # ============ DASHBOARD ============
 
 @api_router.get("/dashboard/stats")

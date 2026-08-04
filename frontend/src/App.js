@@ -8,6 +8,7 @@ import CategoriesPage from "./pages/CategoriesPage";
 import ProductsPage from "./pages/ProductsPage";
 import PriceTrackingPage from "./pages/PriceTrackingPage";
 import SeoGeneratorPage from "./pages/SeoGeneratorPage";
+import SeoLogsPage from "./pages/SeoLogsPage";
 import GuidePage from "./pages/GuidePage";
 import SettingsPage from "./pages/SettingsPage";
 import "./App.css";
@@ -48,6 +49,7 @@ function App() {
           <Route path="/products" element={<ProtectedRoute><ProductsPage /></ProtectedRoute>} />
           <Route path="/price-tracking" element={<ProtectedRoute><PriceTrackingPage /></ProtectedRoute>} />
           <Route path="/seo" element={<ProtectedRoute><SeoGeneratorPage /></ProtectedRoute>} />
+          <Route path="/seo-logs" element={<ProtectedRoute><SeoLogsPage /></ProtectedRoute>} />
           <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
           <Route path="/guide" element={<ProtectedRoute><GuidePage /></ProtectedRoute>} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
