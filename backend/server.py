@@ -2533,7 +2533,11 @@ async def delete_user(username: str, user: dict = Depends(get_current_user)):
 from google_marketing import (
     fetch_ads_campaigns, fetch_ads_keywords,
     fetch_ga4_overview, fetch_ga4_traffic_sources,
-    fetch_gsc_data, fetch_all_marketing_data, get_sa_path
+    fetch_gsc_data, fetch_all_marketing_data, get_sa_path,
+    fetch_search_terms, fetch_keyword_quality_scores,
+    fetch_ad_assets, fetch_campaign_competition,
+    fetch_device_performance, fetch_hourly_performance,
+    fetch_gsc_pages, fetch_ga4_landing_pages
 )
 
 @api_router.get("/marketing/test-connection")
@@ -2899,6 +2903,312 @@ async def get_marketing_actions_log(limit: int = 20, user: dict = Depends(get_cu
     async for doc in cursor:
         actions.append(doc)
     return actions
+
+# ============ REPORT ENDPOINTS ============
+
+@api_router.get("/reports/search-terms")
+async def get_search_terms_report(date_from: str = None, date_to: str = None, user: dict = Depends(get_current_user)):
+    return fetch_search_terms(date_from, date_to)
+
+@api_router.get("/reports/quality-scores")
+async def get_quality_scores_report(user: dict = Depends(get_current_user)):
+    return fetch_keyword_quality_scores()
+
+@api_router.get("/reports/ad-assets")
+async def get_ad_assets_report(date_from: str = None, date_to: str = None, user: dict = Depends(get_current_user)):
+    return fetch_ad_assets(date_from, date_to)
+
+@api_router.get("/reports/competition")
+async def get_competition_report(date_from: str = None, date_to: str = None, user: dict = Depends(get_current_user)):
+    return fetch_campaign_competition(date_from, date_to)
+
+@api_router.get("/reports/device-performance")
+async def get_device_performance_report(date_from: str = None, date_to: str = None, user: dict = Depends(get_current_user)):
+    return fetch_device_performance(date_from, date_to)
+
+@api_router.get("/reports/hourly-performance")
+async def get_hourly_performance_report(date_from: str = None, date_to: str = None, user: dict = Depends(get_current_user)):
+    return fetch_hourly_performance(date_from, date_to)
+
+@api_router.get("/reports/gsc-pages")
+async def get_gsc_pages_report(date_from: str = None, date_to: str = None, user: dict = Depends(get_current_user)):
+    return fetch_gsc_pages(date_from, date_to)
+
+@api_router.get("/reports/landing-pages")
+async def get_landing_pages_report(date_from: str = None, date_to: str = None, user: dict = Depends(get_current_user)):
+    return fetch_ga4_landing_pages(date_from, date_to)
+
+@api_router.post("/reports/ai-report")
+async def generate_ai_report(request: Request, user: dict = Depends(get_current_user)):
+    """Generate AI report for a specific category."""
+    body = await request.json()
+    category = body.get("category", "search_terms")
+    date_from = body.get("date_from")
+    date_to = body.get("date_to")
+
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    if not openai_key:
+        raise HTTPException(status_code=400, detail="OpenAI API anahtari bulunamadi")
+
+    # Fetch relevant data based on category
+    data_sections = {}
+    if category == "search_terms":
+        data_sections["search_terms"] = fetch_search_terms(date_from, date_to, limit=150)
+        data_sections["quality_scores"] = fetch_keyword_quality_scores(limit=80)
+    elif category == "ad_performance":
+        data_sections["campaigns"] = fetch_ads_campaigns(date_from, date_to)
+        data_sections["competition"] = fetch_campaign_competition(date_from, date_to)
+        data_sections["device"] = fetch_device_performance(date_from, date_to)
+        data_sections["hourly"] = fetch_hourly_performance(date_from, date_to)
+    elif category == "ad_assets":
+        data_sections["assets"] = fetch_ad_assets(date_from, date_to)
+        data_sections["campaigns"] = fetch_ads_campaigns(date_from, date_to)
+    elif category == "competition":
+        data_sections["competition"] = fetch_campaign_competition(date_from, date_to)
+        data_sections["keywords"] = fetch_ads_keywords(date_from, date_to)
+        data_sections["search_terms"] = fetch_search_terms(date_from, date_to, limit=50)
+    elif category == "seo":
+        data_sections["gsc_queries"] = fetch_gsc_data(date_from, date_to, limit=50)
+        data_sections["gsc_pages"] = fetch_gsc_pages(date_from, date_to)
+        data_sections["landing_pages"] = fetch_ga4_landing_pages(date_from, date_to)
+    elif category == "time_device":
+        data_sections["device"] = fetch_device_performance(date_from, date_to)
+        data_sections["hourly"] = fetch_hourly_performance(date_from, date_to)
+        data_sections["campaigns"] = fetch_ads_campaigns(date_from, date_to)
+    elif category == "strategy":
+        data_sections["campaigns"] = fetch_ads_campaigns(date_from, date_to)
+        data_sections["competition"] = fetch_campaign_competition(date_from, date_to)
+        data_sections["search_terms"] = fetch_search_terms(date_from, date_to, limit=80)
+        data_sections["quality_scores"] = fetch_keyword_quality_scores(limit=50)
+        data_sections["gsc_queries"] = fetch_gsc_data(date_from, date_to, limit=30)
+        data_sections["ga4"] = fetch_ga4_overview(date_from, date_to)
+        data_sections["device"] = fetch_device_performance(date_from, date_to)
+
+    prompts = {
+        "search_terms": """Sen profesyonel bir Google Ads uzmanısın. Arama terimleri ve anahtar kelime verilerini analiz ediyorsun.
+
+GÖREV: Detaylı arama terimi ve anahtar kelime raporu oluştur.
+
+## FORMAT:
+
+### KRİTİK TESPİTLER
+Hemen müdahale gerektiren sorunlar. Her biri için: Ne, Neden, Çözüm.
+
+### BÜTÇE İSRAFI YAPAN TERİMLER
+Tıklama alan ama dönüşüm getirmeyen terimler. Her biri için:
+- Terim ve harcama tutarı
+- Neden dönüşüm getirmediğine dair analiz (hedefleme mi yanlış, sayfa mı uyumsuz, niyet mi farklı)
+- Önerilen aksiyon (negatif kelime olarak ekle, eşleşme tipini değiştir, vb.)
+
+### KARLI TERİMLER VE FIRSATLAR
+Yüksek ROAS'lı terimler ve potansiyel ölçeklendirme fırsatları.
+
+### KALİTE PUANI ANALİZİ
+Düşük kalite puanlı kelimeler ve iyileştirme yolları.
+
+### NEGATİF ANAHTAR KELİME ÖNERİLERİ
+Eklenmesi gereken negatif kelimeler ve gerekçeleri.
+
+### YENİ ANAHTAR KELİME ÖNERİLERİ
+Mevcut veriye dayanarak eklenmesi önerilen yeni kelimeler.
+
+### EŞLEŞME TİPİ OPTİMİZASYONU
+Hangi kelimelerin eşleşme tipi değiştirilmeli ve neden.
+
+### HAFTALIK AKSİYON PLANI
+Bu hafta yapılması gereken en önemli 5 aksiyon.""",
+
+        "ad_performance": """Sen profesyonel bir dijital pazarlama stratejistisin. ROAS'ı artırmak birincil hedef.
+
+## FORMAT:
+
+### GENEL PERFORMANS DEĞERLENDİRMESİ
+Toplam harcama, dönüşüm, ROAS. Trend.
+
+### KAMPANYA BAZLI ANALİZ
+Her kampanya için: Performans skoru (1-10), güçlü/zayıf yönler, spesifik öneriler.
+
+### BÜTÇE OPTİMİZASYONU
+Hangi kampanyalara daha fazla, hangilerine daha az bütçe. Optimal dağılım.
+
+### CİHAZ PERFORMANSI
+Mobil vs Desktop ROAS. Bid ayarı önerileri.
+
+### SAAT BAZLI PERFORMANS
+En verimli/verimsiz saatler. Zamanlama önerileri.
+
+### REKABET DURUMU
+Gösterim payı. Rank vs bütçe kaybı.
+
+### ROAS ARTIRMA PLANI
+1 hafta, 1 ay, 3 ay vadeli spesifik adımlar.""",
+
+        "ad_assets": """Sen yaratıcı bir Google Ads reklam yazarısın. E-ticaret odaklı reklam öğelerini analiz ediyorsun.
+
+## FORMAT:
+
+### BAŞLIK PERFORMANSI
+En iyi/kötü başlıklar ve neden.
+
+### AÇIKLAMA PERFORMANSI
+En etkili/zayıf açıklamalar.
+
+### YENİ BAŞLIK ÖNERİLERİ (en az 10 adet)
+Her biri max 30 karakter. Neden etkili olacağı.
+
+### YENİ AÇIKLAMA ÖNERİLERİ (en az 5 adet)
+Her biri max 90 karakter. Değer önerisi ve CTA.
+
+### REKLAM UZANTILARI ÖNERİLERİ
+Sitelink, callout, snippet önerileri.
+
+### A/B TEST ÖNERİLERİ
+Test edilecek öğeler, hipotezler, beklenen sonuçlar.""",
+
+        "competition": """Sen rekabetçi istihbarat uzmanısın. Pazar ve rekabet verilerini analiz ediyorsun.
+
+## FORMAT:
+
+### REKABET DURUMU ÖZETİ
+Genel pazar pozisyonu.
+
+### GÖSTERİM PAYI ANALİZİ
+Her kampanya için mevcut pay, kaybedilen pay (rank vs bütçe), öneriler.
+
+### RAKİPLERE KARŞI ZAYIF NOKTALAR
+Geride kalınan alanlar ve kapanması gereken boşluklar.
+
+### PAZAR FIRSATLARI
+Düşük rekabetli yüksek potansiyelli alanlar.
+
+### SAVUNMA STRATEJİSİ
+Marka korunması ve rakip saldırılarına karşı taktikler.
+
+### SALDIRI STRATEJİSİ
+Rakiplerden pay alma yolları.""",
+
+        "seo": """Sen SEO uzmanısın. E-ticaret sitesi için organik arama verilerini analiz ediyorsun.
+
+## FORMAT:
+
+### ORGANİK PERFORMANS ÖZETİ
+Toplam organik trafik, ortalama pozisyon.
+
+### İLK SAYFAYA ÇIKARILACAK SORGULAR
+Pozisyon 5-15 arası yüksek gösterimli sorgular. Her biri için spesifik optimizasyon adımları.
+
+### DÜŞÜK CTR SORUNLARI
+Yüksek gösterimli ama düşük CTR'li sorgular. Meta başlık/açıklama önerileri.
+
+### SAYFA BAZLI PERFORMANS
+En iyi ve en kötü sayfalar. İçerik iyileştirme önerileri.
+
+### İÇERİK STRATEJİSİ
+Eksik konular. Blog/rehber önerileri.
+
+### 30 GÜNLÜK SEO AKSİYON PLANI""",
+
+        "time_device": """Sen veri analisti ve medya planlama uzmanısın.
+
+## FORMAT:
+
+### CİHAZ ANALİZİ
+Her cihaz: harcama, ROAS, bid ayarı önerisi (%).
+
+### SAAT BAZLI ANALİZ
+En verimli/verimsiz saatler. Bid ayarı önerileri.
+
+### REKLAM ZAMANLAMA ÖNERİLERİ
+Hangi saatlerde bid artır/düşür. Tahmini tasarruf.
+
+### MOBİL OPTİMİZASYON
+Mobil dönüşüm sorunları ve çözüm önerileri.""",
+
+        "strategy": """Sen üst düzey dijital pazarlama direktörüsün. Tüm kanalları kapsayan stratejik değerlendirme yap.
+
+## FORMAT:
+
+### YÖNETİCİ ÖZETİ (3-5 cümle)
+En kritik bulgu ve fırsat.
+
+### PERFORMANS SKOR KARTI
+Her kanal için 1-10 puan ve gerekçe.
+
+### KRİTİK SORUNLAR (Acil Müdahale)
+En acil 3-5 sorun ve çözümleri.
+
+### EN BÜYÜK FIRSATLAR
+ROAS'ı en hızlı artıracak 3-5 fırsat.
+
+### BÜTÇE STRATEJİSİ
+Mevcut dağılım, önerilen dağılım, ROI bazlı önceliklendirme.
+
+### 1 HAFTALIK AKSİYON PLANI
+### 1 AYLIK AKSİYON PLANI
+### 3 AYLIK STRATEJİK YOL HARİTASI
+
+### TAHMINI ETKİ
+Önerilen değişikliklerin tahmini ROAS ve gelir etkisi."""
+    }
+
+    system_prompt = prompts.get(category, prompts["strategy"])
+    system_prompt += """
+
+ÖNEMLİ KURALLAR:
+- Veri yoksa "Veri bulunamadı" yaz, uydurma
+- TL cinsinden parasal değerler kullan
+- Spesifik kampanya/keyword isimlerini kullan
+- Her öneri uygulanabilir ve spesifik olmalı
+- Anlaşılır Türkçe kullan
+- Veriye dayalı kararlar öner"""
+
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        import json as json_mod
+
+        chat = LlmChat(
+            api_key=openai_key,
+            session_id=f"report-{category}-{uuid.uuid4().hex[:8]}",
+            system_message=system_prompt
+        ).with_model("openai", "gpt-4o")
+
+        data_text = ""
+        for key, value in data_sections.items():
+            if isinstance(value, list):
+                clean = [item for item in value if not (isinstance(item, dict) and "error" in item)]
+                if clean:
+                    data_text += f"\n## {key.upper().replace('_', ' ')} ({len(clean)} kayıt)\n"
+                    for item in clean[:80]:
+                        data_text += f"- {json_mod.dumps(item, ensure_ascii=False)}\n"
+            elif isinstance(value, dict) and "error" not in value:
+                data_text += f"\n## {key.upper().replace('_', ' ')}\n{json_mod.dumps(value, ensure_ascii=False)}\n"
+
+        response = await chat.send_message(UserMessage(text=data_text))
+
+        await db.marketing_reports.insert_one({
+            "category": category,
+            "date_from": date_from,
+            "date_to": date_to,
+            "report": response,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_by": user["username"],
+        })
+
+        return {"report": response, "category": category}
+    except Exception as e:
+        logger.error(f"AI report error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/reports/history")
+async def get_report_history(category: str = None, limit: int = 10, user: dict = Depends(get_current_user)):
+    query = {}
+    if category:
+        query["category"] = category
+    cursor = db.marketing_reports.find(query, {"_id": 0}).sort("created_at", -1).limit(limit)
+    reports = []
+    async for doc in cursor:
+        reports.append(doc)
+    return reports
 
 @api_router.get("/")
 async def root():
