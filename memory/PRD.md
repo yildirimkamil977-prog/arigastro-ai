@@ -1,42 +1,36 @@
 # ARI AI - Competitor Price Tracking System PRD
 
 ## Original Problem Statement
-Arıgastro e-commerce competitor price tracking: feed.xml → AI matching with Akakçe → price tracking → SEO generator. Admin panel with JWT auth.
+Arıgastro e-commerce competitor price tracking + SEO generator + İkas API integration
 
 ## Tech Stack
-React + FastAPI + MongoDB + ScraperAPI (paid fallback) + OpenAI GPT-4o + APScheduler
+React + FastAPI + MongoDB + ScraperAPI + OpenAI GPT-4o + APScheduler + İkas GraphQL API
 
-## Scraping Strategy (Free-First)
-1. curl_cffi direct (FREE) - works on residential IP
-2. httpx direct (FREE) - fallback
-3. ScraperAPI (PAID) - last resort only
-- Google SERP: Free search first → ScraperAPI structured SERP (25 credits/req) as fallback
-- Akakçe pages: curl_cffi first → ScraperAPI (~10 credits/req) as fallback
-- **Residential IP = completely free operation** (no Cloudflare blocks)
-
-## All Features (DONE)
+## All Features
 1. JWT Auth + admin seeding
-2. Product Import (sitemap + Google Merchant Feed)
-3. Category Management (track/untrack)
-4. AI Product Matching (parallel, 2 workers)
-5. Price Tracking (parallel, 3 workers, category filter, individual exclusion)
-6. SEO Generator (specs scraping + GPT-4o)
-7. Dashboard (stats + ScraperAPI credits)
-8. Settings (system status, scheduler, user management CRUD)
-9. Guide Page (5-step guide + residential IP info)
-10. APScheduler (12h feed sync, 24h price check)
-11. Stuck task auto-recovery (20min timeout + startup reset)
+2. Product Import (Google Merchant Feed)
+3. Category Management (track/untrack, Turkish char support, brand matching)
+4. AI Product Matching + Akakçe Panel JSON Import (0 credit)
+5. Price Tracking (parallel workers, category filter, individual exclusion)
+6. SEO Generator (AI content + ReactMarkdown rendering)
+7. **İkas API Integration** (push SEO content directly to İkas)
+8. Dashboard (stats + ScraperAPI credits)
+9. Settings (system status, scheduler, user management CRUD)
+10. Guide Page
+11. APScheduler (Feed: 01:00 daily, Price check: 00:00 TR daily)
+12. Stuck task auto-recovery
 
-## Speed Improvements
-- Bulk price check: 3 parallel workers, 0.5-1.5s delay (was 3-6s sequential)
-- AI matching: 2 parallel workers, 1-2s delay (was 3-5s sequential)
-- ~3x faster than before
+## İkas API
+- Auth: OAuth2 Client Credentials → `https://api.myikas.com/api/admin/oauth/token`
+- GraphQL: `https://api.myikas.com/api/v2/admin/graphql`
+- Product search: `listProduct(search, pagination)`
+- Product update: `updateProduct(input: {id, description, metaData: {pageTitle, description}})`
+- Client ID: 0cdef9f7-8c75-4ec3-8037-376fa050ce30
 
 ## Key Credentials
 - Admin: arigastro / Arigastro2026!
 - ScraperAPI: c214e73952e0b11ef5c0398aed5b55be
-
-## Backlog
-- Fiyat değişiklik bildirimleri (Telegram/e-posta)
-- Fiyat geçmişi grafiği
-- Excel/CSV export
+- İkas Client ID: 0cdef9f7-8c75-4ec3-8037-376fa050ce30
+- Akakçe Panel: info@arigastro.com / Ari7065626
+- Server: 161.97.122.111 (Contabo VPS)
+- Domain: arigastro-ai.com

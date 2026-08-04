@@ -1203,6 +1203,218 @@ Hangi aday ürün bizim ürünümüzle AYNI üründür? Sadece bire bir aynı ü
         logger.error(f"AI matching error: {e}")
         return {"slug": slug, "matched": False, "candidates": candidates, "error": str(e)}
 
+# ============ IKAS API INTEGRATION ============
+
+IKAS_CLIENT_ID = os.environ.get("IKAS_CLIENT_ID", "")
+IKAS_CLIENT_SECRET = os.environ.get("IKAS_CLIENT_SECRET", "")
+IKAS_TOKEN_URL = "https://api.myikas.com/api/admin/oauth/token"
+IKAS_GRAPHQL_URL = "https://api.myikas.com/api/v2/admin/graphql"
+
+# Token cache
+_ikas_token = {"access_token": "", "expires_at": 0}
+
+def get_ikas_token() -> str:
+    """Get İkas access token using client_credentials flow."""
+    import requests as req_sync
+    import time as time_mod
+    
+    if _ikas_token["access_token"] and time_mod.time() < _ikas_token["expires_at"] - 60:
+        return _ikas_token["access_token"]
+    
+    resp = req_sync.post(IKAS_TOKEN_URL, data={
+        "grant_type": "client_credentials",
+        "client_id": IKAS_CLIENT_ID,
+        "client_secret": IKAS_CLIENT_SECRET,
+    }, headers={"Content-Type": "application/x-www-form-urlencoded"}, timeout=15)
+    
+    if resp.status_code != 200:
+        raise Exception(f"Ikas token hatasi: HTTP {resp.status_code} - {resp.text[:200]}")
+    
+    data = resp.json()
+    _ikas_token["access_token"] = data["access_token"]
+    _ikas_token["expires_at"] = time_mod.time() + data.get("expires_in", 14400)
+    logger.info("Ikas API token alindi")
+    return _ikas_token["access_token"]
+
+def ikas_graphql(query: str, variables: dict = None) -> dict:
+    """Execute İkas GraphQL query/mutation."""
+    import requests as req_sync
+    
+    token = get_ikas_token()
+    resp = req_sync.post(IKAS_GRAPHQL_URL, json={
+        "query": query,
+        "variables": variables or {},
+    }, headers={
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+    }, timeout=30)
+    
+    if resp.status_code != 200:
+        raise Exception(f"Ikas GraphQL hatasi: HTTP {resp.status_code} - {resp.text[:200]}")
+    
+    data = resp.json()
+    if data.get("errors"):
+        raise Exception(f"Ikas GraphQL hatasi: {data['errors'][0].get('message', str(data['errors']))}")
+    return data.get("data", {})
+
+def ikas_search_product(product_name: str) -> list:
+    """Search for a product in İkas by name."""
+    query = """
+    query ListProducts($search: String, $pagination: PaginationInput) {
+        listProduct(search: $search, pagination: $pagination) {
+            data { id name description }
+            count
+        }
+    }
+    """
+    result = ikas_graphql(query, {"search": product_name[:100], "pagination": {"page": 1, "limit": 5}})
+    products = result.get("listProduct", {}).get("data", [])
+    
+    if not products:
+        # Try shorter name
+        short_name = " ".join(product_name.split()[:3])
+        result = ikas_graphql(query, {"search": short_name, "pagination": {"page": 1, "limit": 10}})
+        products = result.get("listProduct", {}).get("data", [])
+    
+    return products
+
+def ikas_update_product(product_id: str, meta_title: str = None, meta_description: str = None, description: str = None) -> dict:
+    """Update product SEO fields in İkas."""
+    mutation = """
+    mutation UpdateProduct($input: UpdateProductInput!) {
+        updateProduct(input: $input) { id name updatedAt }
+    }
+    """
+    input_data = {"id": product_id}
+    
+    # Product description (main body)
+    if description is not None:
+        input_data["description"] = description[:32000]
+    
+    # SEO meta data (pageTitle + description)
+    meta_data = {}
+    if meta_title is not None:
+        meta_data["pageTitle"] = meta_title[:256]
+    if meta_description is not None:
+        meta_data["description"] = meta_description[:320]
+    if meta_data:
+        input_data["metaData"] = meta_data
+    
+    return ikas_graphql(mutation, {"input": input_data})
+
+class IkasSearchRequest(BaseModel):
+    product_name: str
+
+@api_router.post("/ikas/search-product")
+async def ikas_search(req: IkasSearchRequest, user: dict = Depends(get_current_user)):
+    """Search for a product in İkas."""
+    if not IKAS_CLIENT_ID or not IKAS_CLIENT_SECRET:
+        raise HTTPException(status_code=400, detail="Ikas API yapilandirilmamis")
+    try:
+        loop = asyncio.get_event_loop()
+        products = await loop.run_in_executor(None, ikas_search_product, req.product_name)
+        return {"products": products, "count": len(products)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class IkasPushRequest(BaseModel):
+    product_slug: str
+    ikas_product_id: Optional[str] = ""
+    meta_title: Optional[str] = ""
+    meta_description: Optional[str] = ""
+    product_description: Optional[str] = ""
+
+@api_router.post("/ikas/push-seo")
+async def ikas_push_seo(req: IkasPushRequest, user: dict = Depends(get_current_user)):
+    """Push SEO content to İkas product."""
+    if not IKAS_CLIENT_ID or not IKAS_CLIENT_SECRET:
+        raise HTTPException(status_code=400, detail="Ikas API yapilandirilmamis")
+    
+    try:
+        loop = asyncio.get_event_loop()
+        
+        # Find İkas product ID if not provided
+        ikas_id = req.ikas_product_id
+        if not ikas_id:
+            # Get product name from our DB
+            product = await db.products.find_one({"slug": req.product_slug}, {"_id": 0, "name": 1})
+            if not product:
+                raise HTTPException(status_code=404, detail="Urun bulunamadi")
+            
+            products = await loop.run_in_executor(None, ikas_search_product, product["name"])
+            if not products:
+                raise HTTPException(status_code=404, detail="Urun Ikas'ta bulunamadi. Urun adini kontrol edin.")
+            ikas_id = products[0]["id"]
+        
+        # Convert markdown to HTML for İkas
+        desc_html = req.product_description or ""
+        if desc_html:
+            # Simple markdown to HTML conversion
+            import re as re_mod
+            lines = desc_html.split("\n")
+            html_lines = []
+            in_list = False
+            for line in lines:
+                stripped = line.strip()
+                if not stripped:
+                    if in_list:
+                        html_lines.append("</ul>")
+                        in_list = False
+                    html_lines.append("<br>")
+                    continue
+                # Headings
+                if stripped.startswith("### "):
+                    if in_list: html_lines.append("</ul>"); in_list = False
+                    html_lines.append(f"<h3>{stripped[4:]}</h3>")
+                elif stripped.startswith("## "):
+                    if in_list: html_lines.append("</ul>"); in_list = False
+                    html_lines.append(f"<h2>{stripped[3:]}</h2>")
+                elif stripped.startswith("# "):
+                    if in_list: html_lines.append("</ul>"); in_list = False
+                    html_lines.append(f"<h1>{stripped[2:]}</h1>")
+                elif stripped.startswith("- ") or stripped.startswith("* "):
+                    if not in_list:
+                        html_lines.append("<ul>")
+                        in_list = True
+                    item = stripped[2:]
+                    item = re_mod.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', item)
+                    html_lines.append(f"<li>{item}</li>")
+                else:
+                    if in_list: html_lines.append("</ul>"); in_list = False
+                    text = re_mod.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', stripped)
+                    html_lines.append(f"<p>{text}</p>")
+            if in_list:
+                html_lines.append("</ul>")
+            desc_html = "\n".join(html_lines)
+        
+        result = await loop.run_in_executor(None, ikas_update_product, ikas_id, req.meta_title, req.meta_description, desc_html)
+        
+        # Save to our DB that it was pushed
+        await db.products.update_one({"slug": req.product_slug}, {"$set": {
+            "ikas_seo_pushed": True,
+            "ikas_product_id": ikas_id,
+            "ikas_pushed_at": datetime.now(timezone.utc).isoformat(),
+        }})
+        
+        return {"success": True, "message": "SEO icerigi Ikas'a gonderildi", "ikas_product_id": ikas_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Ikas push SEO error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/ikas/status")
+async def ikas_status(user: dict = Depends(get_current_user)):
+    """Check İkas API connection."""
+    if not IKAS_CLIENT_ID or not IKAS_CLIENT_SECRET:
+        return {"configured": False}
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, get_ikas_token)
+        return {"configured": True, "connected": True}
+    except Exception as e:
+        return {"configured": True, "connected": False, "error": str(e)}
+
 # ============ SEO GENERATION ============
 
 class SeoGenerateRequest(BaseModel):

@@ -7,7 +7,7 @@ import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { Textarea } from "../components/ui/textarea";
-import { Search, Sparkles, FileText, Loader2, Copy, Check, X, ChevronLeft, ChevronRight } from "lucide-react";
+import { Search, Sparkles, FileText, Loader2, Copy, Check, X, ChevronLeft, ChevronRight, Send } from "lucide-react";
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
 
@@ -22,6 +22,7 @@ export default function SeoGeneratorPage() {
   const [seoContent, setSeoContent] = useState(null);
   const [generating, setGenerating] = useState(false);
   const [copied, setCopied] = useState("");
+  const [pushingToIkas, setPushingToIkas] = useState(false);
 
   const fetchProducts = useCallback(async () => {
     setLoading(true);
@@ -87,6 +88,26 @@ export default function SeoGeneratorPage() {
     setCopied(field);
     setTimeout(() => setCopied(""), 2000);
     toast.success("Panoya kopyalandi");
+  };
+
+  const pushToIkas = async () => {
+    if (!seoContent || !selectedSlug) return;
+    setPushingToIkas(true);
+    try {
+      const { data } = await axios.post(`${API}/ikas/push-seo`, {
+        product_slug: selectedSlug,
+        meta_title: seoContent.seo_title || "",
+        meta_description: seoContent.seo_description || "",
+        product_description: seoContent.product_description || "",
+      }, { headers: getAuthHeaders(), withCredentials: true });
+      if (data.success) {
+        toast.success("SEO icerigi Ikas'a gonderildi!");
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Ikas'a gonderme basarisiz");
+    } finally {
+      setPushingToIkas(false);
+    }
   };
 
   const selectedProduct = products.find((p) => p.slug === selectedSlug);
@@ -299,6 +320,17 @@ export default function SeoGeneratorPage() {
                       Olusturulma: {new Date(seoContent.generated_at).toLocaleString('tr-TR')}
                     </p>
                   )}
+
+                  {/* İkas'a Gönder Butonu */}
+                  <Button
+                    onClick={pushToIkas}
+                    disabled={pushingToIkas}
+                    data-testid="push-to-ikas-button"
+                    className="w-full bg-indigo-600 hover:bg-indigo-700 text-white h-11 font-medium text-sm"
+                  >
+                    {pushingToIkas ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Send className="h-4 w-4 mr-2" />}
+                    Ikas'a Gonder
+                  </Button>
                 </div>
               )}
 
