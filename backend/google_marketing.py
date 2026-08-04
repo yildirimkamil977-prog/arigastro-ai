@@ -13,6 +13,7 @@ logger = logging.getLogger("google_marketing")
 GOOGLE_ADS_CUSTOMER_ID = os.environ.get("GOOGLE_ADS_CUSTOMER_ID", "").replace("-", "")
 GOOGLE_ADS_MCC_ID = os.environ.get("GOOGLE_ADS_MCC_ID", "").replace("-", "")
 GOOGLE_ADS_DEVELOPER_TOKEN = os.environ.get("GOOGLE_ADS_DEVELOPER_TOKEN", "")
+GOOGLE_ADS_IMPERSONATED_EMAIL = os.environ.get("GOOGLE_ADS_IMPERSONATED_EMAIL", "")
 GA4_PROPERTY_ID = os.environ.get("GA4_PROPERTY_ID", "")
 GSC_SITE_URL = os.environ.get("GSC_SITE_URL", "")
 SA_PATH = os.environ.get("GOOGLE_SERVICE_ACCOUNT_PATH", "google_service_account.json")
@@ -32,7 +33,7 @@ def get_ads_client():
     config = {
         "developer_token": GOOGLE_ADS_DEVELOPER_TOKEN,
         "json_key_file_path": sa_path,
-        "impersonated_email": "",
+        "impersonated_email": GOOGLE_ADS_IMPERSONATED_EMAIL,
         "login_customer_id": GOOGLE_ADS_MCC_ID,
         "use_proto_plus": True,
     }
@@ -249,7 +250,7 @@ def fetch_gsc_data(date_from: str = None, date_to: str = None, limit: int = 30) 
         from googleapiclient.discovery import build
         sa_path = get_sa_path()
         credentials = service_account.Credentials.from_service_account_file(sa_path, scopes=["https://www.googleapis.com/auth/webmasters.readonly"])
-        service = build("searchanalytics", "v1", credentials=credentials)
+        service = build("searchconsole", "v1", credentials=credentials)
         
         request = {
             "startDate": date_from,

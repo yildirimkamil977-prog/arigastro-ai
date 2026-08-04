@@ -2526,6 +2526,382 @@ async def delete_user(username: str, user: dict = Depends(get_current_user)):
 
 # ============ ROOT ============
 
+
+
+# ============ GOOGLE MARKETING ENDPOINTS ============
+
+from google_marketing import (
+    fetch_ads_campaigns, fetch_ads_keywords,
+    fetch_ga4_overview, fetch_ga4_traffic_sources,
+    fetch_gsc_data, fetch_all_marketing_data, get_sa_path
+)
+
+@api_router.get("/marketing/test-connection")
+async def test_marketing_connection(user: dict = Depends(get_current_user)):
+    """Test Google API connections."""
+    results = {}
+    sa_path = get_sa_path()
+    sa_exists = os.path.exists(sa_path)
+    results["service_account"] = {"ok": sa_exists, "path": sa_path}
+
+    # Test GA4
+    try:
+        ga4_data = fetch_ga4_overview()
+        if isinstance(ga4_data, dict) and "error" in ga4_data:
+            results["ga4"] = {"ok": False, "error": ga4_data["error"]}
+        else:
+            results["ga4"] = {"ok": True, "sessions": ga4_data.get("sessions", 0)}
+    except Exception as e:
+        results["ga4"] = {"ok": False, "error": str(e)}
+
+    # Test Search Console
+    try:
+        gsc_data = fetch_gsc_data(limit=5)
+        if gsc_data and isinstance(gsc_data[0], dict) and "error" in gsc_data[0]:
+            results["search_console"] = {"ok": False, "error": gsc_data[0]["error"]}
+        else:
+            results["search_console"] = {"ok": True, "queries": len(gsc_data)}
+    except Exception as e:
+        results["search_console"] = {"ok": False, "error": str(e)}
+
+    # Test Google Ads
+    try:
+        ads_data = fetch_ads_campaigns()
+        if ads_data and isinstance(ads_data[0], dict) and "error" in ads_data[0]:
+            results["google_ads"] = {"ok": False, "error": ads_data[0]["error"]}
+        else:
+            results["google_ads"] = {"ok": True, "campaigns": len(ads_data)}
+    except Exception as e:
+        results["google_ads"] = {"ok": False, "error": str(e)}
+
+    return results
+
+@api_router.get("/marketing/dashboard")
+async def marketing_dashboard(
+    date_from: str = None,
+    date_to: str = None,
+    user: dict = Depends(get_current_user)
+):
+    """Fetch all marketing data from Google APIs."""
+    try:
+        data = fetch_all_marketing_data(date_from, date_to)
+        # Check for errors in each source
+        errors = []
+        if isinstance(data.get("ga4_overview"), dict) and "error" in data["ga4_overview"]:
+            errors.append(f"GA4: {str(data['ga4_overview']['error'])[:100]}")
+        if data.get("ads_campaigns") and isinstance(data["ads_campaigns"][0], dict) and "error" in data["ads_campaigns"][0]:
+            err = str(data['ads_campaigns'][0]['error'])
+            if "NOT_ADS_USER" in err:
+                errors.append("Google Ads: Service Account hesabi Google Ads'e bagli degil. Impersonated email veya OAuth2 kurulumu gerekli.")
+                data["ads_campaigns"] = []
+            else:
+                errors.append(f"Google Ads: {err[:100]}")
+                data["ads_campaigns"] = []
+        if data.get("gsc_queries") and isinstance(data["gsc_queries"][0], dict) and "error" in data["gsc_queries"][0]:
+            errors.append(f"Search Console: {str(data['gsc_queries'][0]['error'])[:100]}")
+        data["api_errors"] = errors
+        return data
+    except Exception as e:
+        logger.error(f"Marketing dashboard error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/marketing/ai-analyze")
+async def ai_analyze_marketing(request: Request, user: dict = Depends(get_current_user)):
+    """Send marketing data to AI for professional analysis."""
+    body = await request.json()
+    date_from = body.get("date_from")
+    date_to = body.get("date_to")
+    focus = body.get("focus", "genel")  # genel, ads, seo, traffic
+
+    # Fetch data
+    data = fetch_all_marketing_data(date_from, date_to)
+
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    if not openai_key:
+        raise HTTPException(status_code=400, detail="OpenAI API anahtari bulunamadi")
+
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+
+        system_prompt = """Sen dünya standartlarında bir Dijital Pazarlama Uzmanısın. Google Ads, Google Analytics (GA4) ve Google Search Console verilerini analiz ediyorsun.
+
+GÖREV: Verilen metrikleri detaylı analiz et ve aşağıdaki formatta Türkçe rapor oluştur.
+
+## FORMAT (Bu başlıkları kullan):
+
+### 🎯 GENEL PERFORMANS DEĞERLENDİRMESİ
+Kısa ve net genel durum özeti (2-3 cümle).
+
+### 🚨 KRİTİK SORUNLAR VE HATALAR
+Her sorun için:
+- **Sorun**: Ne olduğu
+- **Etki**: Neden önemli
+- **Çözüm**: Spesifik aksiyon adımı
+
+### 💡 OPTİMİZASYON ÖNERİLERİ
+Öncelik sırasına göre sırala (en yüksek ROI potansiyeli önce).
+Her öneri için:
+- **Öneri**: Ne yapılmalı
+- **Beklenen Etki**: Tahmini iyileşme
+- **Zorluk**: Kolay / Orta / Zor
+- **Aksiyon Tipi**: budget_increase | budget_decrease | pause_campaign | enable_campaign | keyword_add | keyword_remove | bid_adjust | none
+- **Hedef**: İlgili kampanya adı veya keyword (varsa)
+
+### 📊 REKLAM ANALİZİ (Google Ads varsa)
+- ROAS ve maliyet analizi
+- En iyi/kötü performans gösteren kampanyalar
+- Anahtar kelime performansı
+- Bütçe dağılımı değerlendirmesi
+
+### 🔍 SEO ANALİZİ (Search Console varsa)
+- Organik trafik trendi
+- En iyi performans gösteren sorgular
+- Sıralama fırsatları (5-15 arası pozisyon)
+- Düşük CTR'li yüksek gösterimli sorgular
+
+### 📈 TRAFİK ANALİZİ (GA4 varsa)
+- Kanal bazlı performans
+- Dönüşüm oranları
+- Hemen çıkma oranı değerlendirmesi
+- Kullanıcı davranışı
+
+### 🎬 HEMEN YAPILACAKLAR
+En acil 3-5 aksiyon maddesi. Her biri kısa, net ve uygulanabilir olmalı.
+
+ÖNEMLİ KURALLAR:
+- Veri yoksa o bölümü "Veri bulunamadı" olarak belirt, uydurma
+- TL cinsinden parasal değerler kullan
+- Yüzdelik değişimleri belirt
+- Spesifik kampanya/keyword isimlerini kullan
+- Jargon yerine anlaşılır Türkçe kullan"""
+
+        chat = LlmChat(
+            api_key=openai_key,
+            session_id=f"marketing-{uuid.uuid4().hex[:8]}",
+            system_message=system_prompt
+        ).with_model("openai", "gpt-4o")
+
+        # Build the data summary for AI
+        data_text = f"Tarih Aralığı: {data.get('date_range', {}).get('from', 'Son 30 gün')} - {data.get('date_range', {}).get('to', 'Bugün')}\n\n"
+
+        # GA4 Overview
+        ga4 = data.get("ga4_overview", {})
+        if ga4 and "error" not in ga4:
+            data_text += f"""## GA4 VERİLERİ
+- Oturumlar: {ga4.get('sessions', 0):,}
+- Toplam Kullanıcı: {ga4.get('total_users', 0):,}
+- Yeni Kullanıcı: {ga4.get('new_users', 0):,}
+- Hemen Çıkma Oranı: %{ga4.get('bounce_rate', 0)}
+- Ort. Oturum Süresi: {ga4.get('avg_session_duration', 0)} sn
+- Sayfa Görüntüleme: {ga4.get('page_views', 0):,}
+- E-ticaret Satış: {ga4.get('purchases', 0)}
+- Gelir: {ga4.get('revenue', 0):,.2f} TL
+"""
+        else:
+            data_text += "## GA4 VERİLERİ\nVeri alınamadı.\n"
+
+        # Traffic sources
+        traffic = data.get("ga4_traffic", [])
+        if traffic and not (isinstance(traffic[0], dict) and "error" in traffic[0]):
+            data_text += "\n## TRAFİK KAYNAKLARI\n"
+            for t in traffic[:15]:
+                data_text += f"- {t['source']}/{t['medium']}: {t['sessions']} oturum, {t['users']} kullanıcı, {t['purchases']} satış, {t['revenue']:.2f} TL\n"
+
+        # Ads campaigns
+        campaigns = data.get("ads_campaigns", [])
+        if campaigns and not (isinstance(campaigns[0], dict) and "error" in campaigns[0]):
+            data_text += "\n## GOOGLE ADS KAMPANYALARI\n"
+            for c in campaigns:
+                data_text += f"- {c['name']} ({c['status']}): {c['impressions']:,} gösterim, {c['clicks']:,} tıklama, CTR %{c['ctr']}, Maliyet {c['cost']:.2f} TL, {c['conversions']} dönüşüm, ROAS {c['roas']}\n"
+
+        # Ads keywords
+        keywords = data.get("ads_keywords", [])
+        if keywords and not (isinstance(keywords[0], dict) and "error" in keywords[0]):
+            data_text += "\n## ANAHTAR KELİME PERFORMANSI\n"
+            for k in keywords[:30]:
+                data_text += f"- \"{k['keyword']}\" ({k['match_type']}, {k['campaign']}): {k['impressions']:,} gösterim, {k['clicks']} tıklama, CTR %{k['ctr']}, Maliyet {k['cost']:.2f} TL, {k['conversions']} dönüşüm\n"
+
+        # Search Console
+        gsc = data.get("gsc_queries", [])
+        if gsc and not (isinstance(gsc[0], dict) and "error" in gsc[0]):
+            data_text += "\n## SEARCH CONSOLE VERİLERİ\n"
+            for q in gsc:
+                data_text += f"- \"{q['query']}\": {q['clicks']} tıklama, {q['impressions']:,} gösterim, CTR %{q['ctr']}, Pozisyon {q['position']}\n"
+
+        if focus != "genel":
+            data_text += f"\n\n## ODAK ALANI: {focus.upper()}\nLütfen bu alana özellikle odaklan.\n"
+
+        response = await chat.send_message(UserMessage(text=data_text))
+
+        # Save analysis to DB
+        analysis_doc = {
+            "date_from": date_from,
+            "date_to": date_to,
+            "focus": focus,
+            "analysis": response,
+            "raw_data_summary": {
+                "campaigns_count": len([c for c in campaigns if not (isinstance(c, dict) and "error" in c)]),
+                "keywords_count": len([k for k in keywords if not (isinstance(k, dict) and "error" in k)]),
+                "gsc_queries_count": len([q for q in gsc if not (isinstance(q, dict) and "error" in q)]),
+                "ga4_sessions": ga4.get("sessions", 0) if isinstance(ga4, dict) and "error" not in ga4 else 0,
+            },
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_by": user["username"],
+        }
+        await db.marketing_analyses.insert_one(analysis_doc)
+
+        return {"analysis": response, "data_summary": analysis_doc["raw_data_summary"]}
+    except Exception as e:
+        logger.error(f"AI marketing analysis error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/marketing/analyses")
+async def get_marketing_analyses(limit: int = 10, user: dict = Depends(get_current_user)):
+    """Get past marketing analyses."""
+    cursor = db.marketing_analyses.find().sort("created_at", -1).limit(limit)
+    analyses = []
+    async for doc in cursor:
+        doc["_id"] = str(doc["_id"])
+        analyses.append(doc)
+    return analyses
+
+@api_router.post("/marketing/ads-action")
+async def execute_ads_action(request: Request, user: dict = Depends(get_current_user)):
+    """Execute a Google Ads action (budget change, pause, enable)."""
+    body = await request.json()
+    action_type = body.get("action_type")  # budget_increase, budget_decrease, pause_campaign, enable_campaign
+    campaign_id = body.get("campaign_id")
+    value = body.get("value")  # New budget amount for budget changes
+
+    if not action_type or not campaign_id:
+        raise HTTPException(status_code=400, detail="action_type ve campaign_id gerekli")
+
+    customer_id = os.environ.get("GOOGLE_ADS_CUSTOMER_ID", "").replace("-", "")
+    developer_token = os.environ.get("GOOGLE_ADS_DEVELOPER_TOKEN", "")
+    mcc_id = os.environ.get("GOOGLE_ADS_MCC_ID", "").replace("-", "")
+
+    if not customer_id or not developer_token:
+        raise HTTPException(status_code=400, detail="Google Ads kimlik bilgileri eksik")
+
+    try:
+        from google.ads.googleads.client import GoogleAdsClient
+
+        sa_path = get_sa_path()
+        config = {
+            "developer_token": developer_token,
+            "json_key_file_path": sa_path,
+            "impersonated_email": "",
+            "login_customer_id": mcc_id,
+            "use_proto_plus": True,
+        }
+        ads_client = GoogleAdsClient.load_from_dict(config)
+
+        if action_type in ("pause_campaign", "enable_campaign"):
+            campaign_service = ads_client.get_service("CampaignService")
+            campaign_operation = ads_client.get_type("CampaignOperation")
+            campaign = campaign_operation.update
+            campaign.resource_name = ads_client.get_service("CampaignService").campaign_path(customer_id, campaign_id)
+
+            if action_type == "pause_campaign":
+                campaign.status = ads_client.enums.CampaignStatusEnum.PAUSED
+            else:
+                campaign.status = ads_client.enums.CampaignStatusEnum.ENABLED
+
+            field_mask = ads_client.get_type("FieldMask")
+            field_mask.paths.append("status")
+            campaign_operation.update_mask.CopyFrom(field_mask)
+
+            campaign_service.mutate_campaigns(
+                customer_id=customer_id,
+                operations=[campaign_operation]
+            )
+
+            # Log action
+            await db.marketing_actions.insert_one({
+                "action_type": action_type,
+                "campaign_id": campaign_id,
+                "executed_by": user["username"],
+                "executed_at": datetime.now(timezone.utc).isoformat(),
+                "status": "success",
+            })
+
+            status_text = "duraklatıldı" if action_type == "pause_campaign" else "etkinleştirildi"
+            return {"success": True, "message": f"Kampanya başarıyla {status_text}"}
+
+        elif action_type in ("budget_increase", "budget_decrease"):
+            if not value or value <= 0:
+                raise HTTPException(status_code=400, detail="Geçerli bir bütçe değeri gerekli")
+
+            # First get current campaign to find budget resource
+            ga_service = ads_client.get_service("GoogleAdsService")
+            query = f"""
+                SELECT campaign.id, campaign.name, campaign_budget.resource_name, campaign_budget.amount_micros
+                FROM campaign
+                WHERE campaign.id = {campaign_id}
+            """
+            response = ga_service.search(customer_id=customer_id, query=query)
+            row = None
+            for r in response:
+                row = r
+                break
+
+            if not row:
+                raise HTTPException(status_code=404, detail="Kampanya bulunamadı")
+
+            budget_service = ads_client.get_service("CampaignBudgetService")
+            budget_operation = ads_client.get_type("CampaignBudgetOperation")
+            budget = budget_operation.update
+            budget.resource_name = row.campaign_budget.resource_name
+            budget.amount_micros = int(value * 1_000_000)
+
+            field_mask = ads_client.get_type("FieldMask")
+            field_mask.paths.append("amount_micros")
+            budget_operation.update_mask.CopyFrom(field_mask)
+
+            budget_service.mutate_campaign_budgets(
+                customer_id=customer_id,
+                operations=[budget_operation]
+            )
+
+            await db.marketing_actions.insert_one({
+                "action_type": action_type,
+                "campaign_id": campaign_id,
+                "new_budget": value,
+                "old_budget": row.campaign_budget.amount_micros / 1_000_000,
+                "executed_by": user["username"],
+                "executed_at": datetime.now(timezone.utc).isoformat(),
+                "status": "success",
+            })
+
+            return {"success": True, "message": f"Bütçe {value:.2f} TL olarak güncellendi"}
+
+        else:
+            raise HTTPException(status_code=400, detail=f"Bilinmeyen aksiyon tipi: {action_type}")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Ads action error: {e}")
+        await db.marketing_actions.insert_one({
+            "action_type": action_type,
+            "campaign_id": campaign_id,
+            "executed_by": user["username"],
+            "executed_at": datetime.now(timezone.utc).isoformat(),
+            "status": "error",
+            "error": str(e),
+        })
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/marketing/actions-log")
+async def get_marketing_actions_log(limit: int = 20, user: dict = Depends(get_current_user)):
+    """Get log of executed marketing actions."""
+    cursor = db.marketing_actions.find().sort("executed_at", -1).limit(limit)
+    actions = []
+    async for doc in cursor:
+        doc["_id"] = str(doc["_id"])
+        actions.append(doc)
+    return actions
+
 @api_router.get("/")
 async def root():
     return {"message": "ARI AI API is running", "version": "1.0"}
