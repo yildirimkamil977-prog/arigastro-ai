@@ -1593,7 +1593,6 @@ async def get_seo_content(slug: str, user: dict = Depends(get_current_user)):
 @api_router.get("/seo/categories/stats")
 async def seo_category_stats(user: dict = Depends(get_current_user)):
     """Get SEO generation stats per İkas category."""
-    # Get all unique categories from ACTIVE products only
     pipeline = [
         {"$match": {"our_price": {"$ne": None}, "feed_active": {"$ne": False}}},
         {"$group": {"_id": "$category_path", "count": {"$sum": 1}}},
@@ -1606,8 +1605,6 @@ async def seo_category_stats(user: dict = Depends(get_current_user)):
         cat_name = cg["_id"] or "Kategori Yok"
         total = cg["count"]
         
-        # Count SEO generated
-        cat_regex = re.escape(cat_name) if cat_name != "Kategori Yok" else "^$"
         if cat_name == "Kategori Yok":
             slugs = await db.products.find({"category_path": {"$in": [None, ""]}, "our_price": {"$ne": None}, "feed_active": {"$ne": False}}, {"_id": 0, "slug": 1}).to_list(5000)
         else:
@@ -1617,24 +1614,34 @@ async def seo_category_stats(user: dict = Depends(get_current_user)):
         seo_done = await db.seo_content.count_documents({"product_slug": {"$in": slug_list}})
         ikas_pushed = await db.products.count_documents({"slug": {"$in": slug_list}, "ikas_seo_pushed": True})
         
+        # Check if this category has a running task
+        task_key = f"bulk_seo_{cat_name[:50]}"
+        task_status = await db.system_status.find_one({"task": task_key}, {"_id": 0})
+        running = task_status.get("running", False) if task_status else False
+        paused = task_status.get("paused", False) if task_status else False
+        
         categories.append({
             "category": cat_name,
             "total": total,
             "seo_generated": seo_done,
             "ikas_pushed": ikas_pushed,
             "remaining": total - seo_done,
+            "running": running,
+            "paused": paused,
+            "task_status": task_status,
         })
     
     return {"categories": categories}
 
 @api_router.post("/seo/bulk-generate-push")
 async def bulk_seo_generate_push(category: str = "", user: dict = Depends(get_current_user)):
-    """Start bulk SEO generation + İkas push for a category."""
-    status = await db.system_status.find_one({"task": "bulk_seo"}, {"_id": 0})
-    if status and status.get("running"):
-        return {"started": False, "message": "Toplu SEO uretimi zaten calisiyor."}
+    """Start bulk SEO generation + İkas push for a category. Supports parallel categories."""
+    task_key = f"bulk_seo_{category[:50]}" if category else "bulk_seo_all"
     
-    # Find products in this category that don't have SEO content yet
+    status = await db.system_status.find_one({"task": task_key}, {"_id": 0})
+    if status and status.get("running") and not status.get("paused"):
+        return {"started": False, "message": "Bu kategori icin SEO uretimi zaten calisiyor."}
+    
     query = {"our_price": {"$ne": None}, "feed_active": {"$ne": False}}
     if category and category != "Kategori Yok":
         query["category_path"] = category
@@ -1644,7 +1651,6 @@ async def bulk_seo_generate_push(category: str = "", user: dict = Depends(get_cu
     products = await db.products.find(query, {"_id": 0, "slug": 1, "name": 1}).to_list(10000)
     slug_list = [p["slug"] for p in products]
     
-    # Filter out already generated
     existing_seo = await db.seo_content.find({"product_slug": {"$in": slug_list}}, {"_id": 0, "product_slug": 1}).to_list(10000)
     existing_slugs = set(s["product_slug"] for s in existing_seo)
     pending = [p for p in products if p["slug"] not in existing_slugs]
@@ -1653,30 +1659,41 @@ async def bulk_seo_generate_push(category: str = "", user: dict = Depends(get_cu
         return {"started": False, "message": "Bu kategorideki tum urunlerin SEO icerigi zaten uretilmis."}
     
     await db.system_status.update_one(
-        {"task": "bulk_seo"},
-        {"$set": {"running": True, "started_at": datetime.now(timezone.utc).isoformat(), "total": len(pending), "current": 0, "success": 0, "failed": 0, "category": category or "Tumu"}},
+        {"task": task_key},
+        {"$set": {"running": True, "paused": False, "started_at": datetime.now(timezone.utc).isoformat(), "total": len(pending), "current": 0, "success": 0, "failed": 0, "category": category or "Tumu", "error": ""}},
         upsert=True
     )
     
-    asyncio.ensure_future(run_bulk_seo_generate(pending, category))
+    asyncio.ensure_future(run_bulk_seo_generate(pending, category, task_key))
     return {"started": True, "message": f"{len(pending)} urun icin SEO uretimi basladi ({category or 'Tum kategoriler'})"}
 
-async def run_bulk_seo_generate(products: list, category: str):
+async def run_bulk_seo_generate(products: list, category: str, task_key: str):
     """Background: Generate SEO for each product and push to İkas."""
     openai_key = os.environ.get("OPENAI_API_KEY")
     if not openai_key:
-        await db.system_status.update_one({"task": "bulk_seo"}, {"$set": {"running": False, "error": "OpenAI key yok"}})
+        await db.system_status.update_one({"task": task_key}, {"$set": {"running": False, "error": "OpenAI key yok"}})
         return
     
     success = 0
     failed = 0
     
     for i, prod in enumerate(products):
+        # Check if paused/stopped
+        current_status = await db.system_status.find_one({"task": task_key}, {"_id": 0})
+        if current_status and (not current_status.get("running") or current_status.get("paused")):
+            logger.info(f"Bulk SEO {task_key} durduruldu (paused/stopped)")
+            break
+        
         slug = prod["slug"]
         try:
-            await db.system_status.update_one({"task": "bulk_seo"}, {"$set": {"current": i + 1, "success": success, "failed": failed, "current_product": prod["name"][:50]}})
+            await db.system_status.update_one({"task": task_key}, {"$set": {"current": i + 1, "success": success, "failed": failed, "current_product": prod["name"][:50]}})
             
-            # Generate SEO via existing endpoint logic
+            # Skip if already generated
+            existing = await db.seo_content.find_one({"product_slug": slug})
+            if existing:
+                success += 1
+                continue
+            
             product = await db.products.find_one({"slug": slug})
             if not product:
                 failed += 1
@@ -1718,10 +1735,11 @@ async def run_bulk_seo_generate(products: list, category: str):
             brand = product.get('brand', '')
             cat = product.get('category_path', '')
             
-            chat = LlmChat(
-                api_key=openai_key,
-                session_id=f"seo-bulk-{slug[:15]}-{uuid.uuid4().hex[:6]}",
-                system_message="""Sen Türkiye'nin en deneyimli SEO ve içerik uzmanısın. Endüstriyel mutfak ekipmanları sektöründe 15 yıllık tecrüben var.
+            try:
+                chat = LlmChat(
+                    api_key=openai_key,
+                    session_id=f"seo-bulk-{slug[:15]}-{uuid.uuid4().hex[:6]}",
+                    system_message="""Sen Türkiye'nin en deneyimli SEO ve içerik uzmanısın. Endüstriyel mutfak ekipmanları sektöründe 15 yıllık tecrüben var.
 Arıgastro Endüstriyel Mutfak Ekipmanları (arigastro.com) firması için çalışıyorsun.
 
 GÖREV: Verilen ürün için Google'da üst sıralarda çıkacak SEO içerikleri hazırla.
@@ -1734,10 +1752,20 @@ KURALLAR:
 5. İçerik Türkçe, doğal ve profesyonel olmalı.
 
 JSON yanıt: {"seo_title": "...", "seo_description": "...", "product_description": "..."}"""
-            ).with_model("openai", "gpt-4o")
-            
-            prompt = f"Ürün: {product_name}\nMarka: {brand}\nKategori: {cat}\nGTIN: {product.get('gtin', '')}\n\n{product_page_data}\n\nJSON formatında yanıt ver."
-            response = await chat.send_message(UserMessage(text=prompt))
+                ).with_model("openai", "gpt-4o")
+                
+                prompt = f"Ürün: {product_name}\nMarka: {brand}\nKategori: {cat}\nGTIN: {product.get('gtin', '')}\n\n{product_page_data}\n\nJSON formatında yanıt ver."
+                response = await chat.send_message(UserMessage(text=prompt))
+            except Exception as e:
+                error_str = str(e).lower()
+                if "insufficient" in error_str or "quota" in error_str or "rate" in error_str or "credit" in error_str or "balance" in error_str:
+                    logger.warning(f"Bulk SEO {task_key}: Kredi yetersiz, duraklatiliyor - {e}")
+                    await db.system_status.update_one({"task": task_key}, {"$set": {
+                        "paused": True, "running": True, "error": "Yapay zeka kredisi yetersiz. Bakiye yukleyip devam edebilirsiniz.",
+                        "success": success, "failed": failed,
+                    }})
+                    return
+                raise
             
             response_text = response.strip()
             if response_text.startswith("```"):
@@ -1767,7 +1795,6 @@ JSON yanıt: {"seo_title": "...", "seo_description": "...", "product_description
                     ikas_products = await loop.run_in_executor(None, ikas_search_product, product_name)
                     if ikas_products:
                         ikas_id = ikas_products[0]["id"]
-                        # Convert markdown to HTML
                         desc_html = desc
                         html_lines = []
                         in_list = False
@@ -1803,7 +1830,6 @@ JSON yanıt: {"seo_title": "...", "seo_description": "...", "product_description
                 except Exception as e:
                     logger.warning(f"Ikas push failed for {slug}: {e}")
             
-            # Log
             await db.seo_logs.insert_one({
                 "product_slug": slug, "product_name": product_name, "category": cat,
                 "seo_generated": True, "ikas_pushed": ikas_pushed,
@@ -1822,26 +1848,19 @@ JSON yanıt: {"seo_title": "...", "seo_description": "...", "product_description
             failed += 1
             await asyncio.sleep(1)
     
-    await db.system_status.update_one({"task": "bulk_seo"}, {"$set": {
-        "running": False, "success": success, "failed": failed, "total": len(products),
+    await db.system_status.update_one({"task": task_key}, {"$set": {
+        "running": False, "paused": False, "success": success, "failed": failed, "total": len(products),
         "completed_at": datetime.now(timezone.utc).isoformat(),
     }})
-    logger.info(f"Bulk SEO tamamlandi: {success} basarili, {failed} basarisiz")
+    logger.info(f"Bulk SEO {task_key} tamamlandi: {success} basarili, {failed} basarisiz")
 
 @api_router.get("/seo/bulk-status")
 async def seo_bulk_status(user: dict = Depends(get_current_user)):
-    status = await db.system_status.find_one({"task": "bulk_seo"}, {"_id": 0})
-    if status and status.get("running"):
-        started = status.get("started_at", "")
-        if started:
-            try:
-                elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(started)).total_seconds()
-                if elapsed > 7200:
-                    await db.system_status.update_one({"task": "bulk_seo"}, {"$set": {"running": False, "error": "Zaman asimi"}})
-                    status["running"] = False
-            except Exception:
-                pass
-    return status or {"running": False}
+    """Get all bulk SEO task statuses."""
+    tasks = await db.system_status.find({"task": {"$regex": "^bulk_seo"}}, {"_id": 0}).to_list(100)
+    running_count = sum(1 for t in tasks if t.get("running") and not t.get("paused"))
+    paused_count = sum(1 for t in tasks if t.get("paused"))
+    return {"tasks": tasks, "running_count": running_count, "paused_count": paused_count}
 
 @api_router.get("/seo/logs")
 async def get_seo_logs(page: int = 1, limit: int = 50, user: dict = Depends(get_current_user)):

@@ -15,9 +15,8 @@ export default function SeoLogsPage() {
   const [logPage, setLogPage] = useState(1);
   const [logPages, setLogPages] = useState(1);
   const [logTotal, setLogTotal] = useState(0);
-  const [bulkStatus, setBulkStatus] = useState(null);
+  const [bulkStatuses, setBulkStatuses] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [runningCategory, setRunningCategory] = useState(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -31,12 +30,7 @@ export default function SeoLogsPage() {
       setLogStats(logRes.data.stats || {});
       setLogPages(logRes.data.pages || 1);
       setLogTotal(logRes.data.total || 0);
-      setBulkStatus(statusRes.data);
-      if (statusRes.data?.running) {
-        setRunningCategory(statusRes.data.category || null);
-      } else {
-        setRunningCategory(null);
-      }
+      setBulkStatuses(statusRes.data.tasks || []);
     } catch (err) {
       console.error(err);
     } finally {
@@ -51,20 +45,20 @@ export default function SeoLogsPage() {
   }, [fetchData]);
 
   const startBulkSeo = async (category) => {
-    setRunningCategory(category);
     try {
       const { data } = await axios.post(`${API}/seo/bulk-generate-push?category=${encodeURIComponent(category)}`, {}, { headers: getAuthHeaders(), withCredentials: true });
       if (data.started) {
         toast.info(data.message, { duration: 5000 });
       } else {
         toast.warning(data.message);
-        setRunningCategory(null);
       }
     } catch (err) {
       toast.error(err.response?.data?.detail || "Toplu SEO basarisiz");
-      setRunningCategory(null);
     }
   };
+
+  const hasAnyRunning = bulkStatuses.some(t => t.running && !t.paused);
+  const hasAnyPaused = bulkStatuses.some(t => t.paused);
 
   const formatDate = (iso) => {
     if (!iso) return "-";
@@ -103,22 +97,30 @@ export default function SeoLogsPage() {
         </CardContent></Card>
       </div>
 
-      {/* Running Status */}
-      {bulkStatus?.running && (
-        <Card className="border-indigo-200 bg-indigo-50">
+      {/* Running/Paused Statuses */}
+      {bulkStatuses.filter(t => t.running || t.paused).map((task, idx) => (
+        <Card key={idx} className={`border-${task.paused ? 'amber' : 'indigo'}-200 bg-${task.paused ? 'amber' : 'indigo'}-50`}>
           <CardContent className="p-4 flex items-center gap-3">
-            <Loader2 className="h-5 w-5 animate-spin text-indigo-600" />
-            <div>
-              <p className="text-sm font-medium text-indigo-900">
-                SEO uretimi devam ediyor: {bulkStatus.current || 0}/{bulkStatus.total || 0}
+            {task.paused ? (
+              <XCircle className="h-5 w-5 text-amber-600" />
+            ) : (
+              <Loader2 className="h-5 w-5 animate-spin text-indigo-600" />
+            )}
+            <div className="flex-1">
+              <p className={`text-sm font-medium ${task.paused ? 'text-amber-900' : 'text-indigo-900'}`}>
+                {task.paused ? 'DURAKLATILDI' : 'SEO uretimi devam ediyor'}: {task.current || 0}/{task.total || 0}
               </p>
-              <p className="text-xs text-indigo-600">
-                {bulkStatus.success || 0} basarili, {bulkStatus.failed || 0} basarisiz | Kategori: {bulkStatus.category || "-"} | {bulkStatus.current_product || ""}
+              <p className={`text-xs ${task.paused ? 'text-amber-600' : 'text-indigo-600'}`}>
+                {task.success || 0} basarili, {task.failed || 0} basarisiz | Kategori: {task.category || "-"}
+                {task.error && <span className="ml-2 text-red-600 font-medium">{task.error}</span>}
               </p>
+              {task.paused && (
+                <p className="text-xs text-amber-700 mt-1 font-medium">Bakiye yukledikten sonra tekrar "Uret ve Gonder" butonuna basin.</p>
+              )}
             </div>
           </CardContent>
         </Card>
-      )}
+      ))}
 
       {/* Categories Table */}
       <Card className="border-slate-200" data-testid="seo-categories-card">
@@ -165,12 +167,12 @@ export default function SeoLogsPage() {
                     <Button
                       size="sm"
                       onClick={() => startBulkSeo(cat.category)}
-                      disabled={bulkStatus?.running || cat.remaining === 0}
+                      disabled={cat.running && !cat.paused}
                       data-testid={`seo-start-${cat.category?.slice(0, 20)}`}
-                      className="h-7 text-[10px] bg-indigo-600 hover:bg-indigo-700 text-white"
+                      className={`h-7 text-[10px] ${cat.paused ? 'bg-amber-600 hover:bg-amber-700' : cat.remaining === 0 ? 'bg-emerald-600' : 'bg-indigo-600 hover:bg-indigo-700'} text-white`}
                     >
-                      {runningCategory === cat.category ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Play className="h-3 w-3 mr-1" />}
-                      {cat.remaining === 0 ? "Tamamlandi" : "Uret ve Gonder"}
+                      {cat.running && !cat.paused ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Play className="h-3 w-3 mr-1" />}
+                      {cat.running && !cat.paused ? "Calisiyor" : cat.paused ? "Devam Et" : cat.remaining === 0 ? "Tamamlandi" : "Uret ve Gonder"}
                     </Button>
                   </TableCell>
                 </TableRow>
