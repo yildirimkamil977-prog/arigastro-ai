@@ -68,11 +68,20 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [report, setReport] = useState(null);
+  const [reportMeta, setReportMeta] = useState(null);
   const [data, setData] = useState({});
   const [showAI, setShowAI] = useState(false);
   const [pastReports, setPastReports] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
   const [ga4Data, setGa4Data] = useState(null);
+  const [dateRange, setDateRange] = useState("30");
+  const [compareId, setCompareId] = useState(null);
+
+  const getDateRange = () => {
+    const to = new Date().toISOString().split("T")[0];
+    const from = new Date(Date.now() - parseInt(dateRange) * 86400000).toISOString().split("T")[0];
+    return { date_from: from, date_to: to };
+  };
 
   const fetchData = useCallback(async (c) => {
     setLoading(true);
@@ -103,16 +112,19 @@ export default function ReportsPage() {
   }, []);
 
   const generateReport = async () => {
-    setGenerating(true); setReport(null); setShowAI(true);
+    setGenerating(true); setReport(null); setReportMeta(null); setShowAI(true);
     try {
+      const { date_from, date_to } = getDateRange();
       const res = await fetch(`${API}/api/reports/ai-report`, {
         method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
-        body: JSON.stringify({ category: cat }),
+        body: JSON.stringify({ category: cat, date_from, date_to, compare_report_id: compareId }),
       });
       if (!res.ok) { const e = await res.json(); throw new Error(e.detail); }
       const d = await res.json();
       setReport(d.report);
-      toast.success("AI icgoruler hazirlandi!");
+      setReportMeta({ id: d.report_id, date_range: d.date_range, research: d.research_summary });
+      setCompareId(null);
+      toast.success("Derin analiz tamamlandi!");
     } catch (e) { toast.error("Hata: " + e.message); }
     finally { setGenerating(false); }
   };
@@ -189,18 +201,26 @@ export default function ReportsPage() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <h2 className="text-xl font-bold text-slate-900">Analiz & Rapor</h2>
-          <p className="text-sm text-slate-500 mt-0.5">Gercek veriler, gorseller ve AI icgoruler</p>
+          <p className="text-sm text-slate-500 mt-0.5">Derin arastirma, rakip analizi ve AI icgoruler</p>
         </div>
-        <div className="flex gap-2 items-center">
+        <div className="flex gap-2 items-center flex-wrap">
+          <select value={dateRange} onChange={(e) => setDateRange(e.target.value)}
+            className="h-8 px-2 text-xs border border-slate-200 rounded-lg bg-white text-slate-700 focus:ring-2 focus:ring-amber-500/20" data-testid="date-range-select">
+            <option value="7">Son 7 Gun</option>
+            <option value="14">Son 14 Gun</option>
+            <option value="30">Son 30 Gun</option>
+            <option value="60">Son 60 Gun</option>
+            <option value="90">Son 90 Gun</option>
+          </select>
           <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => fetchData(cat)} disabled={loading}>
             <RefreshCw className={`h-3 w-3 mr-1 ${loading ? "animate-spin" : ""}`} /> Yenile
           </Button>
           <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => { setShowHistory(!showHistory); if (!showHistory) loadHistory(); }}>
-            <History className="h-3 w-3 mr-1" /> Gecmis
+            <History className="h-3 w-3 mr-1" /> Gecmis Raporlar
           </Button>
           <Button size="sm" className="h-8 text-xs bg-slate-900 hover:bg-slate-800 text-white" onClick={generateReport} disabled={generating} data-testid="ai-insights-btn">
             <Brain className={`h-3.5 w-3.5 mr-1.5 ${generating ? "animate-pulse" : ""}`} />
-            {generating ? "Hazirlaniyor..." : "AI Icgoruler"}
+            {generating ? "Arastiriliyor..." : "Derin Analiz Baslat"}
           </Button>
         </div>
       </div>
@@ -238,11 +258,23 @@ export default function ReportsPage() {
       {/* Past reports */}
       {showHistory && pastReports.length > 0 && (
         <Card className="border border-slate-200">
+          <CardHeader className="pb-1 pt-3 px-4"><CardTitle className="text-sm font-semibold">Gecmis Raporlar</CardTitle></CardHeader>
           <CardContent className="p-3 space-y-1">
             {pastReports.map((r, i) => (
-              <div key={i} className="flex items-center justify-between p-2 rounded border border-slate-100 hover:bg-slate-50 cursor-pointer text-sm" onClick={() => { setReport(r.report); setShowHistory(false); setShowAI(true); }}>
-                <span className="text-slate-700">{CATEGORIES.find(c => c.id === r.category)?.label}</span>
-                <span className="text-xs text-slate-400">{new Date(r.created_at).toLocaleDateString("tr-TR")}</span>
+              <div key={i} className="flex items-center justify-between p-2 rounded border border-slate-100 hover:bg-slate-50 text-sm gap-2">
+                <div className="flex-1 cursor-pointer" onClick={() => { setReport(r.report); setReportMeta({ id: r.report_id, date_range: { from: r.date_from, to: r.date_to }, research: r.research_summary }); setShowHistory(false); setShowAI(true); }}>
+                  <span className="text-slate-700 font-medium">{CATEGORIES.find(c => c.id === r.category)?.label}</span>
+                  <span className="text-xs text-slate-400 ml-2">{r.date_from} — {r.date_to}</span>
+                  {r.research_summary && (
+                    <span className="text-[10px] text-blue-500 ml-2">{r.research_summary.pages_scraped || 0} sayfa taranmis</span>
+                  )}
+                </div>
+                <div className="flex gap-1">
+                  <Button variant="ghost" size="sm" className="h-6 text-[10px] text-blue-600" onClick={() => { setCompareId(r.report_id); toast.info("Karsilastirma icin yeni analiz baslatabilirsiniz"); }}>
+                    Karsilastir
+                  </Button>
+                  <span className="text-xs text-slate-400">{new Date(r.created_at).toLocaleDateString("tr-TR")}</span>
+                </div>
               </div>
             ))}
           </CardContent>
@@ -695,28 +727,61 @@ export default function ReportsPage() {
               <CardHeader className="pb-1 pt-3 px-4">
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-sm font-semibold text-amber-800 flex items-center gap-2">
-                    <Lightbulb className="h-4 w-4" /> AI Icgoruler — {catInfo?.label}
+                    <Lightbulb className="h-4 w-4" /> Derin Analiz — {catInfo?.label}
                   </CardTitle>
                   <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setShowAI(false)}>
                     <ChevronUp className="h-3 w-3 mr-1" /> Gizle
                   </Button>
                 </div>
+                {reportMeta && (
+                  <div className="flex items-center gap-3 mt-1 flex-wrap">
+                    {reportMeta.date_range && (
+                      <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded">{reportMeta.date_range.from} — {reportMeta.date_range.to}</span>
+                    )}
+                    {reportMeta.research && (
+                      <>
+                        {reportMeta.research.keywords_researched > 0 && <span className="text-[10px] bg-blue-50 text-blue-600 px-2 py-0.5 rounded">{reportMeta.research.keywords_researched} kelime arastirildi</span>}
+                        {reportMeta.research.pages_scraped > 0 && <span className="text-[10px] bg-emerald-50 text-emerald-600 px-2 py-0.5 rounded">{reportMeta.research.pages_scraped} sayfa tarandi</span>}
+                        {reportMeta.research.competitors_analyzed > 0 && <span className="text-[10px] bg-violet-50 text-violet-600 px-2 py-0.5 rounded">{reportMeta.research.competitors_analyzed} rakip incelendi</span>}
+                      </>
+                    )}
+                    {compareId && <span className="text-[10px] bg-amber-100 text-amber-700 px-2 py-0.5 rounded">Onceki raporla karsilastirmali</span>}
+                  </div>
+                )}
               </CardHeader>
               <CardContent className="px-4 pb-4">
                 {generating ? (
                   <div className="py-8 text-center">
                     <Brain className="h-8 w-8 mx-auto mb-2 text-amber-500 animate-pulse" />
-                    <p className="text-sm text-slate-500">Veriler analiz ediliyor...</p>
+                    <p className="text-sm font-medium text-slate-700">Derin analiz yapiliyor...</p>
+                    <p className="text-xs text-slate-500 mt-1">Rakip sayfalar taraniyor, acilis sayfalari inceleniyor, Google sonuclari analiz ediliyor</p>
+                    <div className="flex justify-center gap-2 mt-3">
+                      <span className="text-[10px] bg-blue-50 text-blue-600 px-2 py-1 rounded animate-pulse">Sayfa tarama...</span>
+                      <span className="text-[10px] bg-violet-50 text-violet-600 px-2 py-1 rounded animate-pulse">Rakip analizi...</span>
+                      <span className="text-[10px] bg-emerald-50 text-emerald-600 px-2 py-1 rounded animate-pulse">AI rapor...</span>
+                    </div>
                   </div>
                 ) : report ? (
                   <div className="prose prose-sm prose-slate max-w-none" data-testid="ai-report-content">
                     <ReactMarkdown components={{
                       h3: ({ children }) => <h3 className="text-sm font-bold text-slate-900 mt-4 mb-2 pb-1 border-b border-slate-100">{children}</h3>,
                       h2: ({ children }) => <h2 className="text-base font-bold text-slate-900 mt-5 mb-2">{children}</h2>,
+                      h1: ({ children }) => <h1 className="text-lg font-bold text-slate-900 mt-6 mb-3 pb-2 border-b-2 border-amber-200">{children}</h1>,
                       strong: ({ children }) => <strong className="font-semibold text-slate-800">{children}</strong>,
                       li: ({ children }) => <li className="text-sm text-slate-700 leading-relaxed my-0.5">{children}</li>,
                       p: ({ children }) => <p className="text-sm text-slate-700 leading-relaxed my-1.5">{children}</p>,
+                      table: ({ children }) => <table className="w-full border-collapse border border-slate-200 my-3">{children}</table>,
+                      th: ({ children }) => <th className="border border-slate-200 px-3 py-1.5 bg-slate-50 text-xs font-semibold text-left">{children}</th>,
+                      td: ({ children }) => <td className="border border-slate-200 px-3 py-1.5 text-sm">{children}</td>,
                     }}>{report}</ReactMarkdown>
+                    {reportMeta?.id && (
+                      <div className="mt-4 pt-3 border-t border-slate-100 flex items-center gap-2">
+                        <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => { setCompareId(reportMeta.id); toast.info("Bu raporu referans alarak yeni analiz baslatin"); }}>
+                          Yeniden Incele (Karsilastir)
+                        </Button>
+                        <span className="text-[10px] text-slate-400">Onerileri uyguladiktan sonra yeni analiz ile karsilastirma yapin</span>
+                      </div>
+                    )}
                   </div>
                 ) : null}
               </CardContent>

@@ -2940,17 +2940,23 @@ async def get_landing_pages_report(date_from: str = None, date_to: str = None, u
 
 @api_router.post("/reports/ai-report")
 async def generate_ai_report(request: Request, user: dict = Depends(get_current_user)):
-    """Generate AI report for a specific category."""
+    """Generate deep AI report with web scraping research for a specific category."""
     body = await request.json()
     category = body.get("category", "search_terms")
     date_from = body.get("date_from")
     date_to = body.get("date_to")
+    compare_report_id = body.get("compare_report_id")
+
+    if not date_from:
+        date_from = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    if not date_to:
+        date_to = datetime.now().strftime("%Y-%m-%d")
 
     openai_key = os.environ.get("OPENAI_API_KEY")
     if not openai_key:
         raise HTTPException(status_code=400, detail="OpenAI API anahtari bulunamadi")
 
-    # Fetch relevant data based on category
+    # Fetch Google Ads/GA4/GSC data
     data_sections = {}
     if category == "search_terms":
         data_sections["search_terms"] = fetch_search_terms(date_from, date_to, limit=150)
@@ -2992,92 +2998,41 @@ async def generate_ai_report(request: Request, user: dict = Depends(get_current_
         data_sections["ga4"] = fetch_ga4_overview(date_from, date_to)
         data_sections["device"] = fetch_device_performance(date_from, date_to)
 
-    prompts = {
-        "search_terms": """Sen 15 yıllık deneyime sahip bir Google Ads stratejistisin. Arama terimi verilerini analiz edip NEDEN sorunları ve NASIL çözüleceği hakkında derinlemesine içgörüler sunuyorsun.
+    # Run deep analysis with web scraping
+    from ai_agents import run_deep_analysis
+    research_data = await run_deep_analysis(category, data_sections, {"from": date_from, "to": date_to})
 
-ÖNEMLİ: "Bu kelimeyi kapat" veya "Bunu negatife ekle" gibi yüzeysel tavsiyeler VERME. Bunun yerine:
-- NEDEN bu terim dönüşüm getirmiyor? (kullanıcı niyeti mi farklı, ürün-sayfa uyumu mu yok, fiyat rekabeti mi kaybediliyor)
-- Bu terimi arayan kişinin gerçek niyeti ne? Bilgi mi arıyor, fiyat mı karşılaştırıyor, satın alma niyeti var mı?
-- Kalite puanı düşükse bunun kök nedeni ne? Rakipler bu kelimede ne farklı yapıyor?
-- Hangi terimler NEDEN karlı? Bu başarıyı diğer alanlara nasıl taşıyabiliriz?
+    # If comparing with previous report, fetch it
+    prev_report_text = ""
+    if compare_report_id:
+        prev = await db.marketing_reports.find_one({"_id": ObjectId(compare_report_id)})
+        if prev:
+            prev_report_text = f"\n\n## ÖNCEKİ RAPOR ({prev.get('date_from', '?')} — {prev.get('date_to', '?')})\n{prev.get('report', '')[:1500]}\n"
 
-Kısa ve öz yaz. Maksimum 600 kelime. Sadece en değerli 5-7 içgörüyü paylaş.""",
+    # Build system prompt
+    base_prompt = f"""Sen 15 yıllık deneyimli bir dijital pazarlama danışmanısın. Bir e-ticaret sitesi (arigastro.com — endüstriyel mutfak ekipmanları) için {category.replace('_', ' ')} analizi yapıyorsun.
 
-        "ad_performance": """Sen üst düzey bir performans pazarlama danışmanısın. Kampanya verilerini analiz edip stratejik içgörüler sunuyorsun.
+TARİH ARALIĞI: {date_from} — {date_to}
 
-ÖNEMLİ: "Kampanyayı kapat" gibi basit tavsiyeler VERME. Bunun yerine:
-- Gösterim payı düşükse: NEDEN düşük? Rakipler ne yapıyor farklı? Kalite puanı mı düşük, bütçe mi yetersiz, bid stratejisi mi yanlış?
-- ROAS düşükse: Hangi aşamada kayıp var? Tıklama maliyeti mi yüksek, dönüşüm oranı mı düşük, sepet değeri mi düşük?
-- Cihaz farkı varsa: Mobilde neden farklı performans? Sayfa hızı mı, kullanıcı deneyimi mi, ödeme süreci mi sorunlu?
-- Saat farkı varsa: Neden bazı saatler daha karlı? Hedef kitlenin davranış kalıbı ne?
+SENİN FARKLIĞIN: Sen sadece veri okuyan bir AI değilsin. Sen:
+1. Rakip sayfaları GERÇEKTEN ziyaret edip analiz ettin
+2. Google arama sonuçlarını GERÇEKTEN inceledin  
+3. Açılış sayfalarını GERÇEKTEN taradın
+4. Şimdi bu somut bulgulara dayanarak rapor yazıyorsun
 
-Kısa ve öz yaz. Maksimum 600 kelime. GA4 analytics verileriyle çapraz analiz yap.""",
+YASAK: "Bu araştırılmalı", "Bu analiz edilmeli", "İncelenmesi gerekir" gibi ifadeler KULLANMA. Sen zaten araştırdın ve inceldin. Bulgularını doğrudan yaz.
 
-        "ad_assets": """Sen yaratıcı bir reklam stratejistisin. Reklam öğelerini analiz edip NEDEN bazı başlıkların daha iyi çalıştığını açıklıyorsun.
+YASAK: "Bu kelimeyi kapat", "Bunu negatife ekle" gibi tek cümlelik yüzeysel tavsiyeler verme.
 
-ÖNEMLİ: Sadece "yeni başlık öner" deme. Bunun yerine:
-- İyi çalışan başlıklarda hangi psikolojik tetikleyiciler var? (aciliyet, sosyal kanıt, fiyat avantajı, güven)
-- Kötü çalışanlar NEDEN kötü? Hangi mesaj eksik?
-- Rakipler benzersiz ne söylüyor ki siz söylemiyorsunuz?
-- Sektöre özel (endüstriyel mutfak) hangi mesajlar etkili olur?
+HER TESPİT İÇİN:
+1. SORUN: Spesifik olarak ne yanlış (veriyle kanıtla)
+2. KÖK NEDEN: Neden böyle? Rakipler ne farklı yapıyor? Sayfa içeriğinde eksik olan ne?
+3. ÇÖZÜM PLANI: Adım adım ne yapılmalı, nasıl yapılmalı, tahmini etki ne olacak
 
-10 yeni başlık (max 30 kar.) ve 5 yeni açıklama (max 90 kar.) öner. Her birinin NEDEN etkili olacağını açıkla.
-Kısa ve öz yaz. Maksimum 600 kelime.""",
+FORMAT: Markdown kullan. Her tespit için ayrı başlık. Kısa ve yoğun yaz — gereksiz açıklama yapma, doğrudan sonuçlara geç."""
 
-        "competition": """Sen rekabetçi istihbarat uzmanısın. Gösterim payı ve rekabet verilerini analiz ediyorsun.
-
-ÖNEMLİ: "Bütçeyi artır" gibi basit tavsiyeler VERME. Bunun yerine:
-- Gösterim payı NEDEN düşük? Rank kaybı mı, bütçe kaybı mı? Bunlar ne anlama geliyor?
-- Rank kaybı varsa: Rakipler NEDEN önde? Daha yüksek kalite puanı mı, daha iyi reklam uyumu mu, daha güçlü açılış sayfası mı?
-- Bütçe kaybı varsa: Bütçeyi artırmadan gösterim payını artırmanın yolları neler?
-- Bu sektörde (endüstriyel mutfak ekipmanları) rakiplerden ayrışmanın yolları neler?
-
-Kısa ve öz yaz. Maksimum 500 kelime.""",
-
-        "seo": """Sen e-ticaret SEO uzmanısın. Organik arama verilerini analiz ediyorsun.
-
-ÖNEMLİ:
-- Pozisyon 5-15 arası sorgular NEDEN ilk 3'e çıkamıyor? İçerik eksikliği mi, teknik sorun mu, backlink mi?
-- Düşük CTR'li sorgularda: Meta başlığınız NEDEN tıklanmıyor? Rakiplerin snippet'ları ne sunuyor?
-- GA4 bounce rate yüksek sayfalarda: Kullanıcı neden hemen çıkıyor? İçerik beklentiyle örtüşmüyor mu?
-- Hangi organik sayfalar satış getiriyor, hangilerinden yalnızca trafik geliyor?
-
-GA4 analytics verileriyle (oturum süresi, hemen çıkma, gelir) çapraz analiz yap.
-Kısa ve öz yaz. Maksimum 500 kelime.""",
-
-        "time_device": """Sen veri analisti ve medya planlama uzmanısın.
-
-ÖNEMLİ:
-- Mobil-Desktop ROAS farkı NEDEN var? Sadece bid değil, kullanıcı deneyimi açısından analiz et.
-- Saatlik performans farkları NEDEN oluşuyor? Hedef kitlenin gün içi davranış kalıbı ne?
-- Düşük performanslı saatlerde reklam kapatmak yerine, o saatlerde NEDEN düşük ve nasıl iyileştirilebilir?
-
-GA4 analytics verileriyle çapraz analiz yap.
-Kısa ve öz yaz. Maksimum 400 kelime.""",
-
-        "strategy": """Sen dijital pazarlama direktörüsün. Tüm kanalları kapsayan stratejik değerlendirme yap.
-
-ROAS'ı artırmak ana hedef. Her önerinin NEDEN işe yarayacağını ve tahmini etkisini açıkla.
-
-1. Yönetici Özeti (3 cümle): En kritik bulgu
-2. Performans Skoru (Google Ads, SEO, Genel: her biri 1-10)
-3. En Büyük 3 Fırsat: Her birinin NEDEN fırsat olduğu ve tahmini ROAS etkisi
-4. 1 Haftalık Aksiyon Planı (5 madde)
-5. 1 Aylık Aksiyon Planı (5 madde)
-
-GA4 analytics verileriyle çapraz analiz yap. Kısa ve öz yaz. Maksimum 600 kelime."""
-    }
-
-    system_prompt = prompts.get(category, prompts["strategy"])
-    system_prompt += """
-
-ÖNEMLİ KURALLAR:
-- Veri yoksa "Veri bulunamadı" yaz, uydurma
-- TL cinsinden parasal değerler kullan
-- Spesifik kampanya/keyword isimlerini kullan
-- Her öneri uygulanabilir ve spesifik olmalı
-- Anlaşılır Türkçe kullan
-- Veriye dayalı kararlar öner"""
+    if prev_report_text:
+        base_prompt += f"\n\nÖNCEKİ RAPORLA KARŞILAŞTIRMA: Önceki rapordaki önerilerin ne kadarı uygulanmış? Hangi metrikler iyileşmiş, hangilerind kötüleşmiş? Spesifik olarak belirt.\n{prev_report_text}"
 
     try:
         from emergentintegrations.llm.chat import LlmChat, UserMessage
@@ -3086,32 +3041,77 @@ GA4 analytics verileriyle çapraz analiz yap. Kısa ve öz yaz. Maksimum 600 kel
         chat = LlmChat(
             api_key=openai_key,
             session_id=f"report-{category}-{uuid.uuid4().hex[:8]}",
-            system_message=system_prompt
+            system_message=base_prompt
         ).with_model("openai", "gpt-4o")
 
-        data_text = ""
+        # Build data text with all sources
+        data_text = f"## TARİH ARALIĞI: {date_from} — {date_to}\n\n"
+
+        # Google Ads/GA4/GSC data
         for key, value in data_sections.items():
             if isinstance(value, list):
                 clean = [item for item in value if not (isinstance(item, dict) and "error" in item)]
                 if clean:
                     data_text += f"\n## {key.upper().replace('_', ' ')} ({len(clean)} kayıt)\n"
-                    for item in clean[:80]:
+                    for item in clean[:60]:
                         data_text += f"- {json_mod.dumps(item, ensure_ascii=False)}\n"
             elif isinstance(value, dict) and "error" not in value:
                 data_text += f"\n## {key.upper().replace('_', ' ')}\n{json_mod.dumps(value, ensure_ascii=False)}\n"
 
+        # Deep research data
+        if research_data.get("keyword_deep_analyses"):
+            data_text += "\n\n# YAPILAN DERİN ARAŞTIRMA SONUÇLARI\n"
+            for kw_analysis in research_data["keyword_deep_analyses"]:
+                kw = kw_analysis.get("keyword", "")
+                data_text += f"\n## ARAŞTIRMA: \"{kw}\"\n"
+                if kw_analysis.get("our_page"):
+                    p = kw_analysis["our_page"]
+                    data_text += f"### BİZİM SAYFAMIZ: {p.get('url','')}\n- Başlık: {p.get('title','')}\n- H1: {p.get('h1',[])}\n- Fiyatlar: {p.get('prices',[])}\n- CTA: {p.get('ctas',[])}\n- Kelime sayısı: {p.get('word_count',0)}\n- Schema: {p.get('has_schema',False)}\n"
+                if kw_analysis.get("serp_results"):
+                    data_text += f"### GOOGLE ARAMA SONUÇLARI ({kw}):\n"
+                    for sr in kw_analysis["serp_results"][:5]:
+                        data_text += f"- {sr.get('title','')} | {sr.get('url','')}\n  {sr.get('description','')}\n"
+                if kw_analysis.get("competitors"):
+                    data_text += f"### RAKİP SAYFA ANALİZLERİ:\n"
+                    for comp in kw_analysis["competitors"]:
+                        data_text += f"- Rakip: {comp.get('url','')}\n  Başlık: {comp.get('title','')}\n  H1: {comp.get('h1',[])}\n  Fiyatlar: {comp.get('prices',[])}\n  CTA: {comp.get('ctas',[])}\n  Kelime: {comp.get('word_count',0)}\n  Schema: {comp.get('has_schema',False)}\n  İçerik özeti: {comp.get('body_excerpt','')[:200]}\n"
+
+        if research_data.get("scraped_pages"):
+            data_text += "\n\n# TARANAN SAYFALAR\n"
+            for page in research_data["scraped_pages"]:
+                data_text += f"\n## {page.get('url','')}\n- Başlık: {page.get('title','')}\n- Meta: {page.get('meta_description','')}\n- H1: {page.get('h1',[])}\n- H2: {page.get('h2',[])}\n- Fiyatlar: {page.get('prices',[])}\n- CTA: {page.get('ctas',[])}\n- Kelime: {page.get('word_count',0)}\n- Görsel: {page.get('image_count',0)}\n- Schema: {page.get('has_schema',False)}\n"
+
+        if research_data.get("competitor_insights"):
+            data_text += "\n\n# RAKİP SERP VERİLERİ\n"
+            for ci in research_data["competitor_insights"]:
+                data_text += f"- {ci.get('title','')} | {ci.get('url','')}\n"
+
         response = await chat.send_message(UserMessage(text=data_text))
 
-        await db.marketing_reports.insert_one({
+        # Save report with full metadata
+        report_doc = {
             "category": category,
             "date_from": date_from,
             "date_to": date_to,
             "report": response,
+            "research_summary": {
+                "keywords_researched": len(research_data.get("keyword_deep_analyses", [])),
+                "pages_scraped": len(research_data.get("scraped_pages", [])),
+                "competitors_analyzed": sum(len(k.get("competitors", [])) for k in research_data.get("keyword_deep_analyses", [])),
+            },
+            "compared_with": compare_report_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "created_by": user["username"],
-        })
+        }
+        result = await db.marketing_reports.insert_one(report_doc)
 
-        return {"report": response, "category": category}
+        return {
+            "report": response,
+            "category": category,
+            "report_id": str(result.inserted_id),
+            "date_range": {"from": date_from, "to": date_to},
+            "research_summary": report_doc["research_summary"],
+        }
     except Exception as e:
         logger.error(f"AI report error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -3121,9 +3121,11 @@ async def get_report_history(category: str = None, limit: int = 10, user: dict =
     query = {}
     if category:
         query["category"] = category
-    cursor = db.marketing_reports.find(query, {"_id": 0}).sort("created_at", -1).limit(limit)
+    cursor = db.marketing_reports.find(query).sort("created_at", -1).limit(limit)
     reports = []
     async for doc in cursor:
+        doc["report_id"] = str(doc["_id"])
+        del doc["_id"]
         reports.append(doc)
     return reports
 
