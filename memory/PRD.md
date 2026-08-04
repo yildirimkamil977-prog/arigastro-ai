@@ -4,21 +4,26 @@
 React + Recharts + FastAPI + MongoDB + ScraperAPI + OpenAI GPT-4o + APScheduler + İkas GraphQL + Google Ads/GA4/Search Console APIs
 
 ## Core Features
-1-12: Auth, Products, Categories, Price Tracking, SEO, İkas, Dashboard, Settings, Scheduler (unchanged)
-13. **AI Marketing Analyzer** (/marketing) — Google Ads + GA4 + Search Console dashboard
-14. **Analiz & Rapor** (/reports) — 7-category visual + deep AI research:
-    - AI Research Agents: Scrape landing pages, Google SERP results, competitor pages
-    - Date range selector (7/14/30/60/90 days) applied to all data & analyses
-    - Report saving with full metadata (research_summary, date_range, comparison)
-    - Report comparison: "Yeniden İncele" compares new analysis with previous report
-    - Deep analysis: Finds WHY keywords underperform by actually visiting pages and competitors
-    - GA4 analytics integrated in all categories
+1-12: Auth, Products, Categories, Price Tracking, SEO, İkas, Dashboard, Settings, Scheduler
+13. **AI Marketing Analyzer** (/marketing)
+14. **Analiz & Rapor** (/reports) — 7-category visual + deep AI research
+15. **Tekil Kelime Analizi** — Any keyword/search term can be individually analyzed with:
+    - Landing page scraping (our site)
+    - Google SERP analysis
+    - Competitor page scraping (top 3)
+    - Deep AI analysis: WHY underperforming, competitor comparison, specific action plan
+    - Saved to MongoDB for future reference
 
 ## AI Research Agent System (ai_agents.py)
 - `scrape_url()`: ScraperAPI → extract title, H1, H2, prices, CTAs, word count, schema
-- `scrape_google_serp()`: Google.com.tr search → top 5 organic results
-- `analyze_keyword_deep()`: For problem keywords → scrape our page + SERP + top 3 competitors
-- `run_deep_analysis()`: Category-specific research (search_terms: top 5 problem keywords, competition: homepage + category + SERP, seo: low CTR pages + competitor pages)
+- `scrape_google_serp()`: Google.com.tr → top 5 organic results
+- `analyze_keyword_deep()`: Problem keywords → our page + SERP + top 3 competitors
+- `run_deep_analysis()`: Category-specific batch research
+
+## API Endpoints (New)
+- `POST /api/reports/analyze-keyword` — Single keyword deep analysis
+- `GET /api/reports/keyword-analyses` — Past keyword analyses
+- `POST /api/reports/ai-report` — Now includes web scraping research + date range + comparison
 
 ## Key Credentials
 - Admin: arigastro / Arigastro2026!
@@ -26,6 +31,6 @@ React + Recharts + FastAPI + MongoDB + ScraperAPI + OpenAI GPT-4o + APScheduler 
 - GA4: 347454260, GSC: sc-domain:arigastro.com
 
 ## Upcoming
-- P1: Scheduled weekly auto-reports (APScheduler)
+- P1: Scheduled weekly auto-reports
 - P1: API caching (5-min TTL)
-- P2: Code modularization (server.py ~3300 lines)
+- P2: Code modularization

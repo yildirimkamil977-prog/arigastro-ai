@@ -3129,6 +3129,161 @@ async def get_report_history(category: str = None, limit: int = 10, user: dict =
         reports.append(doc)
     return reports
 
+@api_router.post("/reports/analyze-keyword")
+async def analyze_single_keyword(request: Request, user: dict = Depends(get_current_user)):
+    """Deep analysis of a single keyword/search term with web scraping."""
+    body = await request.json()
+    keyword = body.get("keyword", "")
+    keyword_data = body.get("data", {})
+    analysis_type = body.get("type", "keyword")  # keyword or search_term
+
+    if not keyword:
+        raise HTTPException(status_code=400, detail="Anahtar kelime gerekli")
+
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    if not openai_key:
+        raise HTTPException(status_code=400, detail="OpenAI API anahtari bulunamadi")
+
+    # Deep research: scrape our page + Google SERP + competitors
+    from ai_agents import analyze_keyword_deep, scrape_url
+    
+    # Try to find our landing page for this keyword from the site
+    our_landing = f"https://arigastro.com/arama?q={keyword.replace(' ', '+')}"
+    deep = await analyze_keyword_deep({"keyword": keyword, "landing_url": our_landing, **keyword_data})
+
+    # Also scrape our main category page if keyword suggests a product category
+    extra_pages = []
+    slug_guess = keyword.lower().replace(" ", "-").replace("ı", "i").replace("ö", "o").replace("ü", "u").replace("ş", "s").replace("ç", "c").replace("ğ", "g")
+    category_url = f"https://arigastro.com/{slug_guess}"
+    cat_page = await scrape_url(category_url)
+    if "error" not in cat_page:
+        extra_pages.append(cat_page)
+
+    # Build comprehensive prompt
+    system_prompt = f"""Sen 15 yıllık deneyime sahip bir Google Ads ve dijital pazarlama uzmanısın. 
+Arigastro.com (endüstriyel mutfak ekipmanları e-ticaret) için TEK BİR anahtar kelimeyi derinlemesine analiz ediyorsun.
+
+ANALİZ EDİLEN KELİME: "{keyword}"
+
+Sen bu kelime için:
+1. Arigastro'nun açılış sayfasını GERÇEKTEN ziyaret edip taradın
+2. Google'da bu kelimeyi aratıp ilk sayfa sonuçlarını GERÇEKTEN inceledin
+3. Rakip sayfaları GERÇEKTEN ziyaret edip taradın
+4. Şimdi tüm bu somut bulgulara dayanarak rapor yazıyorsun
+
+YASAK: "Araştırılmalı", "İncelenmesi gerekir", "Kontrol edilmeli" gibi belirsiz ifadeler. Sen ZATEN araştırdın.
+YASAK: "Bu kelimeyi kapat" gibi tek cümlelik tavsiyeler. Derinlemesine analiz et.
+
+RAPOR FORMATI:
+
+### ANAHTAR KELİME PROFİLİ
+Bu kelimeyi arayan kişi kim? Ne arıyor? Satın alma niyeti var mı yoksa bilgi mi arıyor? Bu kelime ile hangi ürünler satılmaya çalışılıyor?
+
+### PERFORMANS DURUMU
+Mevcut metrikler ne diyor? (tıklama, maliyet, dönüşüm, kalite puanı varsa bileşenleri)
+
+### AÇILIŞ SAYFASI ANALİZİ
+Arigastro'nun sayfasında ne var? Eksik olan ne? Sayfa bu kelimeyi arayan kişinin beklentisini karşılıyor mu?
+- Başlık ve H1 uyumu
+- Fiyat görünürlüğü
+- CTA (sepete ekle) net mi?
+- İçerik yeterliliği
+- Schema markup var mı?
+
+### RAKİP KARŞILAŞTIRMASI
+Google'da bu kelimede ilk sıralarda kim var? Onların sayfalarında ne farklı?
+- İçerik farkları
+- Fiyat karşılaştırması (görebiliyorsan)
+- Kullanıcı deneyimi farkları
+- SEO avantajları
+
+### KÖK NEDEN ANALİZİ
+Bu kelime neden düşük performans gösteriyor? (veya kalite puanı neden düşük?)
+Spesifik nedenler:
+- Reklam metni ile sayfa uyumu var mı?
+- Sayfa hızı/deneyimi yeterli mi?
+- Beklenen TO neden düşük/yüksek?
+
+### SOMUT AKSİYON PLANI
+Adım adım ne yapılmalı:
+1. Açılış sayfasında şunları değiştir: [spesifik]
+2. Reklam metninde şunları güncelle: [spesifik]  
+3. Alternatif kelime önerileri: Bu ürünleri satmak için bu kelime yerine şu kelimeleri dene: [liste]
+4. Tahmini etki: Bu değişikliklerden sonra ne beklenmeli
+
+Kısa, yoğun ve tamamen veriye dayalı yaz. Her tespit somut kanıtla desteklensin."""
+
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        import json as json_mod
+
+        chat = LlmChat(
+            api_key=openai_key,
+            session_id=f"kw-{keyword[:20]}-{uuid.uuid4().hex[:6]}",
+            system_message=system_prompt
+        ).with_model("openai", "gpt-4o")
+
+        # Build data text
+        data_text = f"## ANAHTAR KELİME: \"{keyword}\"\n"
+        data_text += f"## MEVCUT METRİKLER:\n{json_mod.dumps(keyword_data, ensure_ascii=False)}\n"
+
+        if deep.get("our_page") and "error" not in deep["our_page"]:
+            p = deep["our_page"]
+            data_text += f"\n## BİZİM SAYFAMIZ ({p.get('url','')}):\n- Başlık: {p.get('title','')}\n- Meta: {p.get('meta_description','')}\n- H1: {p.get('h1',[])}\n- H2: {p.get('h2',[])}\n- Fiyatlar: {p.get('prices',[])}\n- CTA: {p.get('ctas',[])}\n- Kelime sayısı: {p.get('word_count',0)}\n- Görsel: {p.get('image_count',0)}\n- Schema: {p.get('has_schema',False)}\n- İçerik özeti: {p.get('body_excerpt','')[:300]}\n"
+
+        for ep in extra_pages:
+            data_text += f"\n## KATEGORİ SAYFAMIZ ({ep.get('url','')}):\n- Başlık: {ep.get('title','')}\n- H1: {ep.get('h1',[])}\n- Fiyatlar: {ep.get('prices',[])}\n- Kelime: {ep.get('word_count',0)}\n- İçerik: {ep.get('body_excerpt','')[:200]}\n"
+
+        if deep.get("serp_results"):
+            data_text += f"\n## GOOGLE ARAMA SONUÇLARI (\"{keyword}\"):\n"
+            for sr in deep["serp_results"][:5]:
+                data_text += f"- {sr.get('title','')} | {sr.get('url','')}\n  {sr.get('description','')}\n"
+
+        if deep.get("competitors"):
+            for comp in deep["competitors"]:
+                data_text += f"\n## RAKİP SAYFA: {comp.get('url','')}\n- Başlık: {comp.get('title','')}\n- H1: {comp.get('h1',[])}\n- H2: {comp.get('h2',[])}\n- Fiyatlar: {comp.get('prices',[])}\n- CTA: {comp.get('ctas',[])}\n- Kelime: {comp.get('word_count',0)}\n- Görsel: {comp.get('image_count',0)}\n- Schema: {comp.get('has_schema',False)}\n- İçerik: {comp.get('body_excerpt','')[:300]}\n"
+
+        response = await chat.send_message(UserMessage(text=data_text))
+
+        # Save to DB
+        doc = {
+            "type": "keyword_analysis",
+            "keyword": keyword,
+            "keyword_data": keyword_data,
+            "analysis": response,
+            "research_summary": {
+                "our_page_scraped": bool(deep.get("our_page") and "error" not in deep.get("our_page", {})),
+                "serp_results": len(deep.get("serp_results", [])),
+                "competitors_scraped": len(deep.get("competitors", [])),
+                "extra_pages": len(extra_pages),
+            },
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_by": user["username"],
+        }
+        result = await db.keyword_analyses.insert_one(doc)
+
+        return {
+            "analysis": response,
+            "keyword": keyword,
+            "analysis_id": str(result.inserted_id),
+            "research_summary": doc["research_summary"],
+        }
+    except Exception as e:
+        logger.error(f"Keyword analysis error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/reports/keyword-analyses")
+async def get_keyword_analyses(keyword: str = None, limit: int = 20, user: dict = Depends(get_current_user)):
+    """Get past keyword analyses."""
+    query = {"type": "keyword_analysis"}
+    if keyword:
+        query["keyword"] = {"$regex": keyword, "$options": "i"}
+    cursor = db.keyword_analyses.find(query, {"_id": 0}).sort("created_at", -1).limit(limit)
+    results = []
+    async for doc in cursor:
+        results.append(doc)
+    return results
+
 @api_router.get("/")
 async def root():
     return {"message": "ARI AI API is running", "version": "1.0"}

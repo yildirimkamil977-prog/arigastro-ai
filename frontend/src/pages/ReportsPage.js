@@ -11,7 +11,7 @@ import {
   Search, BarChart3, Brain, RefreshCw, Target, Shield, Globe,
   Clock, Monitor, Smartphone, Tablet, AlertTriangle, TrendingUp,
   Lightbulb, FileText, History, ChevronDown, ChevronUp,
-  Award, XCircle, CheckCircle2
+  Award, XCircle, CheckCircle2, Microscope, X
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 
@@ -76,6 +76,9 @@ export default function ReportsPage() {
   const [ga4Data, setGa4Data] = useState(null);
   const [dateRange, setDateRange] = useState("30");
   const [compareId, setCompareId] = useState(null);
+  const [kwAnalysis, setKwAnalysis] = useState(null);
+  const [kwAnalyzing, setKwAnalyzing] = useState(false);
+  const [kwTarget, setKwTarget] = useState(null);
 
   const getDateRange = () => {
     const to = new Date().toISOString().split("T")[0];
@@ -131,6 +134,21 @@ export default function ReportsPage() {
 
   const loadHistory = async () => {
     try { const r = await fetch(`${API}/api/reports/history?category=${cat}&limit=5`, { credentials: "include" }); setPastReports(await r.json()); } catch {}
+  };
+
+  const analyzeKeyword = async (keyword, data = {}) => {
+    setKwAnalyzing(true); setKwAnalysis(null); setKwTarget(keyword);
+    try {
+      const res = await fetch(`${API}/api/reports/analyze-keyword`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
+        body: JSON.stringify({ keyword, data, type: data.quality_score !== undefined ? "keyword" : "search_term" }),
+      });
+      if (!res.ok) { const e = await res.json(); throw new Error(e.detail); }
+      const d = await res.json();
+      setKwAnalysis(d);
+      toast.success(`"${keyword}" analizi tamamlandi`);
+    } catch (e) { toast.error("Analiz hatasi: " + e.message); }
+    finally { setKwAnalyzing(false); }
   };
 
   useEffect(() => { fetchData(cat); setReport(null); setShowAI(false); setShowHistory(false); }, [cat, fetchData]);
@@ -356,6 +374,7 @@ export default function ReportsPage() {
                           <th className="py-2 px-3 text-[10px] text-center">Sayfa</th>
                           <th className="py-2 px-3 text-[10px] text-right">Harcama</th>
                           <th className="py-2 px-3 text-[10px] text-right">ROAS</th>
+                          <th className="py-2 px-3 text-[10px] text-right"></th>
                         </tr></thead>
                         <tbody>
                           {qs.slice(0, 25).map((k, i) => (
@@ -367,6 +386,12 @@ export default function ReportsPage() {
                               <td className="py-1.5 px-3 text-center"><CompBadge val={k.landing_page_quality} /></td>
                               <td className="py-1.5 px-3 text-sm text-right font-mono">{k.cost.toLocaleString("tr-TR", { minimumFractionDigits: 0 })} TL</td>
                               <td className="py-1.5 px-3 text-sm text-right"><RoasColor v={k.roas} /></td>
+                              <td className="py-1.5 px-3 text-right">
+                                <button onClick={() => analyzeKeyword(k.keyword, k)} disabled={kwAnalyzing}
+                                  className="text-[10px] font-medium text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-2 py-0.5 rounded transition-colors disabled:opacity-50" data-testid={`analyze-kw-${i}`}>
+                                  <Microscope className="h-3 w-3 inline mr-0.5" />Analiz Et
+                                </button>
+                              </td>
                             </tr>
                           ))}
                         </tbody>
@@ -376,6 +401,53 @@ export default function ReportsPage() {
                 </Card>
               )}
             </div>
+          )}
+
+          {/* ===== KEYWORD ANALYSIS PANEL (visible when analyzing) ===== */}
+          {(kwAnalyzing || kwAnalysis) && (
+            <Card className="border-2 border-blue-300 bg-blue-50/10" data-testid="keyword-analysis-panel">
+              <CardHeader className="pb-1 pt-3 px-4">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-semibold text-blue-800 flex items-center gap-2">
+                    <Microscope className="h-4 w-4" /> Tekil Kelime Analizi: "{kwTarget}"
+                  </CardTitle>
+                  <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => { setKwAnalysis(null); setKwTarget(null); }}>
+                    <X className="h-3 w-3" />
+                  </Button>
+                </div>
+                {kwAnalysis?.research_summary && (
+                  <div className="flex items-center gap-2 mt-1 flex-wrap">
+                    {kwAnalysis.research_summary.our_page_scraped && <span className="text-[10px] bg-emerald-50 text-emerald-600 px-2 py-0.5 rounded">Sayfamiz tarandi</span>}
+                    {kwAnalysis.research_summary.serp_results > 0 && <span className="text-[10px] bg-blue-50 text-blue-600 px-2 py-0.5 rounded">{kwAnalysis.research_summary.serp_results} SERP sonucu</span>}
+                    {kwAnalysis.research_summary.competitors_scraped > 0 && <span className="text-[10px] bg-violet-50 text-violet-600 px-2 py-0.5 rounded">{kwAnalysis.research_summary.competitors_scraped} rakip incelendi</span>}
+                  </div>
+                )}
+              </CardHeader>
+              <CardContent className="px-4 pb-4">
+                {kwAnalyzing ? (
+                  <div className="py-8 text-center">
+                    <Microscope className="h-8 w-8 mx-auto mb-2 text-blue-500 animate-pulse" />
+                    <p className="text-sm font-medium text-slate-700">"{kwTarget}" icin derin analiz yapiliyor...</p>
+                    <p className="text-xs text-slate-500 mt-1">Acilis sayfasi taraniyor, Google sonuclari inceleniyor, rakip sayfalari analiz ediliyor</p>
+                    <div className="flex justify-center gap-2 mt-3">
+                      <span className="text-[10px] bg-emerald-50 text-emerald-600 px-2 py-1 rounded animate-pulse">Sayfa tarama...</span>
+                      <span className="text-[10px] bg-blue-50 text-blue-600 px-2 py-1 rounded animate-pulse">SERP analizi...</span>
+                      <span className="text-[10px] bg-violet-50 text-violet-600 px-2 py-1 rounded animate-pulse">Rakip karsilastirma...</span>
+                    </div>
+                  </div>
+                ) : kwAnalysis ? (
+                  <div className="prose prose-sm prose-slate max-w-none">
+                    <ReactMarkdown components={{
+                      h3: ({ children }) => <h3 className="text-sm font-bold text-slate-900 mt-4 mb-2 pb-1 border-b border-blue-100">{children}</h3>,
+                      h2: ({ children }) => <h2 className="text-base font-bold text-blue-900 mt-5 mb-2">{children}</h2>,
+                      strong: ({ children }) => <strong className="font-semibold text-slate-800">{children}</strong>,
+                      li: ({ children }) => <li className="text-sm text-slate-700 leading-relaxed my-0.5">{children}</li>,
+                      p: ({ children }) => <p className="text-sm text-slate-700 leading-relaxed my-1.5">{children}</p>,
+                    }}>{kwAnalysis.analysis}</ReactMarkdown>
+                  </div>
+                ) : null}
+              </CardContent>
+            </Card>
           )}
 
           {/* ===== AD PERFORMANCE ===== */}
