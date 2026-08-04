@@ -760,7 +760,7 @@ export default function MarketingPage() {
                   </CardHeader>
                   <CardContent className="px-4 pb-4 space-y-2">
                     {pastAnalyses.map((a, i) => (
-                      <div key={a._id} className="border border-slate-100 rounded-lg p-3 hover:bg-slate-50 cursor-pointer transition-colors" onClick={() => { setAnalysis(a.analysis); setShowPastAnalyses(false); }}>
+                      <div key={a._id || a.id || i} className="border border-slate-100 rounded-lg p-3 hover:bg-slate-50 cursor-pointer transition-colors" onClick={() => { setAnalysis(a.analysis); setShowPastAnalyses(false); }}>
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
                             <Brain className="h-3.5 w-3.5 text-amber-500" />

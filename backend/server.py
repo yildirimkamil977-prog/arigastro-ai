@@ -2758,10 +2758,9 @@ En acil 3-5 aksiyon maddesi. Her biri kısa, net ve uygulanabilir olmalı.
 @api_router.get("/marketing/analyses")
 async def get_marketing_analyses(limit: int = 10, user: dict = Depends(get_current_user)):
     """Get past marketing analyses."""
-    cursor = db.marketing_analyses.find().sort("created_at", -1).limit(limit)
+    cursor = db.marketing_analyses.find({}, {"_id": 0}).sort("created_at", -1).limit(limit)
     analyses = []
     async for doc in cursor:
-        doc["_id"] = str(doc["_id"])
         analyses.append(doc)
     return analyses
 
@@ -2895,10 +2894,9 @@ async def execute_ads_action(request: Request, user: dict = Depends(get_current_
 @api_router.get("/marketing/actions-log")
 async def get_marketing_actions_log(limit: int = 20, user: dict = Depends(get_current_user)):
     """Get log of executed marketing actions."""
-    cursor = db.marketing_actions.find().sort("executed_at", -1).limit(limit)
+    cursor = db.marketing_actions.find({}, {"_id": 0}).sort("executed_at", -1).limit(limit)
     actions = []
     async for doc in cursor:
-        doc["_id"] = str(doc["_id"])
         actions.append(doc)
     return actions
 

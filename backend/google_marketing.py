@@ -13,7 +13,9 @@ logger = logging.getLogger("google_marketing")
 GOOGLE_ADS_CUSTOMER_ID = os.environ.get("GOOGLE_ADS_CUSTOMER_ID", "").replace("-", "")
 GOOGLE_ADS_MCC_ID = os.environ.get("GOOGLE_ADS_MCC_ID", "").replace("-", "")
 GOOGLE_ADS_DEVELOPER_TOKEN = os.environ.get("GOOGLE_ADS_DEVELOPER_TOKEN", "")
-GOOGLE_ADS_IMPERSONATED_EMAIL = os.environ.get("GOOGLE_ADS_IMPERSONATED_EMAIL", "")
+GOOGLE_ADS_OAUTH_CLIENT_ID = os.environ.get("GOOGLE_ADS_OAUTH_CLIENT_ID", "")
+GOOGLE_ADS_OAUTH_CLIENT_SECRET = os.environ.get("GOOGLE_ADS_OAUTH_CLIENT_SECRET", "")
+GOOGLE_ADS_REFRESH_TOKEN = os.environ.get("GOOGLE_ADS_REFRESH_TOKEN", "")
 GA4_PROPERTY_ID = os.environ.get("GA4_PROPERTY_ID", "")
 GSC_SITE_URL = os.environ.get("GSC_SITE_URL", "")
 SA_PATH = os.environ.get("GOOGLE_SERVICE_ACCOUNT_PATH", "google_service_account.json")
@@ -26,14 +28,14 @@ def get_sa_path():
 # ============ GOOGLE ADS ============
 
 def get_ads_client():
-    """Get Google Ads API client."""
+    """Get Google Ads API client using OAuth2 refresh token."""
     from google.ads.googleads.client import GoogleAdsClient
     
-    sa_path = get_sa_path()
     config = {
         "developer_token": GOOGLE_ADS_DEVELOPER_TOKEN,
-        "json_key_file_path": sa_path,
-        "impersonated_email": GOOGLE_ADS_IMPERSONATED_EMAIL,
+        "client_id": GOOGLE_ADS_OAUTH_CLIENT_ID,
+        "client_secret": GOOGLE_ADS_OAUTH_CLIENT_SECRET,
+        "refresh_token": GOOGLE_ADS_REFRESH_TOKEN,
         "login_customer_id": GOOGLE_ADS_MCC_ID,
         "use_proto_plus": True,
     }

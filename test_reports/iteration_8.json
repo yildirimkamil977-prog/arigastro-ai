@@ -1,0 +1,52 @@
+{
+  "summary": "Full backend + frontend testing of the AI Marketing Analyzer (Google Ads, GA4, Search Console + OpenAI). 6/6 backend tests pass after fixing MongoDB _id leakage on /api/marketing/analyses and /api/marketing/actions-log. Frontend /marketing page loads with real data (32K sessions, 6 stat cards, 7 Google Ads campaigns with 6 pause + 1 enable buttons, 30 GSC queries, traffic table, AI Analiz tab). Date range selector, Baglanti Testi (all 4 services Bagli), tab navigation and sidebar 'AI Pazarlama' nav all verified working.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/marketing/analyses & /api/marketing/actions-log", "issue": "Previously exposed MongoDB _id (ObjectId as str). FIXED by projecting {_id:0} in find(). Frontend also updated to key past analyses by created_at fallback."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed_tests": [
+    "GET /api/marketing/test-connection -> service_account/ga4/search_console/google_ads all ok:true",
+    "GET /api/marketing/dashboard returns ga4_overview (sessions, revenue), ads_campaigns (7), gsc_queries (30), ads_keywords (list)",
+    "GET /api/marketing/dashboard?date_from=2025-12-01&date_to=2025-12-31 returns filtered data 200",
+    "POST /api/marketing/ai-analyze {focus:'genel'} -> returns 'analysis' text > 50 chars and persists to Mongo (verified via /analyses)",
+    "GET /api/marketing/analyses -> list, no _id after fix",
+    "GET /api/marketing/actions-log -> list, no _id after fix",
+    "UI: /marketing loads, marketing-page testid visible",
+    "UI: 6 stat cards present (stat-oturumlar, stat-kullanicilar, stat-sayfa-goruntulenme, stat-reklam-harcamasi, stat-satis, stat-gelir)",
+    "UI: Google Ads tab shows campaigns-table with 7 rows, 6 pause + 1 enable action buttons",
+    "UI: SEO & Search tab shows gsc-table with 30 rows",
+    "UI: Trafik tab shows traffic-table",
+    "UI: AI Analiz tab shows start-analysis-btn ('Analiz Baslat')",
+    "UI: Date range select changes Son 30 Gun -> Son 7 Gun, dashboard refetches",
+    "UI: Baglanti Testi shows 'Tum API baglantilari basarili' toast and connection-status panel with all 4 services 'Bagli'",
+    "UI: Sidebar has 'AI Pazarlama' item that navigates to /marketing"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_marketing_endpoints.py",
+    "/app/test_reports/pytest/marketing_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now 2972 lines - should be split into modular routers (marketing, price-tracking, auth, products) per 700-line guideline.",
+    "Ads-action endpoint intentionally not tested (mutates real campaigns). Consider adding a dry_run flag and rate-limiting to prevent accidental mass-pause.",
+    "AI analyze endpoint has 180s theoretical latency (OpenAI). Consider streaming response or a background job pattern for better UX in the future."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (removed MongoDB _id from /api/marketing/analyses and /api/marketing/actions-log responses)",
+    "/app/frontend/src/pages/MarketingPage.js (pastAnalyses map key falls back to id/index when _id absent)",
+    "/app/backend/tests/test_marketing_endpoints.py (new)"
+  ],
+  "success_rate": {"backend": "100% (6/6)", "frontend": "100% (all UI features verified)"},
+  "test_credentials": {"username": "arigastro", "password": "Arigastro2026!", "role": "admin"},
+  "seed_data_creation": "One AI analysis document created by test (POST /api/marketing/ai-analyze focus=genel). Persisted intentionally to verify /analyses.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "AI Marketing dashboard is fully wired to real Google APIs and OpenAI. All 3 Google APIs return ok:true. Do NOT test /api/marketing/ads-action - it mutates real Google Ads campaigns. Fixed _id leakage in /analyses and /actions-log. Frontend key-warnings for past analyses list also fixed to use id/index fallback."
+}
