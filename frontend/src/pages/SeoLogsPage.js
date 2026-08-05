@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
-import { Loader2, Play, CheckCircle2, XCircle, FileText, Send, ChevronLeft, ChevronRight } from "lucide-react";
+import { Loader2, Play, CheckCircle2, XCircle, FileText, Send, ChevronLeft, ChevronRight, RefreshCw, Zap } from "lucide-react";
 import { toast } from "sonner";
 
 export default function SeoLogsPage() {
@@ -17,13 +17,17 @@ export default function SeoLogsPage() {
   const [logTotal, setLogTotal] = useState(0);
   const [bulkStatuses, setBulkStatuses] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [repushStatus, setRepushStatus] = useState(null);
+  const [genAllStatus, setGenAllStatus] = useState(null);
 
   const fetchData = useCallback(async () => {
     try {
-      const [catRes, logRes, statusRes] = await Promise.all([
+      const [catRes, logRes, statusRes, repushRes, genAllRes] = await Promise.all([
         axios.get(`${API}/seo/categories/stats`, { headers: getAuthHeaders(), withCredentials: true }),
         axios.get(`${API}/seo/logs?page=${logPage}&limit=30`, { headers: getAuthHeaders(), withCredentials: true }),
         axios.get(`${API}/seo/bulk-status`, { headers: getAuthHeaders(), withCredentials: true }),
+        axios.get(`${API}/ikas/repush-status`, { headers: getAuthHeaders(), withCredentials: true }).catch(() => ({ data: {} })),
+        axios.get(`${API}/seo/generate-all-status`, { headers: getAuthHeaders(), withCredentials: true }).catch(() => ({ data: {} })),
       ]);
       setCategories(catRes.data.categories || []);
       setLogs(logRes.data.logs || []);
@@ -31,6 +35,8 @@ export default function SeoLogsPage() {
       setLogPages(logRes.data.pages || 1);
       setLogTotal(logRes.data.total || 0);
       setBulkStatuses(statusRes.data.tasks || []);
+      setRepushStatus(repushRes.data || null);
+      setGenAllStatus(genAllRes.data || null);
     } catch (err) {
       console.error(err);
     } finally {
@@ -54,6 +60,24 @@ export default function SeoLogsPage() {
       }
     } catch (err) {
       toast.error(err.response?.data?.detail || "Toplu SEO basarisiz");
+    }
+  };
+
+  const startRepushAll = async () => {
+    try {
+      const { data } = await axios.post(`${API}/ikas/repush-all-seo`, {}, { headers: getAuthHeaders(), withCredentials: true });
+      toast.info(data.message, { duration: 5000 });
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Yeniden aktarim basarisiz");
+    }
+  };
+
+  const startGenerateAll = async () => {
+    try {
+      const { data } = await axios.post(`${API}/seo/generate-all`, {}, { headers: getAuthHeaders(), withCredentials: true });
+      toast.info(data.message, { duration: 5000 });
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Toplu uretim basarisiz");
     }
   };
 
@@ -96,6 +120,62 @@ export default function SeoLogsPage() {
           <p className="text-2xl font-bold text-amber-600">{totalRemaining}</p>
         </CardContent></Card>
       </div>
+
+      {/* Action Buttons */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <Card className="border border-indigo-200 bg-indigo-50/30">
+          <CardContent className="p-4 flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold text-indigo-900">Tum Ikas Iceriklerini Duzelt</p>
+              <p className="text-xs text-indigo-600">Mevcut SEO iceriklerini duzeltilmis HTML formatiyla Ikas'a yeniden aktar</p>
+            </div>
+            <Button size="sm" className="bg-indigo-600 hover:bg-indigo-700 text-white" onClick={startRepushAll} disabled={repushStatus?.running} data-testid="repush-all-btn">
+              <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${repushStatus?.running ? 'animate-spin' : ''}`} />
+              {repushStatus?.running ? `${repushStatus.progress}/${repushStatus.total}` : 'Hepsini Duzelt'}
+            </Button>
+          </CardContent>
+        </Card>
+        <Card className="border border-amber-200 bg-amber-50/30">
+          <CardContent className="p-4 flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold text-amber-900">Tum Urunleri Uret ve Guncelle</p>
+              <p className="text-xs text-amber-600">SEO icerigi olmayan tum urunler icin uret, hepsini Ikas'a aktar</p>
+            </div>
+            <Button size="sm" className="bg-amber-600 hover:bg-amber-700 text-white" onClick={startGenerateAll} disabled={genAllStatus?.running} data-testid="generate-all-btn">
+              <Zap className={`h-3.5 w-3.5 mr-1.5 ${genAllStatus?.running ? 'animate-pulse' : ''}`} />
+              {genAllStatus?.running ? `${genAllStatus.progress}/${genAllStatus.total}` : 'Hepsini Uret'}
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Repush Status */}
+      {repushStatus?.running && (
+        <Card className="border-indigo-200 bg-indigo-50">
+          <CardContent className="p-4 flex items-center gap-3">
+            <Loader2 className="h-5 w-5 animate-spin text-indigo-600" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-indigo-900">Ikas yeniden aktarim devam ediyor: {repushStatus.progress}/{repushStatus.total}</p>
+              <p className="text-xs text-indigo-600">{repushStatus.success || 0} basarili, {repushStatus.failed || 0} basarisiz</p>
+              <div className="mt-1 h-1.5 bg-indigo-100 rounded-full"><div className="h-1.5 bg-indigo-500 rounded-full transition-all" style={{ width: `${repushStatus.total > 0 ? (repushStatus.progress / repushStatus.total * 100) : 0}%` }} /></div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Generate All Status */}
+      {genAllStatus?.running && (
+        <Card className="border-amber-200 bg-amber-50">
+          <CardContent className="p-4 flex items-center gap-3">
+            <Loader2 className="h-5 w-5 animate-spin text-amber-600" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-amber-900">Toplu uretim devam ediyor: {genAllStatus.progress}/{genAllStatus.total}</p>
+              <p className="text-xs text-amber-600">{genAllStatus.generated || 0} uretildi, {genAllStatus.pushed || 0} aktarildi, {genAllStatus.failed || 0} basarisiz</p>
+              <div className="mt-1 h-1.5 bg-amber-100 rounded-full"><div className="h-1.5 bg-amber-500 rounded-full transition-all" style={{ width: `${genAllStatus.total > 0 ? (genAllStatus.progress / genAllStatus.total * 100) : 0}%` }} /></div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Running/Paused Statuses */}
       {bulkStatuses.filter(t => t.running || t.paused).map((task, idx) => (

@@ -103,6 +103,53 @@ async def logout(response: Response):
     response.delete_cookie("access_token", path="/")
     return {"message": "Logged out"}
 
+# ============ MARKDOWN TO HTML ============
+
+def markdown_to_html(md_text: str) -> str:
+    """Convert markdown to clean HTML for İkas product descriptions."""
+    if not md_text:
+        return ""
+    lines = md_text.split("\n")
+    html_lines = []
+    in_list = False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if in_list:
+                html_lines.append("</ul>")
+                in_list = False
+            continue
+        # Headings (h4, h3, h2, h1 — order matters, longest prefix first)
+        if stripped.startswith("#### "):
+            if in_list: html_lines.append("</ul>"); in_list = False
+            title = re.sub(r'\*\*(.*?)\*\*', r'\1', stripped[5:])
+            html_lines.append(f"<h4>{title}</h4>")
+        elif stripped.startswith("### "):
+            if in_list: html_lines.append("</ul>"); in_list = False
+            title = re.sub(r'\*\*(.*?)\*\*', r'\1', stripped[4:])
+            html_lines.append(f"<h3>{title}</h3>")
+        elif stripped.startswith("## "):
+            if in_list: html_lines.append("</ul>"); in_list = False
+            title = re.sub(r'\*\*(.*?)\*\*', r'\1', stripped[3:])
+            html_lines.append(f"<h2>{title}</h2>")
+        elif stripped.startswith("# "):
+            if in_list: html_lines.append("</ul>"); in_list = False
+            title = re.sub(r'\*\*(.*?)\*\*', r'\1', stripped[2:])
+            html_lines.append(f"<h1>{title}</h1>")
+        elif stripped.startswith("- ") or stripped.startswith("* "):
+            if not in_list:
+                html_lines.append("<ul>")
+                in_list = True
+            item = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', stripped[2:])
+            html_lines.append(f"<li>{item}</li>")
+        else:
+            if in_list: html_lines.append("</ul>"); in_list = False
+            text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', stripped)
+            html_lines.append(f"<p>{text}</p>")
+    if in_list:
+        html_lines.append("</ul>")
+    return "\n".join(html_lines)
+
 # ============ SITEMAP HELPERS ============
 
 def slug_to_name(slug: str) -> str:
@@ -1364,43 +1411,7 @@ async def ikas_push_seo(req: IkasPushRequest, user: dict = Depends(get_current_u
         # Convert markdown to HTML for İkas
         desc_html = req.product_description or ""
         if desc_html:
-            # Simple markdown to HTML conversion
-            import re as re_mod
-            lines = desc_html.split("\n")
-            html_lines = []
-            in_list = False
-            for line in lines:
-                stripped = line.strip()
-                if not stripped:
-                    if in_list:
-                        html_lines.append("</ul>")
-                        in_list = False
-                    html_lines.append("<br>")
-                    continue
-                # Headings
-                if stripped.startswith("### "):
-                    if in_list: html_lines.append("</ul>"); in_list = False
-                    html_lines.append(f"<h3>{stripped[4:]}</h3>")
-                elif stripped.startswith("## "):
-                    if in_list: html_lines.append("</ul>"); in_list = False
-                    html_lines.append(f"<h2>{stripped[3:]}</h2>")
-                elif stripped.startswith("# "):
-                    if in_list: html_lines.append("</ul>"); in_list = False
-                    html_lines.append(f"<h1>{stripped[2:]}</h1>")
-                elif stripped.startswith("- ") or stripped.startswith("* "):
-                    if not in_list:
-                        html_lines.append("<ul>")
-                        in_list = True
-                    item = stripped[2:]
-                    item = re_mod.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', item)
-                    html_lines.append(f"<li>{item}</li>")
-                else:
-                    if in_list: html_lines.append("</ul>"); in_list = False
-                    text = re_mod.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', stripped)
-                    html_lines.append(f"<p>{text}</p>")
-            if in_list:
-                html_lines.append("</ul>")
-            desc_html = "\n".join(html_lines)
+            desc_html = markdown_to_html(desc_html)
         
         result = await loop.run_in_executor(None, ikas_update_product, ikas_id, req.meta_title, req.meta_description, desc_html)
         
@@ -1429,6 +1440,218 @@ async def ikas_status(user: dict = Depends(get_current_user)):
         return {"configured": True, "connected": True}
     except Exception as e:
         return {"configured": True, "connected": False, "error": str(e)}
+
+@api_router.post("/ikas/repush-all-seo")
+async def ikas_repush_all_seo(request: Request, user: dict = Depends(get_current_user)):
+    """Re-push all existing SEO content to İkas with fixed HTML formatting."""
+    if not IKAS_CLIENT_ID or not IKAS_CLIENT_SECRET:
+        raise HTTPException(status_code=400, detail="Ikas API yapilandirilmamis")
+    
+    # Check if already running
+    status = await db.system_status.find_one({"task": "ikas_repush"})
+    if status and status.get("running"):
+        return {"message": "Yeniden aktarim zaten devam ediyor", "running": True}
+
+    # Start background task
+    asyncio.create_task(run_ikas_repush())
+    return {"message": "Tum SEO icerikleri Ikas'a yeniden aktariliyor (duzeltilmis format)", "running": True}
+
+async def run_ikas_repush():
+    """Background task: re-push all SEO content with correct HTML formatting."""
+    await db.system_status.update_one(
+        {"task": "ikas_repush"}, 
+        {"$set": {"running": True, "started_at": datetime.now(timezone.utc).isoformat(), "progress": 0, "total": 0, "success": 0, "failed": 0, "error": None}},
+        upsert=True
+    )
+    try:
+        # Get all products with SEO content
+        seo_docs = []
+        async for doc in db.seo_content.find({"product_description": {"$exists": True, "$ne": ""}}):
+            seo_docs.append(doc)
+
+        total = len(seo_docs)
+        await db.system_status.update_one({"task": "ikas_repush"}, {"$set": {"total": total}})
+
+        success = 0
+        failed = 0
+        loop = asyncio.get_event_loop()
+
+        for i, seo in enumerate(seo_docs):
+            slug = seo.get("product_slug", "")
+            try:
+                product = await db.products.find_one({"slug": slug}, {"_id": 0, "name": 1, "ikas_product_id": 1})
+                if not product:
+                    failed += 1
+                    continue
+
+                # Get İkas product ID
+                ikas_id = product.get("ikas_product_id", "")
+                if not ikas_id:
+                    ikas_products = await loop.run_in_executor(None, ikas_search_product, product["name"])
+                    if not ikas_products:
+                        failed += 1
+                        continue
+                    ikas_id = ikas_products[0]["id"]
+
+                # Convert markdown to HTML (FIXED)
+                desc_html = markdown_to_html(seo.get("product_description", ""))
+
+                # Push to İkas
+                await loop.run_in_executor(
+                    None, ikas_update_product, ikas_id,
+                    seo.get("seo_title", ""), seo.get("seo_description", ""), desc_html
+                )
+
+                await db.products.update_one({"slug": slug}, {"$set": {
+                    "ikas_seo_pushed": True, "ikas_product_id": ikas_id,
+                    "ikas_pushed_at": datetime.now(timezone.utc).isoformat(),
+                }})
+                success += 1
+            except Exception as e:
+                logger.warning(f"Repush failed for {slug}: {e}")
+                failed += 1
+
+            # Update progress
+            await db.system_status.update_one({"task": "ikas_repush"}, {"$set": {"progress": i + 1, "success": success, "failed": failed}})
+            await asyncio.sleep(1.5)  # Rate limit
+
+        await db.system_status.update_one({"task": "ikas_repush"}, {"$set": {
+            "running": False, "completed_at": datetime.now(timezone.utc).isoformat(),
+            "progress": total, "success": success, "failed": failed,
+        }})
+        logger.info(f"İkas repush completed: {success}/{total} success, {failed} failed")
+    except Exception as e:
+        logger.error(f"İkas repush error: {e}")
+        await db.system_status.update_one({"task": "ikas_repush"}, {"$set": {"running": False, "error": str(e)}})
+
+@api_router.get("/ikas/repush-status")
+async def ikas_repush_status(user: dict = Depends(get_current_user)):
+    """Get status of the İkas repush task."""
+    status = await db.system_status.find_one({"task": "ikas_repush"}, {"_id": 0})
+    return status or {"running": False, "progress": 0, "total": 0}
+
+@api_router.post("/seo/generate-all")
+async def generate_all_seo(request: Request, user: dict = Depends(get_current_user)):
+    """Start background task to generate SEO for ALL products and push to İkas."""
+    status = await db.system_status.find_one({"task": "generate_all_seo"})
+    if status and status.get("running"):
+        return {"message": "Toplu uretim zaten devam ediyor", "running": True}
+
+    asyncio.create_task(run_generate_all_seo())
+    return {"message": "Tum urunler icin SEO uretimi ve Ikas aktarimi baslatildi", "running": True}
+
+async def run_generate_all_seo():
+    """Background task: generate SEO for products without it, then push all to İkas."""
+    await db.system_status.update_one(
+        {"task": "generate_all_seo"},
+        {"$set": {"running": True, "started_at": datetime.now(timezone.utc).isoformat(), "progress": 0, "total": 0, "generated": 0, "pushed": 0, "failed": 0, "error": None}},
+        upsert=True
+    )
+    try:
+        # Get all active products
+        products = []
+        async for p in db.products.find({"inactive": {"$ne": True}}, {"_id": 0, "slug": 1, "name": 1, "title": 1, "brand": 1, "category": 1, "price": 1}):
+            products.append(p)
+
+        total = len(products)
+        await db.system_status.update_one({"task": "generate_all_seo"}, {"$set": {"total": total}})
+
+        generated = 0
+        pushed = 0
+        failed = 0
+        openai_key = os.environ.get("OPENAI_API_KEY")
+        loop = asyncio.get_event_loop()
+
+        for i, product in enumerate(products):
+            slug = product["slug"]
+            product_name = product.get("name") or product.get("title", slug)
+
+            try:
+                # Check if SEO already exists
+                existing_seo = await db.seo_content.find_one({"product_slug": slug})
+                
+                if not existing_seo or not existing_seo.get("product_description"):
+                    # Generate SEO content
+                    if not openai_key:
+                        failed += 1
+                        continue
+
+                    from emergentintegrations.llm.chat import LlmChat, UserMessage
+                    
+                    chat = LlmChat(
+                        api_key=openai_key,
+                        session_id=f"seo-all-{slug[:20]}-{uuid.uuid4().hex[:6]}",
+                        system_message="""Sen bir e-ticaret SEO uzmanısın. Endüstriyel mutfak ekipmanları satan Arıgastro.com için ürün açıklamaları yazıyorsun.
+Her ürün için üret:
+1. SEO başlığı (50-60 karakter)
+2. Meta açıklama (140-160 karakter)
+3. Ürün açıklaması (detaylı, HTML uyumlu markdown formatında)
+
+Yanıtını şu JSON formatında ver:
+{"seo_title": "...", "seo_description": "...", "product_description": "..."}"""
+                    ).with_model("openai", "gpt-4o")
+
+                    prompt = f"Ürün: {product_name}\nMarka: {product.get('brand', '')}\nKategori: {product.get('category', '')}\nFiyat: {product.get('price', '')} TL"
+                    response_text = await chat.send_message(UserMessage(text=prompt))
+                    
+                    # Parse JSON response
+                    import json as json_mod
+                    clean = response_text.strip()
+                    if clean.startswith("```"):
+                        clean = clean.split("\n", 1)[1] if "\n" in clean else clean[3:]
+                        clean = clean.rsplit("```", 1)[0]
+                    seo_data = json_mod.loads(clean)
+                    
+                    desc = seo_data.get("product_description", "")
+                    seo_record = {
+                        "product_slug": slug,
+                        "product_name": product_name,
+                        "seo_title": seo_data.get("seo_title", ""),
+                        "seo_description": seo_data.get("seo_description", ""),
+                        "product_description": desc,
+                        "generated_at": datetime.now(timezone.utc).isoformat(),
+                        "status": "generated"
+                    }
+                    await db.seo_content.update_one({"product_slug": slug}, {"$set": seo_record}, upsert=True)
+                    generated += 1
+                    existing_seo = seo_record
+                
+                # Push to İkas
+                if IKAS_CLIENT_ID and IKAS_CLIENT_SECRET and existing_seo:
+                    ikas_products = await loop.run_in_executor(None, ikas_search_product, product_name)
+                    if ikas_products:
+                        ikas_id = ikas_products[0]["id"]
+                        desc_html = markdown_to_html(existing_seo.get("product_description", ""))
+                        await loop.run_in_executor(
+                            None, ikas_update_product, ikas_id,
+                            existing_seo.get("seo_title", ""), existing_seo.get("seo_description", ""), desc_html
+                        )
+                        await db.products.update_one({"slug": slug}, {"$set": {
+                            "ikas_seo_pushed": True, "ikas_product_id": ikas_id,
+                            "ikas_pushed_at": datetime.now(timezone.utc).isoformat(),
+                        }})
+                        pushed += 1
+            except Exception as e:
+                logger.warning(f"Generate-all failed for {slug}: {e}")
+                failed += 1
+
+            await db.system_status.update_one({"task": "generate_all_seo"}, {"$set": {"progress": i + 1, "generated": generated, "pushed": pushed, "failed": failed}})
+            await asyncio.sleep(2)  # Rate limit
+
+        await db.system_status.update_one({"task": "generate_all_seo"}, {"$set": {
+            "running": False, "completed_at": datetime.now(timezone.utc).isoformat(),
+            "progress": total, "generated": generated, "pushed": pushed, "failed": failed,
+        }})
+        logger.info(f"Generate-all completed: {total} total, {generated} generated, {pushed} pushed, {failed} failed")
+    except Exception as e:
+        logger.error(f"Generate-all error: {e}")
+        await db.system_status.update_one({"task": "generate_all_seo"}, {"$set": {"running": False, "error": str(e)}})
+
+@api_router.get("/seo/generate-all-status")
+async def generate_all_seo_status(user: dict = Depends(get_current_user)):
+    """Get status of the generate-all-seo task."""
+    status = await db.system_status.find_one({"task": "generate_all_seo"}, {"_id": 0})
+    return status or {"running": False, "progress": 0, "total": 0}
 
 # ============ SEO GENERATION ============
 
@@ -1795,34 +2018,7 @@ JSON yanıt: {"seo_title": "...", "seo_description": "...", "product_description
                     ikas_products = await loop.run_in_executor(None, ikas_search_product, product_name)
                     if ikas_products:
                         ikas_id = ikas_products[0]["id"]
-                        desc_html = desc
-                        html_lines = []
-                        in_list = False
-                        for line in desc_html.split("\n"):
-                            stripped = line.strip()
-                            if not stripped:
-                                if in_list: html_lines.append("</ul>"); in_list = False
-                                html_lines.append("<br>")
-                                continue
-                            if stripped.startswith("### "):
-                                if in_list: html_lines.append("</ul>"); in_list = False
-                                html_lines.append(f"<h3>{stripped[4:]}</h3>")
-                            elif stripped.startswith("## "):
-                                if in_list: html_lines.append("</ul>"); in_list = False
-                                html_lines.append(f"<h2>{stripped[3:]}</h2>")
-                            elif stripped.startswith("# "):
-                                if in_list: html_lines.append("</ul>"); in_list = False
-                                html_lines.append(f"<h1>{stripped[2:]}</h1>")
-                            elif stripped.startswith("- ") or stripped.startswith("* "):
-                                if not in_list: html_lines.append("<ul>"); in_list = True
-                                item = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', stripped[2:])
-                                html_lines.append(f"<li>{item}</li>")
-                            else:
-                                if in_list: html_lines.append("</ul>"); in_list = False
-                                text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', stripped)
-                                html_lines.append(f"<p>{text}</p>")
-                        if in_list: html_lines.append("</ul>")
-                        desc_html = "\n".join(html_lines)
+                        desc_html = markdown_to_html(desc)
                         
                         await loop.run_in_executor(None, ikas_update_product, ikas_id, seo_data.get("seo_title", ""), seo_data.get("seo_description", ""), desc_html)
                         ikas_pushed = True
