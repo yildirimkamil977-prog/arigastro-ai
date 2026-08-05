@@ -212,3 +212,7 @@ frontend/node_modules/.cache/default-development/10.pack
 frontend/node_modules/.cache/default-development/12.pack
 frontend/node_modules/.cache/default-development/2.pack
 frontend/node_modules/.cache/default-development/3.pack
+
+# Google credentials
+google_service_account.json
+**/google_service_account.json
