@@ -252,15 +252,19 @@ KURALLAR:
 {links_instruction}
 
 TITLE KURALLARI (ÇOK ÖNEMLİ):
-- Title mutlaka "Arıgastro" kelimesini içermeli
+- Title mutlaka "Arıgastro" kelimesini içermeli (genellikle sonda " | Arıgastro" şeklinde)
 - Title mutlaka "{name}" anahtar kelimesini içermeli
-- Örnek format: "{name} | Arıgastro" veya "{name} Modelleri ve Fiyatları | Arıgastro"
+- Rakip sitelerin title'larını analiz et ve onlardan esinlen
+- Marka ise: "Marka Adı Ürünleri ve Modelleri | Arıgastro" veya "Marka Adı Endüstriyel Mutfak Ürünleri | Arıgastro" gibi
+- Kategori ise: "Kategori Adı Çeşitleri | Arıgastro" veya "Kategori Adı Modelleri ve Fiyatları | Arıgastro" gibi
+- Rakiplerin title'larında dikkat çeken ortak kelimeler varsa (çeşitleri, modelleri, fiyatları vb.) sen de kullan
 - Maximum 60 karakter
 
 DESCRIPTION KURALLARI:
 - Description mutlaka "Arıgastro" kelimesini içermeli
 - Description mutlaka "{name}" anahtar kelimesini içermeli
-- Satın almaya teşvik eden, avantajları vurgulayan bir açıklama
+- Rakip sitelerin description'larını analiz et ve onlardan esinlen
+- Satın almaya teşvik eden, avantajları vurgulayan (ücretsiz kargo, güvenli alışveriş vb.)
 - Maximum 160 karakter
 
 İÇERİK YAPISI:
