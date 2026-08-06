@@ -184,7 +184,7 @@ async def analyze_competitors(name: str, entity_type: str = "category") -> dict:
 async def generate_content(
     name: str, entity_type: str, entity_id: str,
     analysis: dict, product_images: list, our_site_data: dict,
-    openai_key: str
+    openai_key: str, internal_links: dict = None
 ) -> dict:
     """Generate SEO content using AI based on competitor analysis."""
     from emergentintegrations.llm.chat import LlmChat, UserMessage
@@ -202,6 +202,38 @@ async def generate_content(
         if tag:
             image_html_parts.append({"html": tag, "product_name": img.get("product_name", "")})
 
+    # Build internal links instruction
+    links_instruction = ""
+    if internal_links:
+        children = internal_links.get("children", [])
+        siblings = internal_links.get("siblings", [])
+        parent = internal_links.get("parent_name", "")
+        
+        links_instruction = "\n\nSİTE İÇİ LİNKLEME (ÇOK ÖNEMLİ):\nİçerikte aşağıdaki sayfalara doğal şekilde link ver. Linkler <a href=\"URL\">metin</a> formatında olsun.\n"
+        
+        if children:
+            links_instruction += "\nAlt kategoriler (MUTLAKA link ver):\n"
+            for ch in children:
+                slug = ch.lower().replace(" ", "-").replace("ı", "i").replace("ö", "o").replace("ü", "u").replace("ş", "s").replace("ç", "c").replace("ğ", "g")
+                links_instruction += f'- <a href="https://arigastro.com/{slug}">{ch}</a>\n'
+        
+        if parent:
+            parent_slug = parent.lower().replace(" ", "-").replace("ı", "i").replace("ö", "o").replace("ü", "u").replace("ş", "s").replace("ç", "c").replace("ğ", "g")
+            links_instruction += f'\nÜst kategori: <a href="https://arigastro.com/{parent_slug}">{parent}</a>\n'
+        
+        if siblings and not children:
+            links_instruction += "\nİlgili kategoriler (en az 2-3 tanesine link ver):\n"
+            for sib in siblings[:5]:
+                slug = sib.lower().replace(" ", "-").replace("ı", "i").replace("ö", "o").replace("ü", "u").replace("ş", "s").replace("ç", "c").replace("ğ", "g")
+                links_instruction += f'- <a href="https://arigastro.com/{slug}">{sib}</a>\n'
+        elif siblings:
+            links_instruction += "\nKardeş kategoriler (uygun olanlara link ver):\n"
+            for sib in siblings[:3]:
+                slug = sib.lower().replace(" ", "-").replace("ı", "i").replace("ö", "o").replace("ü", "u").replace("ş", "s").replace("ç", "c").replace("ğ", "g")
+                links_instruction += f'- <a href="https://arigastro.com/{slug}">{sib}</a>\n'
+        
+        links_instruction += "\nLinkleri doğal cümleler içinde kullan, liste halinde sıralama."
+
     system_prompt = f"""Sen profesyonel bir e-ticaret SEO içerik yazarısın. Arıgastro.com (endüstriyel mutfak ekipmanları) için {'marka' if entity_type == 'brand' else 'kategori'} sayfası içeriği yazıyorsun.
 
 İÇERİK: "{name}" {'markası' if entity_type == 'brand' else 'kategorisi'} için sayfa açıklaması
@@ -216,7 +248,8 @@ KURALLAR:
 7. {"Liste (ul/li) kullan." if use_lists else ""}
 8. {"Tablo kullan (karşılaştırma veya özellik tablosu)." if use_tables else ""}
 9. İçeriğin arasına ürün görselleri eklenecek yer bırak — [GORSEL_1], [GORSEL_2], [GORSEL_3] placeholder'larını kullan.
-10. HTML formatında yaz (h2, h3, p, ul, li, strong, table).
+10. HTML formatında yaz (h2, h3, p, ul, li, strong, table, a).
+{links_instruction}
 
 İÇERİK YAPISI:
 - {'Marka' if entity_type == 'brand' else 'Kategori'} tanıtımı

@@ -184,7 +184,11 @@ export default function BrandCategorySeoPage() {
                           {item.seo_status === "pushed" && <CheckCircle2 className="h-4 w-4 text-emerald-500 flex-shrink-0" />}
                           {item.seo_status === "generated" && <FileText className="h-4 w-4 text-blue-500 flex-shrink-0" />}
                           {!item.seo_status && <div className="h-4 w-4 rounded-full border-2 border-slate-200 flex-shrink-0" />}
-                          <span className="text-sm font-medium text-slate-900">{item.name}</span>
+                          <div>
+                            <span className="text-sm font-medium text-slate-900">{item.name}</span>
+                            {item.parent_name && <span className="text-[10px] text-slate-400 ml-1.5">({item.parent_name})</span>}
+                            {item.children && item.children.length > 0 && <span className="text-[10px] text-blue-400 ml-1.5">{item.children.length} alt kat.</span>}
+                          </div>
                         </div>
                       </td>
                       <td className="py-2 px-3 text-center">

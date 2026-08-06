@@ -3599,12 +3599,24 @@ from brand_category_seo import analyze_competitors, generate_content, build_imag
 
 @api_router.get("/ikas/categories")
 async def list_ikas_categories(user: dict = Depends(get_current_user)):
-    """List all İkas categories."""
+    """List all İkas categories with hierarchy."""
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, ikas_graphql, '{ listCategory { id name description metaData { pageTitle description } } }', None)
+    result = await loop.run_in_executor(None, ikas_graphql, '{ listCategory { id name parentId categoryPath description metaData { pageTitle description } } }', None)
     categories = result.get("listCategory", [])
-    # Enrich with local SEO status
+    
+    # Build hierarchy info
+    cat_map = {c["id"]: c for c in categories}
     for cat in categories:
+        pid = cat.get("parentId")
+        cat["parent_name"] = cat_map[pid]["name"] if pid and pid in cat_map else None
+        cat["children"] = [c["name"] for c in categories if c.get("parentId") == cat["id"]]
+        cat["children_ids"] = [c["id"] for c in categories if c.get("parentId") == cat["id"]]
+        # Siblings (same parent)
+        if pid:
+            cat["siblings"] = [c["name"] for c in categories if c.get("parentId") == pid and c["id"] != cat["id"]]
+        else:
+            cat["siblings"] = [c["name"] for c in categories if not c.get("parentId") and c["id"] != cat["id"]]
+
         local = await db.brand_category_seo.find_one({"entity_id": cat["id"], "entity_type": "category"}, {"_id": 0, "status": 1})
         cat["seo_generated"] = bool(local)
         cat["seo_status"] = local.get("status", "") if local else ""
@@ -3667,8 +3679,29 @@ async def generate_bc_seo(request: Request, user: dict = Depends(get_current_use
     except Exception as e:
         logger.warning(f"Product images fetch error: {e}")
 
-    # 4. Generate content
-    result = await generate_content(name, entity_type, entity_id, analysis, product_images[:3], our_site_data, openai_key)
+    # 4. Build internal links data
+    internal_links = None
+    if entity_type == "category":
+        # Fetch hierarchy
+        cat_result = await loop.run_in_executor(None, ikas_graphql, '{ listCategory { id name parentId } }', None)
+        all_cats = cat_result.get("listCategory", [])
+        cat_map = {c["id"]: c for c in all_cats}
+        current = cat_map.get(entity_id, {})
+        pid = current.get("parentId")
+        children = [c["name"] for c in all_cats if c.get("parentId") == entity_id]
+        siblings = []
+        if pid:
+            siblings = [c["name"] for c in all_cats if c.get("parentId") == pid and c["id"] != entity_id]
+        else:
+            siblings = [c["name"] for c in all_cats if not c.get("parentId") and c["id"] != entity_id]
+        internal_links = {
+            "children": children,
+            "siblings": siblings,
+            "parent_name": cat_map[pid]["name"] if pid and pid in cat_map else None,
+        }
+
+    # 5. Generate content
+    result = await generate_content(name, entity_type, entity_id, analysis, product_images[:3], our_site_data, openai_key, internal_links)
 
     # 5. Save to DB
     doc = {
@@ -3784,9 +3817,10 @@ async def run_bulk_bc_seo(entity_type: str, username: str):
             result = await loop.run_in_executor(None, ikas_graphql, '{ listProductBrand { id name } }', None)
             entities = result.get("listProductBrand", [])
         else:
-            result = await loop.run_in_executor(None, ikas_graphql, '{ listCategory { id name } }', None)
+            result = await loop.run_in_executor(None, ikas_graphql, '{ listCategory { id name parentId } }', None)
             entities = result.get("listCategory", [])
-
+        
+        ent_map = {e["id"]: e for e in entities}
         total = len(entities)
         await db.system_status.update_one({"task": task_key}, {"$set": {"total": total}})
 
@@ -3831,8 +3865,21 @@ async def run_bulk_bc_seo(entity_type: str, username: str):
                 except Exception:
                     pass
 
+                # Build internal links for categories
+                bulk_internal_links = None
+                if entity_type == "category":
+                    current_ent = ent_map.get(eid, {})
+                    pid = current_ent.get("parentId")
+                    ch = [e["name"] for e in entities if e.get("parentId") == eid]
+                    sibs = []
+                    if pid:
+                        sibs = [e["name"] for e in entities if e.get("parentId") == pid and e["id"] != eid]
+                    else:
+                        sibs = [e["name"] for e in entities if not e.get("parentId") and e["id"] != eid]
+                    bulk_internal_links = {"children": ch, "siblings": sibs, "parent_name": ent_map.get(pid, {}).get("name") if pid else None}
+
                 # Generate content
-                content_result = await generate_content(ename, entity_type, eid, analysis, product_images[:3], our_site_data, openai_key)
+                content_result = await generate_content(ename, entity_type, eid, analysis, product_images[:3], our_site_data, openai_key, bulk_internal_links)
 
                 # Save
                 doc = {
