@@ -328,6 +328,16 @@ export default function BrandCategorySeoPage() {
                 </div>
               )}
 
+              {/* Generation Notes */}
+              {analysisModal.generation_notes && (
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-900 mb-2">AI Analiz Notu</h4>
+                  <div className="text-sm text-slate-700 bg-amber-50 border border-amber-200 rounded-lg p-3 leading-relaxed">
+                    {analysisModal.generation_notes}
+                  </div>
+                </div>
+              )}
+
               {/* Generated content preview */}
               {analysisModal.content && (
                 <div>
@@ -346,7 +356,20 @@ export default function BrandCategorySeoPage() {
                       <span className="text-sm text-slate-600">{analysisModal.content.length} karakter</span>
                     </div>
                     <hr className="border-slate-200" />
-                    <div className="prose prose-sm max-w-none max-h-96 overflow-y-auto" dangerouslySetInnerHTML={{ __html: analysisModal.content }} />
+                    <style>{`
+                      .bc-preview h2 { font-size: 1.25rem; font-weight: 700; color: #1e293b; margin: 1.5rem 0 0.75rem; padding-bottom: 0.5rem; border-bottom: 2px solid #f1f5f9; }
+                      .bc-preview h3 { font-size: 1.1rem; font-weight: 600; color: #334155; margin: 1.25rem 0 0.5rem; }
+                      .bc-preview p { color: #475569; line-height: 1.75; margin: 0.5rem 0; }
+                      .bc-preview ul { padding-left: 1.5rem; margin: 0.5rem 0; }
+                      .bc-preview li { color: #475569; margin: 0.25rem 0; }
+                      .bc-preview strong { color: #1e293b; }
+                      .bc-preview a { color: #2563eb; text-decoration: underline; }
+                      .bc-preview table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+                      .bc-preview th, .bc-preview td { border: 1px solid #e2e8f0; padding: 0.5rem; font-size: 0.875rem; }
+                      .bc-preview th { background: #f8fafc; font-weight: 600; }
+                      .bc-preview img { max-width: 100%; border-radius: 8px; margin: 1rem 0; }
+                    `}</style>
+                    <div className="bc-preview max-h-[500px] overflow-y-auto" dangerouslySetInnerHTML={{ __html: analysisModal.content }} />
                   </div>
                 </div>
               )}

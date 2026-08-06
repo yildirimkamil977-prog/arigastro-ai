@@ -3718,6 +3718,7 @@ async def generate_bc_seo(request: Request, user: dict = Depends(get_current_use
             "competitor_pages": [{"url": p.get("url",""), "title": p.get("title",""), "word_count": p.get("word_count",0), "keyword_density": p.get("keyword_density",0), "has_lists": p.get("has_lists",False), "has_tables": p.get("has_tables",False)} for p in analysis.get("competitor_pages", [])],
         },
         "product_images_used": len(product_images[:3]),
+        "generation_notes": result.get("generation_notes", ""),
         "status": "generated",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "created_by": user["username"],

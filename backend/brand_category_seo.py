@@ -343,7 +343,23 @@ HEDEF: "{name}" {entity_label}si için Google'da 1. sırada yer alacak, rakipler
 6. **Sıkça Sorulan Sorular** (en az 5 soru-cevap, <h3> ile başlıklandır)
 7. **Sonuç / CTA** (satın almaya yönlendiren kapanış paragrafı)
 
-### Görsel Yerleşimi:
+### Ürün İsimleri (ÇOK KRİTİK):
+- ASLA "Model X1", "Model Y2", "Model Z3" gibi uydurma ürün isimleri YAZMA
+- Sadece aşağıda sana verilen gerçek ürün isimlerini kullan
+- Eğer ürün ismi verilmemişse, genel ifadeler kullan: "farklı kapasite seçenekleri", "çeşitli modeller" gibi
+- Hiçbir zaman var olmayan bir ürün modeli uydurma
+
+### Başlık Formatı (ÇOK KRİTİK):
+- Başlıklar kesinlikle <h2> ve <h3> HTML etiketleri içinde olmalı
+- Başlıklar asla düz metin olmamalı
+- Alt başlıklar için <h3> kullan
+- Doğru: <h2>Profesyonel Sıcak Teşhir Dolapları</h2>
+- Yanlış: Profesyonel Sıcak Teşhir Dolapları (etiket olmadan)
+
+### Rakip Analiz Notu:
+- İçerikten AYRI olarak, yaptığın analizle ilgili kısa bir not hazırla
+- Hangi siteleri incelediğini, title ve description'da nelere dikkat ettiğini, rakiplerden hangi noktaları referans aldığını anlat
+- Bu notu "generation_notes" alanında JSON'da ver
 - İçeriğin uygun yerlerine [GORSEL_1], [GORSEL_2], [GORSEL_3] placeholder'ları koy
 - Görselleri bölümler arasına veya ürün çeşitleri anlatılırken yerleştir
 - Eğer ürün görseli bilgisi verilmişse, görselin hangi ürüne ait olduğunu yazıda doğal şekilde belirt
@@ -368,7 +384,7 @@ HEDEF: "{name}" {entity_label}si için Google'da 1. sırada yer alacak, rakipler
 - Maximum 160 karakter
 
 ## YANITINI KESİNLİKLE SADECE BU JSON FORMATINDA VER:
-{{"title": "...", "description": "...", "content": "<h2>...</h2><p>...</p>..."}}"""
+{{"title": "...", "description": "...", "content": "<h2>...</h2><p>...</p>...", "generation_notes": "Bu içeriği hazırlarken şu analizleri yaptım: ..."}}"""
 
     chat = LlmChat(
         api_key=openai_key,
@@ -434,4 +450,5 @@ HEDEF: "{name}" {entity_label}si için Google'da 1. sırada yer alacak, rakipler
     content = re.sub(r'\[GORSEL_\d+\]', '', content)
 
     result["content"] = content
+    result["generation_notes"] = result.get("generation_notes", "")
     return result
