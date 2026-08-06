@@ -3593,6 +3593,290 @@ async def get_keyword_analyses(keyword: str = None, limit: int = 20, user: dict 
         results.append(doc)
     return results
 
+# ============ BRAND & CATEGORY SEO ENDPOINTS ============
+
+from brand_category_seo import analyze_competitors, generate_content, build_image_tag
+
+@api_router.get("/ikas/categories")
+async def list_ikas_categories(user: dict = Depends(get_current_user)):
+    """List all İkas categories."""
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, ikas_graphql, '{ listCategory { id name description metaData { pageTitle description } } }', None)
+    categories = result.get("listCategory", [])
+    # Enrich with local SEO status
+    for cat in categories:
+        local = await db.brand_category_seo.find_one({"entity_id": cat["id"], "entity_type": "category"}, {"_id": 0, "status": 1})
+        cat["seo_generated"] = bool(local)
+        cat["seo_status"] = local.get("status", "") if local else ""
+    return categories
+
+@api_router.get("/ikas/brands")
+async def list_ikas_brands(user: dict = Depends(get_current_user)):
+    """List all İkas brands."""
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, ikas_graphql, '{ listProductBrand { id name description metaData { pageTitle description } } }', None)
+    brands = result.get("listProductBrand", [])
+    for brand in brands:
+        local = await db.brand_category_seo.find_one({"entity_id": brand["id"], "entity_type": "brand"}, {"_id": 0, "status": 1})
+        brand["seo_generated"] = bool(local)
+        brand["seo_status"] = local.get("status", "") if local else ""
+    return brands
+
+@api_router.post("/ikas/bc-seo/generate")
+async def generate_bc_seo(request: Request, user: dict = Depends(get_current_user)):
+    """Generate SEO content for a single brand or category."""
+    body = await request.json()
+    entity_type = body.get("type", "category")
+    entity_id = body.get("id", "")
+    name = body.get("name", "")
+
+    if not entity_id or not name:
+        raise HTTPException(status_code=400, detail="id ve name gerekli")
+
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    if not openai_key:
+        raise HTTPException(status_code=400, detail="OpenAI API anahtari bulunamadi")
+
+    # 1. Analyze competitors
+    analysis = await analyze_competitors(name, entity_type)
+
+    # 2. Scrape our site page
+    our_site_data = {}
+    slug = name.lower().replace(" ", "-").replace("ı", "i").replace("ö", "o").replace("ü", "u").replace("ş", "s").replace("ç", "c").replace("ğ", "g")
+    our_url = f"https://arigastro.com/{slug}"
+    from brand_category_seo import scrape_url_basic
+    our_page = await scrape_url_basic(our_url)
+    if "error" not in our_page:
+        our_site_data = {"url": our_url, "body_excerpt": our_page.get("body_text", "")[:1000]}
+
+    # 3. Get product images from İkas for this brand/category
+    loop = asyncio.get_event_loop()
+    product_images = []
+    try:
+        if entity_type == "brand":
+            prods = await loop.run_in_executor(None, ikas_graphql, f'{{ listProduct(search: "{name[:50]}", pagination: {{page:1, limit:10}}) {{ data {{ id name variants {{ images {{ imageId isMain }} }} brand {{ name }} }} }} }}', None)
+        else:
+            prods = await loop.run_in_executor(None, ikas_graphql, f'{{ listProduct(search: "{name[:50]}", pagination: {{page:1, limit:10}}) {{ data {{ id name variants {{ images {{ imageId isMain }} }} categories {{ name }} }} }} }}', None)
+
+        for p in prods.get("listProduct", {}).get("data", [])[:6]:
+            for v in p.get("variants", [])[:1]:
+                for img in v.get("images", []):
+                    if img.get("isMain") and img.get("imageId"):
+                        product_images.append({"imageId": img["imageId"], "product_name": p["name"], "alt": p["name"]})
+                        break
+    except Exception as e:
+        logger.warning(f"Product images fetch error: {e}")
+
+    # 4. Generate content
+    result = await generate_content(name, entity_type, entity_id, analysis, product_images[:3], our_site_data, openai_key)
+
+    # 5. Save to DB
+    doc = {
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "entity_name": name,
+        "title": result.get("title", ""),
+        "description_meta": result.get("description", ""),
+        "content": result.get("content", ""),
+        "analysis": {
+            "competitors_scraped": analysis.get("competitors_scraped", 0),
+            "avg_word_count": analysis.get("averages", {}).get("word_count", 0),
+            "avg_keyword_density": analysis.get("averages", {}).get("keyword_density", 0),
+            "uses_lists_pct": analysis.get("averages", {}).get("uses_lists_pct", 0),
+            "uses_tables_pct": analysis.get("averages", {}).get("uses_tables_pct", 0),
+            "serp_position": analysis.get("serp_position"),
+            "competitor_titles": analysis.get("competitor_titles", []),
+            "competitor_descriptions": analysis.get("competitor_descriptions", []),
+            "competitor_h2s": analysis.get("competitor_h2s", []),
+            "competitor_pages": [{"url": p.get("url",""), "title": p.get("title",""), "word_count": p.get("word_count",0), "keyword_density": p.get("keyword_density",0), "has_lists": p.get("has_lists",False), "has_tables": p.get("has_tables",False)} for p in analysis.get("competitor_pages", [])],
+        },
+        "product_images_used": len(product_images[:3]),
+        "status": "generated",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": user["username"],
+    }
+    await db.brand_category_seo.update_one(
+        {"entity_id": entity_id, "entity_type": entity_type},
+        {"$set": doc}, upsert=True
+    )
+
+    return {
+        "success": True,
+        "title": result.get("title", ""),
+        "description": result.get("description", ""),
+        "content_length": len(result.get("content", "")),
+        "analysis_summary": {
+            "competitors_scraped": analysis.get("competitors_scraped", 0),
+            "avg_word_count": analysis.get("averages", {}).get("word_count", 0),
+            "avg_density": analysis.get("averages", {}).get("keyword_density", 0),
+            "our_serp_position": analysis.get("serp_position"),
+        }
+    }
+
+@api_router.post("/ikas/bc-seo/push")
+async def push_bc_seo(request: Request, user: dict = Depends(get_current_user)):
+    """Push generated SEO content to İkas."""
+    body = await request.json()
+    entity_type = body.get("type", "category")
+    entity_id = body.get("id", "")
+
+    seo = await db.brand_category_seo.find_one({"entity_id": entity_id, "entity_type": entity_type}, {"_id": 0})
+    if not seo:
+        raise HTTPException(status_code=404, detail="Once icerik uretmelisiniz")
+
+    loop = asyncio.get_event_loop()
+    try:
+        if entity_type == "category":
+            mutation = """mutation UpdateCategory($input: UpdateCategoryInput!) { updateCategory(input: $input) { id name updatedAt } }"""
+        else:
+            mutation = """mutation UpdateProductBrand($input: UpdateProductBrandInput!) { updateProductBrand(input: $input) { id name updatedAt } }"""
+
+        variables = {"input": {
+            "id": entity_id,
+            "description": seo.get("content", "")[:32000],
+            "metaData": {
+                "pageTitle": seo.get("title", "")[:256],
+                "description": seo.get("description_meta", "")[:320],
+            }
+        }}
+        await loop.run_in_executor(None, ikas_graphql, mutation, variables)
+        await db.brand_category_seo.update_one(
+            {"entity_id": entity_id, "entity_type": entity_type},
+            {"$set": {"status": "pushed", "pushed_at": datetime.now(timezone.utc).isoformat()}}
+        )
+        return {"success": True, "message": "Icerik Ikas'a gonderildi"}
+    except Exception as e:
+        logger.error(f"BC SEO push error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/ikas/bc-seo/analysis/{entity_id}")
+async def get_bc_analysis(entity_id: str, user: dict = Depends(get_current_user)):
+    """Get saved analysis for a brand/category."""
+    doc = await db.brand_category_seo.find_one({"entity_id": entity_id}, {"_id": 0})
+    if not doc:
+        return {"found": False}
+    return doc
+
+@api_router.post("/ikas/bc-seo/bulk-generate")
+async def bulk_generate_bc_seo(request: Request, user: dict = Depends(get_current_user)):
+    """Start bulk generation for all brands or categories."""
+    body = await request.json()
+    entity_type = body.get("type", "category")
+
+    status = await db.system_status.find_one({"task": f"bc_seo_bulk_{entity_type}"})
+    if status and status.get("running"):
+        return {"message": "Toplu uretim zaten devam ediyor", "running": True}
+
+    asyncio.create_task(run_bulk_bc_seo(entity_type, user["username"]))
+    return {"message": f"Toplu {'marka' if entity_type == 'brand' else 'kategori'} SEO uretimi baslatildi", "running": True}
+
+async def run_bulk_bc_seo(entity_type: str, username: str):
+    """Background: generate + push SEO for all brands or categories."""
+    task_key = f"bc_seo_bulk_{entity_type}"
+    await db.system_status.update_one(
+        {"task": task_key},
+        {"$set": {"running": True, "started_at": datetime.now(timezone.utc).isoformat(), "progress": 0, "total": 0, "generated": 0, "pushed": 0, "failed": 0}},
+        upsert=True
+    )
+    try:
+        loop = asyncio.get_event_loop()
+        if entity_type == "brand":
+            result = await loop.run_in_executor(None, ikas_graphql, '{ listProductBrand { id name } }', None)
+            entities = result.get("listProductBrand", [])
+        else:
+            result = await loop.run_in_executor(None, ikas_graphql, '{ listCategory { id name } }', None)
+            entities = result.get("listCategory", [])
+
+        total = len(entities)
+        await db.system_status.update_one({"task": task_key}, {"$set": {"total": total}})
+
+        openai_key = os.environ.get("OPENAI_API_KEY")
+        generated = 0
+        pushed = 0
+        failed = 0
+
+        for i, entity in enumerate(entities):
+            eid = entity["id"]
+            ename = entity["name"]
+            try:
+                # Check if already generated
+                existing = await db.brand_category_seo.find_one({"entity_id": eid, "entity_type": entity_type, "status": "pushed"})
+                if existing:
+                    generated += 1
+                    pushed += 1
+                    await db.system_status.update_one({"task": task_key}, {"$set": {"progress": i+1, "generated": generated, "pushed": pushed, "failed": failed}})
+                    continue
+
+                # Analyze competitors
+                analysis = await analyze_competitors(ename, entity_type)
+
+                # Get our site data
+                slug = ename.lower().replace(" ", "-").replace("ı", "i").replace("ö", "o").replace("ü", "u").replace("ş", "s").replace("ç", "c").replace("ğ", "g")
+                from brand_category_seo import scrape_url_basic
+                our_page = await scrape_url_basic(f"https://arigastro.com/{slug}")
+                our_site_data = {}
+                if "error" not in our_page:
+                    our_site_data = {"url": f"https://arigastro.com/{slug}", "body_excerpt": our_page.get("body_text", "")[:1000]}
+
+                # Get product images
+                product_images = []
+                try:
+                    prods = await loop.run_in_executor(None, ikas_graphql, f'{{ listProduct(search: "{ename[:50]}", pagination: {{page:1, limit:6}}) {{ data {{ id name variants {{ images {{ imageId isMain }} }} }} }} }}', None)
+                    for p in prods.get("listProduct", {}).get("data", [])[:6]:
+                        for v in p.get("variants", [])[:1]:
+                            for img in v.get("images", []):
+                                if img.get("isMain") and img.get("imageId"):
+                                    product_images.append({"imageId": img["imageId"], "product_name": p["name"], "alt": p["name"]})
+                                    break
+                except Exception:
+                    pass
+
+                # Generate content
+                content_result = await generate_content(ename, entity_type, eid, analysis, product_images[:3], our_site_data, openai_key)
+
+                # Save
+                doc = {
+                    "entity_type": entity_type, "entity_id": eid, "entity_name": ename,
+                    "title": content_result.get("title", ""), "description_meta": content_result.get("description", ""),
+                    "content": content_result.get("content", ""),
+                    "analysis": {
+                        "competitors_scraped": analysis.get("competitors_scraped", 0),
+                        "avg_word_count": analysis.get("averages", {}).get("word_count", 0),
+                        "avg_keyword_density": analysis.get("averages", {}).get("keyword_density", 0),
+                        "competitor_titles": analysis.get("competitor_titles", []),
+                        "competitor_pages": [{"url": p.get("url",""), "word_count": p.get("word_count",0), "keyword_density": p.get("keyword_density",0)} for p in analysis.get("competitor_pages", [])],
+                    },
+                    "status": "generated", "created_at": datetime.now(timezone.utc).isoformat(), "created_by": username,
+                }
+                await db.brand_category_seo.update_one({"entity_id": eid, "entity_type": entity_type}, {"$set": doc}, upsert=True)
+                generated += 1
+
+                # Push to İkas
+                if entity_type == "category":
+                    mutation = "mutation UpdateCategory($input: UpdateCategoryInput!) { updateCategory(input: $input) { id } }"
+                else:
+                    mutation = "mutation UpdateProductBrand($input: UpdateProductBrandInput!) { updateProductBrand(input: $input) { id } }"
+                variables = {"input": {"id": eid, "description": content_result.get("content", "")[:32000], "metaData": {"pageTitle": content_result.get("title", "")[:256], "description": content_result.get("description", "")[:320]}}}
+                await loop.run_in_executor(None, ikas_graphql, mutation, variables)
+                await db.brand_category_seo.update_one({"entity_id": eid, "entity_type": entity_type}, {"$set": {"status": "pushed", "pushed_at": datetime.now(timezone.utc).isoformat()}})
+                pushed += 1
+            except Exception as e:
+                logger.warning(f"Bulk BC SEO failed for {ename}: {e}")
+                failed += 1
+
+            await db.system_status.update_one({"task": task_key}, {"$set": {"progress": i+1, "generated": generated, "pushed": pushed, "failed": failed}})
+            await asyncio.sleep(3)
+
+        await db.system_status.update_one({"task": task_key}, {"$set": {"running": False, "completed_at": datetime.now(timezone.utc).isoformat(), "progress": total, "generated": generated, "pushed": pushed, "failed": failed}})
+    except Exception as e:
+        logger.error(f"Bulk BC SEO error: {e}")
+        await db.system_status.update_one({"task": task_key}, {"$set": {"running": False, "error": str(e)}})
+
+@api_router.get("/ikas/bc-seo/bulk-status/{entity_type}")
+async def bc_seo_bulk_status(entity_type: str, user: dict = Depends(get_current_user)):
+    status = await db.system_status.find_one({"task": f"bc_seo_bulk_{entity_type}"}, {"_id": 0})
+    return status or {"running": False, "progress": 0, "total": 0}
+
 @api_router.get("/")
 async def root():
     return {"message": "ARI AI API is running", "version": "1.0"}
