@@ -251,6 +251,18 @@ KURALLAR:
 10. HTML formatında yaz (h2, h3, p, ul, li, strong, table, a).
 {links_instruction}
 
+TITLE KURALLARI (ÇOK ÖNEMLİ):
+- Title mutlaka "Arıgastro" kelimesini içermeli
+- Title mutlaka "{name}" anahtar kelimesini içermeli
+- Örnek format: "{name} | Arıgastro" veya "{name} Modelleri ve Fiyatları | Arıgastro"
+- Maximum 60 karakter
+
+DESCRIPTION KURALLARI:
+- Description mutlaka "Arıgastro" kelimesini içermeli
+- Description mutlaka "{name}" anahtar kelimesini içermeli
+- Satın almaya teşvik eden, avantajları vurgulayan bir açıklama
+- Maximum 160 karakter
+
 İÇERİK YAPISI:
 - {'Marka' if entity_type == 'brand' else 'Kategori'} tanıtımı
 - Arıgastro neden tercih edilmeli (ücretsiz kargo, güvenli alışveriş vb.)

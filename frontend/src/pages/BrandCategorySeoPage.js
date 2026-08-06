@@ -331,11 +331,22 @@ export default function BrandCategorySeoPage() {
               {/* Generated content preview */}
               {analysisModal.content && (
                 <div>
-                  <h4 className="text-sm font-semibold text-slate-900 mb-2">Uretilen Icerik Onizleme</h4>
-                  <div className="text-xs border rounded-lg p-3 bg-slate-50">
-                    <p><strong>Title:</strong> {analysisModal.title}</p>
-                    <p><strong>Description:</strong> {analysisModal.description_meta}</p>
-                    <p className="mt-1"><strong>Icerik uzunlugu:</strong> {analysisModal.content.length} karakter</p>
+                  <h4 className="text-sm font-semibold text-slate-900 mb-2">Uretilen Icerik</h4>
+                  <div className="border rounded-lg p-3 bg-slate-50 space-y-2">
+                    <div className="flex gap-2 items-start">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase min-w-[70px]">Title:</span>
+                      <span className="text-sm text-slate-800 font-medium">{analysisModal.title}</span>
+                    </div>
+                    <div className="flex gap-2 items-start">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase min-w-[70px]">Description:</span>
+                      <span className="text-sm text-slate-700">{analysisModal.description_meta}</span>
+                    </div>
+                    <div className="flex gap-2 items-start">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase min-w-[70px]">Uzunluk:</span>
+                      <span className="text-sm text-slate-600">{analysisModal.content.length} karakter</span>
+                    </div>
+                    <hr className="border-slate-200" />
+                    <div className="prose prose-sm max-w-none max-h-96 overflow-y-auto" dangerouslySetInnerHTML={{ __html: analysisModal.content }} />
                   </div>
                 </div>
               )}
