@@ -3661,21 +3661,15 @@ async def generate_bc_seo(request: Request, user: dict = Depends(get_current_use
     if "error" not in our_page:
         our_site_data = {"url": our_url, "body_excerpt": our_page.get("body_text", "")[:1000]}
 
-    # 3. Get product images from İkas for this brand/category
+    # 3. Get product images by scraping site
+    from brand_category_seo import get_product_images_from_site
     loop = asyncio.get_event_loop()
     product_images = []
     try:
-        if entity_type == "brand":
-            prods = await loop.run_in_executor(None, ikas_graphql, f'{{ listProduct(search: "{name[:50]}", pagination: {{page:1, limit:10}}) {{ data {{ id name variants {{ images {{ imageId isMain }} }} brand {{ name }} }} }} }}', None)
-        else:
-            prods = await loop.run_in_executor(None, ikas_graphql, f'{{ listProduct(search: "{name[:50]}", pagination: {{page:1, limit:10}}) {{ data {{ id name variants {{ images {{ imageId isMain }} }} categories {{ name }} }} }} }}', None)
-
-        for p in prods.get("listProduct", {}).get("data", [])[:6]:
-            for v in p.get("variants", [])[:1]:
-                for img in v.get("images", []):
-                    if img.get("isMain") and img.get("imageId"):
-                        product_images.append({"imageId": img["imageId"], "product_name": p["name"], "alt": p["name"]})
-                        break
+        # Get product names from İkas
+        prods = await loop.run_in_executor(None, ikas_graphql, f'{{ listProduct(search: "{name[:50]}", pagination: {{page:1, limit:6}}) {{ data {{ name }} }} }}', None)
+        prod_names = [p["name"] for p in prods.get("listProduct", {}).get("data", [])[:6]]
+        product_images = await get_product_images_from_site(prod_names)
     except Exception as e:
         logger.warning(f"Product images fetch error: {e}")
 
@@ -3852,16 +3846,13 @@ async def run_bulk_bc_seo(entity_type: str, username: str):
                 if "error" not in our_page:
                     our_site_data = {"url": f"https://arigastro.com/{slug}", "body_excerpt": our_page.get("body_text", "")[:1000]}
 
-                # Get product images
+                # Get product images by scraping site
                 product_images = []
                 try:
-                    prods = await loop.run_in_executor(None, ikas_graphql, f'{{ listProduct(search: "{ename[:50]}", pagination: {{page:1, limit:6}}) {{ data {{ id name variants {{ images {{ imageId isMain }} }} }} }} }}', None)
-                    for p in prods.get("listProduct", {}).get("data", [])[:6]:
-                        for v in p.get("variants", [])[:1]:
-                            for img in v.get("images", []):
-                                if img.get("isMain") and img.get("imageId"):
-                                    product_images.append({"imageId": img["imageId"], "product_name": p["name"], "alt": p["name"]})
-                                    break
+                    prods = await loop.run_in_executor(None, ikas_graphql, f'{{ listProduct(search: "{ename[:50]}", pagination: {{page:1, limit:6}}) {{ data {{ name }} }} }}', None)
+                    prod_names = [p["name"] for p in prods.get("listProduct", {}).get("data", [])[:6]]
+                    from brand_category_seo import get_product_images_from_site
+                    product_images = await get_product_images_from_site(prod_names)
                 except Exception:
                     pass
 

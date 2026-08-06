@@ -12,12 +12,36 @@ SCRAPERAPI_KEY = os.environ.get("SCRAPERAPI_KEY", "")
 IKAS_IMAGE_BASE = "https://cdn.myikas.com/images/theme-images"
 
 
-def build_image_tag(image_id: str, alt: str) -> str:
-    """Build HTML img tag from İkas image ID."""
-    if not image_id:
+def build_image_tag(image_url: str, alt: str) -> str:
+    """Build HTML img tag from a full image URL."""
+    if not image_url:
         return ""
-    url = f"{IKAS_IMAGE_BASE}/{image_id}/image_1080.webp"
-    return f'<img src="{url}" alt="{alt}" style="max-width:100%;height:auto;border-radius:8px;margin:16px 0;" />'
+    return f'<img src="{image_url}" alt="{alt}" style="max-width:100%;height:auto;border-radius:8px;margin:16px 0;" />'
+
+
+async def get_product_images_from_site(product_names: list, site_domain: str = "arigastro.com") -> list:
+    """Get real product image URLs by scraping the site's search or product pages."""
+    import httpx
+    from bs4 import BeautifulSoup
+    images = []
+    try:
+        for name in product_names[:4]:
+            search_url = f"https://{site_domain}/arama?q={name.split()[0]}"
+            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+                resp = await client.get(search_url)
+            soup = BeautifulSoup(resp.text, "html.parser")
+            for img in soup.find_all("img"):
+                src = img.get("src", "")
+                if "theme-images" in src and src not in [i["url"] for i in images]:
+                    alt_text = img.get("alt", name)
+                    images.append({"url": src, "alt": alt_text, "product_name": name})
+                    break
+            if len(images) >= 3:
+                break
+            await asyncio.sleep(0.3)
+    except Exception as e:
+        logger.warning(f"Product image scrape error: {e}")
+    return images
 
 
 async def scrape_url_basic(url: str, timeout: int = 20) -> dict:
@@ -198,7 +222,7 @@ async def generate_content(
     # Build image HTML
     image_html_parts = []
     for img in product_images[:3]:
-        tag = build_image_tag(img.get("imageId", ""), img.get("alt", name))
+        tag = build_image_tag(img.get("url", ""), img.get("alt", name))
         if tag:
             image_html_parts.append({"html": tag, "product_name": img.get("product_name", "")})
 
