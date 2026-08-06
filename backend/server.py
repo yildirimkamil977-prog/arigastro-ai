@@ -91,7 +91,7 @@ async def login(req: LoginRequest, response: Response):
     if not user or not verify_password(req.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     token = create_access_token(str(user["_id"]), user["username"])
-    response.set_cookie(key="access_token", value=token, httponly=True, secure=False, samesite="lax", max_age=86400, path="/")
+    response.set_cookie(key="access_token", value=token, httponly=True, secure=True, samesite="lax", max_age=86400, path="/")
     return {"id": str(user["_id"]), "username": user["username"], "name": user.get("name", ""), "role": user.get("role", "user"), "token": token}
 
 @api_router.get("/auth/me")
