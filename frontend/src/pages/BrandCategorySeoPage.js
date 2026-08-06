@@ -9,6 +9,8 @@ const API = process.env.REACT_APP_BACKEND_URL;
 export default function BrandCategorySeoPage() {
   const [tab, setTab] = useState("category");
   const [items, setItems] = useState([]);
+  const [catCount, setCatCount] = useState(0);
+  const [brandCount, setBrandCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(null);
   const [pushing, setPushing] = useState(null);
@@ -18,11 +20,15 @@ export default function BrandCategorySeoPage() {
   const fetchItems = useCallback(async () => {
     setLoading(true);
     try {
-      const url = tab === "brand" ? `${API}/api/ikas/brands` : `${API}/api/ikas/categories`;
-      const res = await fetch(url, { credentials: "include" });
-      if (!res.ok) throw new Error("Veri alinamadi");
-      const data = await res.json();
-      setItems(data);
+      const [catRes, brandRes] = await Promise.all([
+        fetch(`${API}/api/ikas/categories`, { credentials: "include" }),
+        fetch(`${API}/api/ikas/brands`, { credentials: "include" }),
+      ]);
+      const cats = catRes.ok ? await catRes.json() : [];
+      const brands = brandRes.ok ? await brandRes.json() : [];
+      setCatCount(cats.length);
+      setBrandCount(brands.length);
+      setItems(tab === "brand" ? brands : cats);
     } catch (e) { toast.error(e.message); }
     finally { setLoading(false); }
   }, [tab]);
@@ -118,11 +124,11 @@ export default function BrandCategorySeoPage() {
       <div className="flex gap-2">
         <button onClick={() => setTab("category")} data-testid="tab-categories"
           className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium border ${tab === "category" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>
-          <Tag className="h-4 w-4" /> Kategoriler ({items.length})
+          <Tag className="h-4 w-4" /> Kategoriler ({catCount})
         </button>
         <button onClick={() => setTab("brand")} data-testid="tab-brands"
           className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium border ${tab === "brand" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>
-          <Building2 className="h-4 w-4" /> Markalar ({items.length})
+          <Building2 className="h-4 w-4" /> Markalar ({brandCount})
         </button>
       </div>
 
