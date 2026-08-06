@@ -22,20 +22,20 @@ async def get_product_images_from_site(product_names: list, entity_name: str = "
     """Get real product image URLs by scraping the site category/product pages."""
     import httpx
     from bs4 import BeautifulSoup
-    
+
     EXCLUDE_WORDS = ["logo", "qr kod", "qr code", "arigato", "favicon", "icon", "banner", "slider", "payment", "cargo", "kargo", "whatsapp"]
     images = []
-    
+
     try:
-        # Strategy 1: Scrape the category page via ScraperAPI (renders JS)
+        # Strategy 1: Scrape the category page via ScraperAPI
         if SCRAPERAPI_KEY and entity_name:
             slug = entity_name.lower()
             for old, new in [("ö","o"),("ü","u"),("ş","s"),("ç","c"),("ğ","g"),("ı","i"),(" ","-")]:
                 slug = slug.replace(old, new)
             cat_url = f"https://{site_domain}/{slug}"
-            api_url = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={cat_url}"
-            
-            async with httpx.AsyncClient(timeout=25) as client:
+            api_url = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={cat_url}&render=true"
+
+            async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.get(api_url)
             if resp.status_code == 200:
                 soup = BeautifulSoup(resp.text, "html.parser")
@@ -44,43 +44,38 @@ async def get_product_images_from_site(product_names: list, entity_name: str = "
                     alt = (img.get("alt", "") or "").strip()
                     if not src or "theme-images" not in src:
                         continue
-                    # Filter out logos and non-product images
                     if any(ex in alt.lower() for ex in EXCLUDE_WORDS):
                         continue
                     if any(ex in src.lower() for ex in EXCLUDE_WORDS):
                         continue
-                    # Must have meaningful alt text (product name)
                     if len(alt) > 5 and src not in [i["url"] for i in images]:
                         images.append({"url": src, "alt": alt, "product_name": alt})
-                    if len(images) >= 3:
+                    if len(images) >= 4:
                         break
-        
+
         # Strategy 2: Scrape individual product pages
         if len(images) < 3 and SCRAPERAPI_KEY:
             for name in product_names[:5]:
-                if len(images) >= 3:
+                if len(images) >= 4:
                     break
-                # Try product page via slug
                 slug = name.lower()
                 for old, new in [("ö","o"),("ü","u"),("ş","s"),("ç","c"),("ğ","g"),("ı","i"),(" ","-"),(",",""),(".",""),("+","")]:
                     slug = slug.replace(old, new)
                 slug = slug.strip("-")
                 prod_url = f"https://{site_domain}/{slug}"
-                api_url = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={prod_url}"
-                
+                api_url = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={prod_url}&render=true"
+
                 try:
-                    async with httpx.AsyncClient(timeout=20) as client:
+                    async with httpx.AsyncClient(timeout=25) as client:
                         resp = await client.get(api_url)
                     if resp.status_code == 200:
                         soup = BeautifulSoup(resp.text, "html.parser")
-                        # Try og:image first
                         og = soup.find("meta", property="og:image")
                         if og and og.get("content") and "theme-images" in og["content"]:
                             src = og["content"]
                             if src not in [i["url"] for i in images]:
                                 images.append({"url": src, "alt": name, "product_name": name})
                                 continue
-                        # Fallback: find product images
                         for img in soup.find_all("img"):
                             src = img.get("src", "")
                             alt = img.get("alt", "")
@@ -91,11 +86,11 @@ async def get_product_images_from_site(product_names: list, entity_name: str = "
                 except Exception:
                     pass
                 await asyncio.sleep(0.5)
-        
+
         # Strategy 3: Direct site search (no ScraperAPI needed)
         if len(images) < 3:
             for name in product_names[:4]:
-                if len(images) >= 3:
+                if len(images) >= 4:
                     break
                 search_term = "+".join(name.split()[:3])
                 search_url = f"https://{site_domain}/arama?q={search_term}"
@@ -115,18 +110,18 @@ async def get_product_images_from_site(product_names: list, entity_name: str = "
                 await asyncio.sleep(0.3)
     except Exception as e:
         logger.warning(f"Product image scrape error: {e}")
-    
+
     return images
 
 
-async def scrape_url_basic(url: str, timeout: int = 20) -> dict:
+async def scrape_url_basic(url: str, timeout: int = 25) -> dict:
     """Scrape URL and extract key SEO elements."""
     import httpx
     from bs4 import BeautifulSoup
     if not SCRAPERAPI_KEY:
         return {"error": "ScraperAPI key missing"}
     try:
-        api_url = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={url}"
+        api_url = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={url}&render=true"
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.get(api_url)
             if resp.status_code != 200:
@@ -161,7 +156,41 @@ async def scrape_url_basic(url: str, timeout: int = 20) -> dict:
 
 
 async def scrape_google_serp_tr(keyword: str) -> list:
-    """Search Google Turkey for a keyword."""
+    """Search Google Turkey using ScraperAPI structured endpoint."""
+    import httpx
+    if not SCRAPERAPI_KEY:
+        return []
+    try:
+        # Use ScraperAPI's structured Google Search endpoint for reliable JSON results
+        params = {
+            "api_key": SCRAPERAPI_KEY,
+            "query": keyword,
+            "country_code": "tr",
+            "tld": "com.tr",
+            "num": "10",
+        }
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get("https://api.scraperapi.com/structured/google/search", params=params)
+            if resp.status_code != 200:
+                logger.warning(f"SERP structured API returned {resp.status_code}, falling back to HTML scrape")
+                return await _scrape_google_serp_html(keyword)
+            data = resp.json()
+
+        results = []
+        for item in data.get("organic_results", []):
+            url = item.get("link", "")
+            title = item.get("title", "")
+            snippet = item.get("snippet", "")
+            if url and title:
+                results.append({"title": title, "url": url, "description": snippet})
+        return results
+    except Exception as e:
+        logger.error(f"SERP structured error: {e}, falling back to HTML scrape")
+        return await _scrape_google_serp_html(keyword)
+
+
+async def _scrape_google_serp_html(keyword: str) -> list:
+    """Fallback: Scrape Google SERP via HTML parsing."""
     import httpx
     from bs4 import BeautifulSoup
     if not SCRAPERAPI_KEY:
@@ -175,17 +204,21 @@ async def scrape_google_serp_tr(keyword: str) -> list:
                 return []
         soup = BeautifulSoup(resp.text, "html.parser")
         results = []
-        for item in soup.select("div.g")[:10]:
+        for item in soup.select("div.g"):
             link = item.find("a")
             title_el = item.find("h3")
             desc_el = item.select_one("div[data-sncf], div.VwiC3b, span.aCOpRe")
             if link and title_el:
                 href = link.get("href", "")
                 if href.startswith("http"):
-                    results.append({"title": title_el.get_text(strip=True), "url": href, "description": desc_el.get_text(strip=True) if desc_el else ""})
+                    results.append({
+                        "title": title_el.get_text(strip=True),
+                        "url": href,
+                        "description": desc_el.get_text(strip=True) if desc_el else ""
+                    })
         return results
     except Exception as e:
-        logger.error(f"SERP error: {e}")
+        logger.error(f"SERP HTML fallback error: {e}")
         return []
 
 
@@ -210,6 +243,7 @@ async def analyze_competitors(name: str, entity_type: str = "category") -> dict:
     search_query = f"{name} endüstriyel mutfak" if entity_type == "brand" else name
 
     serp_results = await scrape_google_serp_tr(search_query)
+    logger.info(f"SERP results for '{search_query}': {len(serp_results)} found")
 
     competitors = [r for r in serp_results if "arigastro" not in r.get("url", "")]
     our_result = [r for r in serp_results if "arigastro" in r.get("url", "")]
@@ -280,7 +314,7 @@ async def generate_content(
 
     # Build image HTML
     image_html_parts = []
-    for img in product_images[:3]:
+    for img in product_images[:4]:
         tag = build_image_tag(img.get("url", ""), img.get("alt", name))
         if tag:
             image_html_parts.append({"html": tag, "product_name": img.get("product_name", "")})
@@ -292,7 +326,7 @@ async def generate_content(
         siblings = internal_links.get("siblings", [])
         parent = internal_links.get("parent_name", "")
 
-        links_instruction = "\n\nSİTE İÇİ LİNKLEME (ZORUNLU — en az 3-5 link olmalı):\nİçeriğin doğal akışı içinde aşağıdaki sayfalara link ver. Linkleri cümle içinde doğal şekilde yerleştir.\n"
+        links_instruction = "\n\nSITE ICI LINKLEME (ZORUNLU — en az 3-5 link olmali):\nIcerigin dogal akisi icinde asagidaki sayfalara link ver. Linkleri cumle icinde dogal sekilde yerlestir.\n"
 
         if children:
             links_instruction += "\nAlt kategoriler (MUTLAKA hepsine link ver):\n"
@@ -302,89 +336,112 @@ async def generate_content(
 
         if parent:
             parent_slug = parent.lower().replace(" ", "-").replace("ı", "i").replace("ö", "o").replace("ü", "u").replace("ş", "s").replace("ç", "c").replace("ğ", "g")
-            links_instruction += f'\nÜst kategori: {parent}: https://arigastro.com/{parent_slug}\n'
+            links_instruction += f'\nUst kategori: {parent}: https://arigastro.com/{parent_slug}\n'
 
         if siblings:
-            links_instruction += "\nİlgili kategoriler (en az 2-3 tanesine link ver):\n"
+            links_instruction += "\nIlgili kategoriler (en az 2-3 tanesine link ver):\n"
             for sib in siblings[:5]:
                 slug = sib.lower().replace(" ", "-").replace("ı", "i").replace("ö", "o").replace("ü", "u").replace("ş", "s").replace("ç", "c").replace("ğ", "g")
                 links_instruction += f'- {sib}: https://arigastro.com/{slug}\n'
 
-        links_instruction += '\nLinkler <a href="URL">doğal anchor metin</a> formatında olsun. "Tıklayın" gibi genel anchor kullanma, her linkin anchor metni o kategoriyi tanımlayan doğal bir ifade olsun.\n'
+        links_instruction += '\nLinkler <a href="URL">dogal anchor metin</a> formatinda olsun. "Tiklayin" gibi genel anchor kullanma, her linkin anchor metni o kategoriyi tanimlayan dogal bir ifade olsun.\n'
 
     entity_label = "marka" if entity_type == "brand" else "kategori"
 
-    system_prompt = f"""Sen Türkiye'nin en iyi e-ticaret SEO içerik yazarısın. Arıgastro.com (endüstriyel mutfak ekipmanları) için profesyonel {entity_label} sayfası içeriği üretiyorsun.
+    # Build title examples based on type
+    if entity_type == "brand":
+        title_example = f'"{name} Endustriyel Mutfak Urunleri | Arigastro"'
+        title_format_rule = f'Marka title formati: "{{Marka Adi}} Endustriyel Mutfak Urunleri | Arigastro" veya "{{Marka Adi}} Urunleri ve Fiyatlari | Arigastro"'
+    else:
+        title_example = f'"{name} Modelleri ve Fiyatlari | Arigastro"'
+        title_format_rule = f'Kategori title formati: "{{Kategori Adi}} Modelleri ve Fiyatlari | Arigastro"'
 
-HEDEF: "{name}" {entity_label}si için Google'da 1. sırada yer alacak, rakiplerden daha kapsamlı ve kaliteli bir sayfa içeriği yaz.
+    system_prompt = f"""Sen Turkiye'nin en iyi e-ticaret SEO icerik yazarisin. Arigastro.com (endustriyel mutfak ekipmanlari) icin profesyonel {entity_label} sayfasi icerigi uretiyorsun.
 
-## KESİN KURALLAR:
+HEDEF: "{name}" {entity_label}si icin Google'da 1. sirada yer alacak, rakiplerden daha kapsamli ve kaliteli bir sayfa icerigi yaz.
 
-### İçerik Yapısı:
-- H1 KULLANMA (İkas zaten {entity_label} adını H1 olarak gösteriyor)
-- H2 ve H3 başlıkları doğal, SEO uyumlu ve ilgi çekici olsun
-- "Bar Buzdolapları Kategorisi" gibi robotik başlıklar YAZMA. Yerine "Profesyonel Bar Buzdolapları ile İşletmenizi Donatın" gibi doğal başlıklar yaz
+## KESIN KURALLAR:
+
+### TITLE KURALLARI (COK KRITIK — MUTLAKA UY):
+- {title_format_rule}
+- Ornek: {title_example}
+- MUTLAKA "Arigastro" kelimesini icermeli (genellikle " | Arigastro" seklinde sonda)
+- MUTLAKA "{name}" anahtar kelimesini icermeli
+- ASLA "Avantajlari" kelimesini title'da KULLANMA
+- Title MAKSIMUM 55 karakter olmali (bosluklar dahil)
+- Kisa ve net ol, devrik veya yarim cumle YAZMA
+- Rakip sitelerin title'larindan esinlen ama daha iyi yaz
+
+### DESCRIPTION KURALLARI (COK KRITIK — MUTLAKA UY):
+- MUTLAKA "Arigastro" kelimesini icermeli
+- MUTLAKA "{name}" anahtar kelimesini icermeli
+- MAKSIMUM 150 karakter olmali (bosluklar dahil)
+- Tam ve anlamli bir cumle olmali, ASLA yarim cumle birakma
+- Avantaj vurgulayan, tiklamaya tesvik eden aciklama
+- Karakter limitine uygunlugu kontrol et, gerekirse cumleyi kisalt ama ASLA devrik birakma
+
+### Icerik Yapisi:
+- H1 KULLANMA (Ikas zaten {entity_label} adini H1 olarak gosteriyor)
+- H2 ve H3 basliklari dogal, SEO uyumlu ve ilgi cekici olsun
+- "Bar Buzdolaplari Kategorisi" gibi robotik basliklar YAZMA. Yerine "Profesyonel Bar Buzdolaplari ile Isletmenizi Donatin" gibi dogal basliklar yaz
 - En az {target_words} kelime yaz
-- Anahtar kelime yoğunluğu yaklaşık %{target_density}
-- HTML formatında yaz: <h2>, <h3>, <p>, <ul>, <li>, <strong>, <a href>, <table> etiketleri kullan
+- Anahtar kelime yogunlugu yaklasik %{target_density}
+- HTML formatinda yaz: <h2>, <h3>, <p>, <ul>, <li>, <strong>, <a href>, <table> etiketleri kullan
 
-### Ton ve Üslup:
-- Profesyonel, kurumsal ama sıcak ve güven veren
-- E-ticaret odaklı — okuyucuyu satın almaya teşvik et
-- Gerçek bilgi ver, genel/boş laflar yazma
+### GORSEL YERLESIMI (COK KRITIK):
+- Icerigin uygun yerlerine [GORSEL_1], [GORSEL_2], [GORSEL_3], [GORSEL_4] placeholder'larini KOY
+- Her gorsel bir paragrafin altina veya urun cesitleri anlatilirken yerlestirilmeli
+- En az 3 gorsel placeholder'i icerikte MUTLAKA olmali
+- Gorselleri bolumlere dagit — hepsini bir yere yigma
+
+### Ton ve Uslup:
+- Profesyonel, kurumsal ama sicak ve guven veren
+- E-ticaret odakli — okuyucuyu satin almaya tesvik et
+- Gercek bilgi ver, genel/bos laflar yazma
 - Fiyat bilgisi YAZMA
 
-### İçerik Bölümleri (hepsini dahil et):
-1. **Giriş paragrafı** (2-3 cümle, anahtar kelimeyi doğal şekilde içeren güçlü açılış)
-2. **{name} Nedir / Neden Önemlidir?** (sektörel bilgi, kullanım alanları)
-3. **Arıgastro'da {name} Çeşitleri** (ürün gruplarını, özelliklerini anlat — sitede bulunan gerçek ürün isimlerini kullan)
-4. **{name} Seçerken Dikkat Edilmesi Gerekenler** (kapasite, malzeme, enerji verimliliği vb. satın alma rehberi)
-5. **Neden Arıgastro'yu Tercih Etmelisiniz?** (ücretsiz kargo, güvenli ödeme, geniş ürün yelpazesi, teknik destek, kurumsal güvenilirlik)
-6. **Sıkça Sorulan Sorular** (en az 5 soru-cevap, <h3> ile başlıklandır)
-7. **Sonuç / CTA** (satın almaya yönlendiren kapanış paragrafı)
+### Icerik Bolumleri (hepsini dahil et):
+1. **Giris paragrafi** (2-3 cumle, anahtar kelimeyi dogal sekilde iceren guclu acilis)
+   [GORSEL_1]
+2. **{name} Nedir / Neden Onemlidir?** (sektorel bilgi, kullanim alanlari)
+3. **Arigastro'da {name} Cesitleri** (urun gruplarini, ozelliklerini anlat — sitede bulunan gercek urun isimlerini kullan)
+   [GORSEL_2]
+4. **{name} Secerken Dikkat Edilmesi Gerekenler** (kapasite, malzeme, enerji verimliligi vb. satin alma rehberi)
+   [GORSEL_3]
+5. **Neden Arigastro'yu Tercih Etmelisiniz?** (ucretsiz kargo, guvenli odeme, genis urun yelpazesi, teknik destek, kurumsal guvenilirlik)
+6. **Sikca Sorulan Sorular** (en az 5 soru-cevap, <h3> ile baslikladir)
+   [GORSEL_4]
+7. **Sonuc / CTA** (satin almaya yonlendiren kapanis paragrafi)
 
-### Ürün İsimleri (ÇOK KRİTİK):
-- ASLA "Model X1", "Model Y2", "Model Z3" gibi uydurma ürün isimleri YAZMA
-- Sadece aşağıda sana verilen gerçek ürün isimlerini kullan
-- Eğer ürün ismi verilmemişse, genel ifadeler kullan: "farklı kapasite seçenekleri", "çeşitli modeller" gibi
-- Hiçbir zaman var olmayan bir ürün modeli uydurma
+### Urun Isimleri (COK KRITIK):
+- ASLA "Model X1", "Model Y2", "Model Z3" gibi uydurma urun isimleri YAZMA
+- Sadece asagida sana verilen gercek urun isimlerini kullan
+- Eger urun ismi verilmemisse, genel ifadeler kullan: "farkli kapasite secenekleri", "cesitli modeller" gibi
+- Hicbir zaman var olmayan bir urun modeli uydurma
 
-### Başlık Formatı (ÇOK KRİTİK):
-- Başlıklar kesinlikle <h2> ve <h3> HTML etiketleri içinde olmalı
-- Başlıklar asla düz metin olmamalı
-- Alt başlıklar için <h3> kullan
-- Doğru: <h2>Profesyonel Sıcak Teşhir Dolapları</h2>
-- Yanlış: Profesyonel Sıcak Teşhir Dolapları (etiket olmadan)
+### Baslik Formati:
+- Basliklar kesinlikle <h2> ve <h3> HTML etiketleri icinde olmali
+- Alt basliklar icin <h3> kullan
 
 ### Rakip Analiz Notu:
-- İçerikten AYRI olarak, yaptığın analizle ilgili kısa bir not hazırla
-- Hangi siteleri incelediğini, title ve description'da nelere dikkat ettiğini, rakiplerden hangi noktaları referans aldığını anlat
-- Bu notu "generation_notes" alanında JSON'da ver
-- İçeriğin uygun yerlerine [GORSEL_1], [GORSEL_2], [GORSEL_3] placeholder'ları koy
-- Görselleri bölümler arasına veya ürün çeşitleri anlatılırken yerleştir
-- Eğer ürün görseli bilgisi verilmişse, görselin hangi ürüne ait olduğunu yazıda doğal şekilde belirt
+- Icerikte AYRI olarak, yaptigin analizle ilgili kisa bir not hazirla
+- Hangi siteleri inceledigin, title ve description'da nelere dikkat ettigin, rakiplerden hangi noktalari referans aldigin
+- Bu notu "generation_notes" alaninda JSON'da ver
 
 ### Liste ve Tablo:
-- Ürün özelliklerini veya karşılaştırmaları <ul><li> listeleriyle göster
-- {'Uygunsa özellik karşılaştırma tablosu ekle (<table> formatında)' if use_tables else 'Gerekirse özellik listesi kullan'}
+- Urun ozelliklerini veya karsilastirmalari <ul><li> listeleriyle goster
+- {'Uygunsa ozellik karsilastirma tablosu ekle (<table> formatinda)' if use_tables else 'Gerekirse ozellik listesi kullan'}
 {links_instruction}
 
-## TITLE KURALLARI:
-- MUTLAKA "Arıgastro" kelimesini içermeli (genellikle " | Arıgastro" şeklinde sonda)
-- MUTLAKA "{name}" anahtar kelimesini içermeli
-- Rakip sitelerin title'larından esinlen ama daha iyi yaz
-- Marka ise örnek: "Öztiryakiler Endüstriyel Mutfak Ürünleri | Arıgastro"
-- Kategori ise örnek: "Bar Buzdolapları Modelleri ve Çeşitleri | Arıgastro"
-- Maximum 60 karakter
+## YANITINI KESINLIKLE SADECE BU JSON FORMATINDA VER:
+{{"title": "...", "description": "...", "content": "<h2>...</h2><p>...</p>...", "generation_notes": "Bu icerigi hazirlarken su analizleri yaptim: ..."}}
 
-## DESCRIPTION KURALLARI:
-- MUTLAKA "Arıgastro" kelimesini içermeli
-- MUTLAKA "{name}" anahtar kelimesini içermeli
-- Avantaj vurgulayan, tıklamaya teşvik eden açıklama
-- Maximum 160 karakter
-
-## YANITINI KESİNLİKLE SADECE BU JSON FORMATINDA VER:
-{{"title": "...", "description": "...", "content": "<h2>...</h2><p>...</p>...", "generation_notes": "Bu içeriği hazırlarken şu analizleri yaptım: ..."}}"""
+ONEMLI HATIRLATMA:
+- title MAKSIMUM 55 karakter (bosluklar dahil)
+- description MAKSIMUM 150 karakter (bosluklar dahil)
+- Her ikisi de TAM CUMLE olmali, ASLA devrik veya yarim birakma
+- Title'da "Avantajlari" kelimesi YASAK
+- Icerikte en az 3 adet [GORSEL_X] placeholder'i olmali"""
 
     chat = LlmChat(
         api_key=openai_key,
@@ -397,30 +454,30 @@ HEDEF: "{name}" {entity_label}si için Google'da 1. sırada yer alacak, rakipler
 
     # Our site data
     if our_site_data and our_site_data.get("body_excerpt"):
-        data_text += f"## ARİGASTRO SİTESİNDEKİ MEVCUT BİLGİLER:\n{our_site_data.get('body_excerpt','')[:800]}\n\n"
+        data_text += f"## ARIGASTRO SITESINDEKI MEVCUT BILGILER:\n{our_site_data.get('body_excerpt','')[:800]}\n\n"
 
     # Product info
     if product_images:
-        data_text += f"## ARİGASTRO'DAKİ ÜRÜNLER (görselleri yazıya eklenecek):\n"
-        for img in product_images[:3]:
+        data_text += f"## ARIGASTRO'DAKI URUNLER (gorselleri yaziya eklenecek):\n"
+        for img in product_images[:4]:
             data_text += f"- {img.get('product_name','')}\n"
         data_text += "\n"
 
     # Competitor analysis
     if analysis.get("competitors_scraped", 0) > 0:
-        data_text += f"## RAKİP ANALİZİ ({analysis['competitors_scraped']} site analiz edildi):\n"
-        data_text += f"Ortalama kelime sayısı: {avg.get('word_count',0)}\nOrtalama AK yoğunluğu: %{avg.get('keyword_density',0)}\n\n"
-        data_text += "### Rakip Title'ları:\n"
+        data_text += f"## RAKIP ANALIZI ({analysis['competitors_scraped']} site analiz edildi):\n"
+        data_text += f"Ortalama kelime sayisi: {avg.get('word_count',0)}\nOrtalama AK yogunlugu: %{avg.get('keyword_density',0)}\n\n"
+        data_text += "### Rakip Title'lari:\n"
         for t in analysis.get("competitor_titles", []):
             data_text += f"- {t}\n"
-        data_text += "\n### Rakip Description'ları:\n"
+        data_text += "\n### Rakip Description'lari:\n"
         for d in analysis.get("competitor_descriptions", []):
             data_text += f"- {d}\n"
-        data_text += "\n### Rakiplerde kullanılan H2 başlıkları:\n"
+        data_text += "\n### Rakiplerde kullanilan H2 basliklari:\n"
         for h in analysis.get("competitor_h2s", [])[:10]:
             data_text += f"- {h}\n"
     else:
-        data_text += "## NOT: Rakip analizi yapılamadı. Endüstriyel mutfak sektörü bilgine dayanarak en profesyonel içeriği üret.\n"
+        data_text += "## NOT: Rakip analizi yapilamadi. Endustriyel mutfak sektoru bilgine dayanarak en profesyonel icerigi uret.\n"
 
     response_text = await chat.send_message(UserMessage(text=data_text))
 
@@ -437,9 +494,38 @@ HEDEF: "{name}" {entity_label}si için Google'da 1. sırada yer alacak, rakipler
             try:
                 result = json.loads(match.group())
             except:
-                result = {"title": f"{name} | Arıgastro", "description": "", "content": clean}
+                result = {"title": f"{name} Modelleri ve Fiyatlari | Arigastro", "description": "", "content": clean}
         else:
-            result = {"title": f"{name} | Arıgastro", "description": "", "content": clean}
+            result = {"title": f"{name} Modelleri ve Fiyatlari | Arigastro", "description": "", "content": clean}
+
+    # Enforce title length (max 55 chars)
+    title = result.get("title", "")
+    if len(title) > 55:
+        # Try to shorten while keeping "| Arigastro"
+        if "| Arigastro" in title:
+            prefix = title.split("| Arigastro")[0].strip()
+            # Trim prefix to fit
+            while len(f"{prefix} | Arigastro") > 55 and " " in prefix:
+                prefix = prefix.rsplit(" ", 1)[0]
+            title = f"{prefix} | Arigastro"
+        else:
+            title = title[:52] + "..."
+    result["title"] = title
+
+    # Enforce description length (max 150 chars)
+    desc = result.get("description", "")
+    if len(desc) > 150:
+        # Find last complete sentence within limit
+        truncated = desc[:150]
+        last_period = truncated.rfind(".")
+        if last_period > 80:
+            desc = truncated[:last_period + 1]
+        else:
+            # Find last space and add period
+            last_space = truncated.rfind(" ")
+            if last_space > 80:
+                desc = truncated[:last_space] + "."
+    result["description"] = desc
 
     # Replace image placeholders with actual HTML
     content = result.get("content", "")
