@@ -18,31 +18,104 @@ def build_image_tag(image_url: str, alt: str) -> str:
     return f'<img src="{image_url}" alt="{alt}" style="max-width:100%;height:auto;border-radius:8px;margin:16px 0;" />'
 
 
-async def get_product_images_from_site(product_names: list, site_domain: str = "arigastro.com") -> list:
-    """Get real product image URLs by scraping the site search pages."""
+async def get_product_images_from_site(product_names: list, entity_name: str = "", site_domain: str = "arigastro.com") -> list:
+    """Get real product image URLs by scraping the site category/product pages."""
     import httpx
     from bs4 import BeautifulSoup
+    
+    EXCLUDE_WORDS = ["logo", "qr kod", "qr code", "arigato", "favicon", "icon", "banner", "slider", "payment", "cargo", "kargo", "whatsapp"]
     images = []
+    
     try:
-        for name in product_names[:5]:
-            search_term = name.split()[0] if name else ""
-            if not search_term:
-                continue
-            search_url = f"https://{site_domain}/arama?q={search_term}"
-            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-                resp = await client.get(search_url)
-            soup = BeautifulSoup(resp.text, "html.parser")
-            for img in soup.find_all("img"):
-                src = img.get("src", "")
-                if "theme-images" in src and src not in [i["url"] for i in images]:
-                    alt_text = img.get("alt", name)
-                    images.append({"url": src, "alt": alt_text, "product_name": name})
+        # Strategy 1: Scrape the category page via ScraperAPI (renders JS)
+        if SCRAPERAPI_KEY and entity_name:
+            slug = entity_name.lower()
+            for old, new in [("ö","o"),("ü","u"),("ş","s"),("ç","c"),("ğ","g"),("ı","i"),(" ","-")]:
+                slug = slug.replace(old, new)
+            cat_url = f"https://{site_domain}/{slug}"
+            api_url = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={cat_url}"
+            
+            async with httpx.AsyncClient(timeout=25) as client:
+                resp = await client.get(api_url)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                for img in soup.find_all("img"):
+                    src = img.get("src", "") or img.get("data-src", "")
+                    alt = (img.get("alt", "") or "").strip()
+                    if not src or "theme-images" not in src:
+                        continue
+                    # Filter out logos and non-product images
+                    if any(ex in alt.lower() for ex in EXCLUDE_WORDS):
+                        continue
+                    if any(ex in src.lower() for ex in EXCLUDE_WORDS):
+                        continue
+                    # Must have meaningful alt text (product name)
+                    if len(alt) > 5 and src not in [i["url"] for i in images]:
+                        images.append({"url": src, "alt": alt, "product_name": alt})
+                    if len(images) >= 3:
+                        break
+        
+        # Strategy 2: Scrape individual product pages
+        if len(images) < 3 and SCRAPERAPI_KEY:
+            for name in product_names[:5]:
+                if len(images) >= 3:
                     break
-            if len(images) >= 3:
-                break
-            await asyncio.sleep(0.3)
+                # Try product page via slug
+                slug = name.lower()
+                for old, new in [("ö","o"),("ü","u"),("ş","s"),("ç","c"),("ğ","g"),("ı","i"),(" ","-"),(",",""),(".",""),("+","")]:
+                    slug = slug.replace(old, new)
+                slug = slug.strip("-")
+                prod_url = f"https://{site_domain}/{slug}"
+                api_url = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={prod_url}"
+                
+                try:
+                    async with httpx.AsyncClient(timeout=20) as client:
+                        resp = await client.get(api_url)
+                    if resp.status_code == 200:
+                        soup = BeautifulSoup(resp.text, "html.parser")
+                        # Try og:image first
+                        og = soup.find("meta", property="og:image")
+                        if og and og.get("content") and "theme-images" in og["content"]:
+                            src = og["content"]
+                            if src not in [i["url"] for i in images]:
+                                images.append({"url": src, "alt": name, "product_name": name})
+                                continue
+                        # Fallback: find product images
+                        for img in soup.find_all("img"):
+                            src = img.get("src", "")
+                            alt = img.get("alt", "")
+                            if "theme-images" in src and not any(ex in alt.lower() for ex in EXCLUDE_WORDS) and len(alt) > 5:
+                                if src not in [i["url"] for i in images]:
+                                    images.append({"url": src, "alt": alt, "product_name": name})
+                                    break
+                except Exception:
+                    pass
+                await asyncio.sleep(0.5)
+        
+        # Strategy 3: Direct site search (no ScraperAPI needed)
+        if len(images) < 3:
+            for name in product_names[:4]:
+                if len(images) >= 3:
+                    break
+                search_term = "+".join(name.split()[:3])
+                search_url = f"https://{site_domain}/arama?q={search_term}"
+                try:
+                    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+                        resp = await client.get(search_url)
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    for img in soup.find_all("img"):
+                        src = img.get("src", "")
+                        alt = (img.get("alt", "") or "").strip()
+                        if "theme-images" in src and not any(ex in alt.lower() for ex in EXCLUDE_WORDS) and len(alt) > 5:
+                            if src not in [i["url"] for i in images]:
+                                images.append({"url": src, "alt": alt, "product_name": alt})
+                                break
+                except Exception:
+                    pass
+                await asyncio.sleep(0.3)
     except Exception as e:
         logger.warning(f"Product image scrape error: {e}")
+    
     return images
 
 

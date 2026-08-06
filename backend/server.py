@@ -3669,7 +3669,7 @@ async def generate_bc_seo(request: Request, user: dict = Depends(get_current_use
         # Get product names from İkas
         prods = await loop.run_in_executor(None, ikas_graphql, f'{{ listProduct(search: "{name[:50]}", pagination: {{page:1, limit:6}}) {{ data {{ name }} }} }}', None)
         prod_names = [p["name"] for p in prods.get("listProduct", {}).get("data", [])[:6]]
-        product_images = await get_product_images_from_site(prod_names)
+        product_images = await get_product_images_from_site(prod_names, entity_name=name)
     except Exception as e:
         logger.warning(f"Product images fetch error: {e}")
 
@@ -3852,7 +3852,7 @@ async def run_bulk_bc_seo(entity_type: str, username: str):
                     prods = await loop.run_in_executor(None, ikas_graphql, f'{{ listProduct(search: "{ename[:50]}", pagination: {{page:1, limit:6}}) {{ data {{ name }} }} }}', None)
                     prod_names = [p["name"] for p in prods.get("listProduct", {}).get("data", [])[:6]]
                     from brand_category_seo import get_product_images_from_site
-                    product_images = await get_product_images_from_site(prod_names)
+                    product_images = await get_product_images_from_site(prod_names, entity_name=ename)
                 except Exception:
                     pass
 
