@@ -1530,6 +1530,119 @@ async def ikas_repush_status(user: dict = Depends(get_current_user)):
     status = await db.system_status.find_one({"task": "ikas_repush"}, {"_id": 0})
     return status or {"running": False, "progress": 0, "total": 0}
 
+@api_router.post("/ikas/import-seo")
+async def ikas_import_seo(request: Request, user: dict = Depends(get_current_user)):
+    """Import existing SEO data from İkas back into MongoDB."""
+    if not IKAS_CLIENT_ID or not IKAS_CLIENT_SECRET:
+        raise HTTPException(status_code=400, detail="Ikas API yapilandirilmamis")
+    
+    status = await db.system_status.find_one({"task": "ikas_import_seo"})
+    if status and status.get("running"):
+        return {"message": "Ikas'tan SEO verisi aktarimi devam ediyor", "running": True}
+
+    asyncio.create_task(run_ikas_import_seo())
+    return {"message": "Ikas'tan SEO verileri geri cekiliyor", "running": True}
+
+async def run_ikas_import_seo():
+    """Background task: pull all products from İkas and save SEO data to MongoDB."""
+    await db.system_status.update_one(
+        {"task": "ikas_import_seo"},
+        {"$set": {"running": True, "started_at": datetime.now(timezone.utc).isoformat(), "progress": 0, "total": 0, "imported": 0, "skipped": 0, "error": None}},
+        upsert=True
+    )
+    try:
+        loop = asyncio.get_event_loop()
+        page = 1
+        imported = 0
+        skipped = 0
+        total_fetched = 0
+
+        while True:
+            query = """
+            query ListProducts($pagination: PaginationInput) {
+                listProduct(pagination: $pagination) {
+                    data { id name description metaData { pageTitle description } }
+                    count
+                }
+            }
+            """
+            result = await loop.run_in_executor(None, ikas_graphql, query, {"pagination": {"page": page, "limit": 50}})
+            products = result.get("listProduct", {}).get("data", [])
+            total_count = result.get("listProduct", {}).get("count", 0)
+
+            if not products:
+                break
+
+            if page == 1:
+                await db.system_status.update_one({"task": "ikas_import_seo"}, {"$set": {"total": total_count}})
+
+            for ikas_product in products:
+                total_fetched += 1
+                ikas_id = ikas_product.get("id", "")
+                name = ikas_product.get("name", "")
+                description = ikas_product.get("description", "")
+                meta = ikas_product.get("metaData") or {}
+                page_title = meta.get("pageTitle", "")
+                meta_desc = meta.get("description", "")
+
+                # Only import if there's actual SEO content
+                if not description and not page_title and not meta_desc:
+                    skipped += 1
+                    continue
+
+                # Find matching product in our DB by name
+                our_product = await db.products.find_one({"name": {"$regex": f"^{name[:30]}", "$options": "i"}}, {"_id": 0, "slug": 1, "name": 1})
+                if not our_product:
+                    # Try shorter match
+                    short = " ".join(name.split()[:3])
+                    our_product = await db.products.find_one({"name": {"$regex": short, "$options": "i"}}, {"_id": 0, "slug": 1, "name": 1})
+
+                if our_product:
+                    slug = our_product["slug"]
+                    # Save to seo_content
+                    await db.seo_content.update_one(
+                        {"product_slug": slug},
+                        {"$set": {
+                            "product_slug": slug,
+                            "product_name": our_product["name"],
+                            "seo_title": page_title,
+                            "seo_description": meta_desc,
+                            "product_description": description,
+                            "imported_from_ikas": True,
+                            "ikas_product_id": ikas_id,
+                            "generated_at": datetime.now(timezone.utc).isoformat(),
+                            "status": "imported",
+                        }},
+                        upsert=True
+                    )
+                    # Update product record
+                    await db.products.update_one({"slug": slug}, {"$set": {
+                        "ikas_seo_pushed": True,
+                        "ikas_product_id": ikas_id,
+                    }})
+                    imported += 1
+                else:
+                    skipped += 1
+
+            await db.system_status.update_one({"task": "ikas_import_seo"}, {"$set": {"progress": total_fetched, "imported": imported, "skipped": skipped}})
+            page += 1
+            await asyncio.sleep(1)
+
+        await db.system_status.update_one({"task": "ikas_import_seo"}, {"$set": {
+            "running": False, "completed_at": datetime.now(timezone.utc).isoformat(),
+            "progress": total_fetched, "imported": imported, "skipped": skipped,
+        }})
+        logger.info(f"İkas SEO import completed: {imported} imported, {skipped} skipped out of {total_fetched}")
+    except Exception as e:
+        logger.error(f"İkas SEO import error: {e}")
+        await db.system_status.update_one({"task": "ikas_import_seo"}, {"$set": {"running": False, "error": str(e)}})
+
+@api_router.get("/ikas/import-seo-status")
+async def ikas_import_seo_status(user: dict = Depends(get_current_user)):
+    """Get status of the İkas SEO import task."""
+    status = await db.system_status.find_one({"task": "ikas_import_seo"}, {"_id": 0})
+    return status or {"running": False, "progress": 0, "total": 0}
+
 @api_router.post("/seo/generate-all")
 async def generate_all_seo(request: Request, user: dict = Depends(get_current_user)):
     """Start background task to generate SEO for ALL products and push to İkas."""
