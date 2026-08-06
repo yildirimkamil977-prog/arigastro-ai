@@ -49,6 +49,8 @@ services:
     restart: always
     depends_on:
       - backend
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
     ports:
       - "80:80"
       - "443:443"
