@@ -3767,7 +3767,11 @@ async def push_bc_seo(request: Request, user: dict = Depends(get_current_user)):
                 "description": seo.get("description_meta", "")[:320],
             }
         }}
-        await loop.run_in_executor(None, ikas_graphql, mutation, variables)
+        
+        logger.info(f"BC SEO Push: type={entity_type}, id={entity_id}, title='{seo.get('title','')[:50]}', desc_len={len(seo.get('content',''))}")
+        result = await loop.run_in_executor(None, ikas_graphql, mutation, variables)
+        logger.info(f"BC SEO Push result: {result}")
+        
         await db.brand_category_seo.update_one(
             {"entity_id": entity_id, "entity_type": entity_type},
             {"$set": {"status": "pushed", "pushed_at": datetime.now(timezone.utc).isoformat()}}
