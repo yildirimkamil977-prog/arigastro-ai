@@ -181,9 +181,9 @@ async def scrape_google_serp_tr(keyword: str) -> list:
         return []
     
     # Convert Turkish chars to ASCII for ScraperAPI compatibility
-    ascii_keyword = keyword
-    for tr_char, ascii_char in [("ı","i"),("İ","I"),("ş","s"),("Ş","S"),("ğ","g"),("Ğ","G"),("ü","u"),("Ü","U"),("ö","o"),("Ö","O"),("ç","c"),("Ç","C")]:
-        ascii_keyword = ascii_keyword.replace(tr_char, ascii_char)
+    TR_TO_ASCII = str.maketrans("ıİşŞğĞüÜöÖçÇ", "iIsSgGuUoOcC")
+    ascii_keyword = keyword.translate(TR_TO_ASCII)
+    logger.info(f"SERP query: original='{keyword}' -> ascii='{ascii_keyword}'")
     
     try:
         params = {
@@ -195,13 +195,16 @@ async def scrape_google_serp_tr(keyword: str) -> list:
         }
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get("https://api.scraperapi.com/structured/google/search", params=params)
+            logger.info(f"SERP API response: status={resp.status_code}")
             if resp.status_code != 200:
                 logger.warning(f"SERP structured API returned {resp.status_code}, falling back to HTML scrape")
                 return await _scrape_google_serp_html(keyword)
             data = resp.json()
 
         results = []
-        for item in data.get("organic_results", []):
+        organic = data.get("organic_results", [])
+        logger.info(f"SERP API organic_results count: {len(organic)}")
+        for item in organic:
             url = item.get("link", "")
             title = item.get("title", "")
             snippet = item.get("snippet", "")
