@@ -299,11 +299,15 @@ HEDEF: "{name}" {entity_label}si için Google'da 1. sırada yer alacak, rakipler
 4. **{name} Seçerken Dikkat Edilmesi Gerekenler** [GORSEL_3]
 5. **Neden Arıgastro'yu Tercih Etmelisiniz?**
 6. **Sıkça Sorulan Sorular** (en az 5 soru-cevap) [GORSEL_4]
-7. **Sonuç / CTA**
+7. **Kapanış** (satın almaya yönlendiren kapanış paragrafı — başlıkta ASLA "CTA", "Call to Action" gibi İngilizce/pazarlama jargonu KULLANMA)
 
 ### Ürün İsimleri (ÇOK KRİTİK):
 - ASLA uydurma ürün isimleri YAZMA
 - Sadece verilen gerçek ürün isimlerini kullan
+
+### YASAKLI KELİMELER (başlıklarda ASLA kullanma):
+- CTA, Call to Action, FAQ, SEO, KPI gibi İngilizce/teknik terimler
+- Başlıklar sade, doğal Türkçe olmalı
 
 ### Liste ve Tablo:
 - Ürün özelliklerini <ul><li> listeleriyle göster

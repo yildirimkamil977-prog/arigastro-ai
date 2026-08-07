@@ -3782,7 +3782,6 @@ async def push_bc_seo(request: Request, user: dict = Depends(get_current_user)):
 
         variables = {"input": {
             "id": entity_id,
-            "description": seo.get("content", "")[:32000],
             "metaData": {
                 "pageTitle": seo.get("title", "")[:256],
                 "description": seo.get("description_meta", "")[:320],
@@ -3919,7 +3918,7 @@ async def run_bulk_bc_seo(entity_type: str, username: str):
                     mutation = "mutation UpdateCategory($input: UpdateCategoryInput!) { updateCategory(input: $input) { id } }"
                 else:
                     mutation = "mutation UpdateProductBrand($input: UpdateProductBrandInput!) { updateProductBrand(input: $input) { id } }"
-                variables = {"input": {"id": eid, "description": content_result.get("content", "")[:32000], "metaData": {"pageTitle": content_result.get("title", "")[:256], "description": content_result.get("description", "")[:320]}}}
+                variables = {"input": {"id": eid, "metaData": {"pageTitle": content_result.get("title", "")[:256], "description": content_result.get("description", "")[:320]}}}
                 await loop.run_in_executor(None, ikas_graphql, mutation, variables)
                 await db.brand_category_seo.update_one({"entity_id": eid, "entity_type": entity_type}, {"$set": {"status": "pushed", "pushed_at": datetime.now(timezone.utc).isoformat()}})
                 pushed += 1
