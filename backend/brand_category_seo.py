@@ -160,11 +160,16 @@ async def scrape_google_serp_tr(keyword: str) -> list:
     import httpx
     if not SCRAPERAPI_KEY:
         return []
+    
+    # Convert Turkish chars to ASCII for ScraperAPI compatibility
+    ascii_keyword = keyword
+    for tr_char, ascii_char in [("ı","i"),("İ","I"),("ş","s"),("Ş","S"),("ğ","g"),("Ğ","G"),("ü","u"),("Ü","U"),("ö","o"),("Ö","O"),("ç","c"),("Ç","C")]:
+        ascii_keyword = ascii_keyword.replace(tr_char, ascii_char)
+    
     try:
-        # Use ScraperAPI's structured Google Search endpoint for reliable JSON results
         params = {
             "api_key": SCRAPERAPI_KEY,
-            "query": keyword,
+            "query": ascii_keyword,
             "country_code": "tr",
             "tld": "com.tr",
             "num": "10",
@@ -183,6 +188,8 @@ async def scrape_google_serp_tr(keyword: str) -> list:
             snippet = item.get("snippet", "")
             if url and title:
                 results.append({"title": title, "url": url, "description": snippet})
+        
+        logger.info(f"SERP structured results for '{keyword}': {len(results)} found")
         return results
     except Exception as e:
         logger.error(f"SERP structured error: {e}, falling back to HTML scrape")
@@ -368,7 +375,7 @@ HEDEF: "{name}" {entity_label}si icin Google'da 1. sirada yer alacak, rakiplerde
 - MUTLAKA "Arigastro" kelimesini icermeli (genellikle " | Arigastro" seklinde sonda)
 - MUTLAKA "{name}" anahtar kelimesini icermeli
 - ASLA "Avantajlari" kelimesini title'da KULLANMA
-- Title MAKSIMUM 55 karakter olmali (bosluklar dahil)
+- Title MAKSIMUM 60 karakter olmali (bosluklar dahil)
 - Kisa ve net ol, devrik veya yarim cumle YAZMA
 - Rakip sitelerin title'larindan esinlen ama daha iyi yaz
 
@@ -437,7 +444,7 @@ HEDEF: "{name}" {entity_label}si icin Google'da 1. sirada yer alacak, rakiplerde
 {{"title": "...", "description": "...", "content": "<h2>...</h2><p>...</p>...", "generation_notes": "Bu icerigi hazirlarken su analizleri yaptim: ..."}}
 
 ONEMLI HATIRLATMA:
-- title MAKSIMUM 55 karakter (bosluklar dahil)
+- title MAKSIMUM 60 karakter (bosluklar dahil)
 - description MAKSIMUM 150 karakter (bosluklar dahil)
 - Her ikisi de TAM CUMLE olmali, ASLA devrik veya yarim birakma
 - Title'da "Avantajlari" kelimesi YASAK
@@ -498,18 +505,20 @@ ONEMLI HATIRLATMA:
         else:
             result = {"title": f"{name} Modelleri ve Fiyatlari | Arigastro", "description": "", "content": clean}
 
-    # Enforce title length (max 55 chars)
+    # Enforce title length (max 60 chars to avoid broken titles)
     title = result.get("title", "")
-    if len(title) > 55:
-        # Try to shorten while keeping "| Arigastro"
+    if len(title) > 60:
         if "| Arigastro" in title:
             prefix = title.split("| Arigastro")[0].strip()
-            # Trim prefix to fit
-            while len(f"{prefix} | Arigastro") > 55 and " " in prefix:
-                prefix = prefix.rsplit(" ", 1)[0]
+            while len(f"{prefix} | Arigastro") > 60 and " " in prefix:
+                prefix = prefix.rsplit(" ", 1)[0].strip()
+            # Remove dangling conjunctions
+            for conj in ["ve", "ile", "veya", ",", "-"]:
+                if prefix.endswith(conj):
+                    prefix = prefix[:-len(conj)].strip()
             title = f"{prefix} | Arigastro"
         else:
-            title = title[:52] + "..."
+            title = title[:57] + "..."
     result["title"] = title
 
     # Enforce description length (max 150 chars)
