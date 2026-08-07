@@ -23,8 +23,29 @@ async def get_product_images_from_site(product_names: list, entity_name: str = "
     import httpx
     from bs4 import BeautifulSoup
 
-    EXCLUDE_WORDS = ["logo", "qr kod", "qr code", "arigato", "favicon", "icon", "banner", "slider", "payment", "cargo", "kargo", "whatsapp"]
+    EXCLUDE_WORDS = ["logo", "qr kod", "qr code", "arigato", "favicon", "icon", "banner", "slider", "payment", "cargo", "kargo", "whatsapp", "freeship"]
     images = []
+
+    def _is_product_image(src: str, alt: str) -> bool:
+        """Check if an image is a product image (not logo/theme)."""
+        if not src:
+            return False
+        # Must be from İkas CDN
+        if "cdn.myikas.com/images/" not in src:
+            return False
+        # Exclude theme images (logos, banners)
+        if "theme-images" in src:
+            return False
+        # Exclude by alt text
+        alt_lower = alt.lower() if alt else ""
+        if any(ex in alt_lower for ex in EXCLUDE_WORDS):
+            return False
+        if any(ex in src.lower() for ex in EXCLUDE_WORDS):
+            return False
+        # Must have meaningful alt text (product name)
+        if len(alt) < 10:
+            return False
+        return True
 
     try:
         # Strategy 1: Scrape the category page via ScraperAPI
@@ -44,14 +65,9 @@ async def get_product_images_from_site(product_names: list, entity_name: str = "
                 for img in all_imgs:
                     src = img.get("src", "") or img.get("data-src", "")
                     alt = (img.get("alt", "") or "").strip()
-                    if not src or "theme-images" not in src:
-                        continue
-                    if any(ex in alt.lower() for ex in EXCLUDE_WORDS):
-                        continue
-                    if any(ex in src.lower() for ex in EXCLUDE_WORDS):
-                        continue
-                    if len(alt) > 5 and src not in [i["url"] for i in images]:
-                        images.append({"url": src, "alt": alt, "product_name": alt})
+                    if _is_product_image(src, alt):
+                        if src not in [i["url"] for i in images]:
+                            images.append({"url": src, "alt": alt, "product_name": alt})
                     if len(images) >= 4:
                         break
 
@@ -73,7 +89,7 @@ async def get_product_images_from_site(product_names: list, entity_name: str = "
                     if resp.status_code == 200:
                         soup = BeautifulSoup(resp.text, "html.parser")
                         og = soup.find("meta", property="og:image")
-                        if og and og.get("content") and "theme-images" in og["content"]:
+                        if og and og.get("content") and "cdn.myikas.com" in og["content"] and "theme-images" not in og["content"]:
                             src = og["content"]
                             if src not in [i["url"] for i in images]:
                                 images.append({"url": src, "alt": name, "product_name": name})
@@ -81,7 +97,7 @@ async def get_product_images_from_site(product_names: list, entity_name: str = "
                         for img in soup.find_all("img"):
                             src = img.get("src", "")
                             alt = img.get("alt", "")
-                            if "theme-images" in src and not any(ex in alt.lower() for ex in EXCLUDE_WORDS) and len(alt) > 5:
+                            if _is_product_image(src, alt):
                                 if src not in [i["url"] for i in images]:
                                     images.append({"url": src, "alt": alt, "product_name": name})
                                     break
@@ -103,7 +119,7 @@ async def get_product_images_from_site(product_names: list, entity_name: str = "
                     for img in soup.find_all("img"):
                         src = img.get("src", "")
                         alt = (img.get("alt", "") or "").strip()
-                        if "theme-images" in src and not any(ex in alt.lower() for ex in EXCLUDE_WORDS) and len(alt) > 5:
+                        if _is_product_image(src, alt):
                             if src not in [i["url"] for i in images]:
                                 images.append({"url": src, "alt": alt, "product_name": alt})
                                 break
