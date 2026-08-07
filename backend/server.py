@@ -3741,6 +3741,29 @@ async def generate_bc_seo(request: Request, user: dict = Depends(get_current_use
         }
     }
 
+
+def _clean_html_for_ikas(html_content: str) -> str:
+    """Clean HTML content for İkas WYSIWYG editor compatibility."""
+    import re
+    # Remove <img> tags (İkas editor doesn't handle external images well)
+    content = re.sub(r'<img[^>]*/?>', '', html_content)
+    # Remove style attributes
+    content = re.sub(r'\s+style="[^"]*"', '', content)
+    # Remove <table> structures — convert to simple lists
+    content = re.sub(r'<table[^>]*>', '', content)
+    content = re.sub(r'</table>', '', content)
+    content = re.sub(r'<thead[^>]*>.*?</thead>', '', content, flags=re.DOTALL)
+    content = re.sub(r'<tbody[^>]*>', '', content)
+    content = re.sub(r'</tbody>', '', content)
+    content = re.sub(r'<tr[^>]*>', '', content)
+    content = re.sub(r'</tr>', '', content)
+    content = re.sub(r'<th[^>]*>(.*?)</th>', r'<strong>\1</strong> ', content)
+    content = re.sub(r'<td[^>]*>(.*?)</td>', r'\1 ', content)
+    # Clean up extra whitespace
+    content = re.sub(r'\n\s*\n\s*\n', '\n\n', content)
+    return content.strip()
+
+
 @api_router.post("/ikas/bc-seo/push")
 async def push_bc_seo(request: Request, user: dict = Depends(get_current_user)):
     """Push generated SEO content to İkas."""
@@ -3761,7 +3784,7 @@ async def push_bc_seo(request: Request, user: dict = Depends(get_current_user)):
 
         variables = {"input": {
             "id": entity_id,
-            "description": seo.get("content", "")[:32000],
+            "description": _clean_html_for_ikas(seo.get("content", ""))[:32000],
             "metaData": {
                 "pageTitle": seo.get("title", "")[:256],
                 "description": seo.get("description_meta", "")[:320],
@@ -3899,7 +3922,7 @@ async def run_bulk_bc_seo(entity_type: str, username: str):
                     mutation = "mutation UpdateCategory($input: UpdateCategoryInput!) { updateCategory(input: $input) { id } }"
                 else:
                     mutation = "mutation UpdateProductBrand($input: UpdateProductBrandInput!) { updateProductBrand(input: $input) { id } }"
-                variables = {"input": {"id": eid, "description": content_result.get("content", "")[:32000], "metaData": {"pageTitle": content_result.get("title", "")[:256], "description": content_result.get("description", "")[:320]}}}
+                variables = {"input": {"id": eid, "description": _clean_html_for_ikas(content_result.get("content", ""))[:32000], "metaData": {"pageTitle": content_result.get("title", "")[:256], "description": content_result.get("description", "")[:320]}}}
                 await loop.run_in_executor(None, ikas_graphql, mutation, variables)
                 await db.brand_category_seo.update_one({"entity_id": eid, "entity_type": entity_type}, {"$set": {"status": "pushed", "pushed_at": datetime.now(timezone.utc).isoformat()}})
                 pushed += 1
