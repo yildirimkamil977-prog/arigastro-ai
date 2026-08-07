@@ -3595,7 +3595,7 @@ async def get_keyword_analyses(keyword: str = None, limit: int = 20, user: dict 
 
 # ============ BRAND & CATEGORY SEO ENDPOINTS ============
 
-from brand_category_seo import analyze_competitors, generate_content, build_image_tag
+from brand_category_seo import analyze_competitors, generate_content, build_image_tag, get_product_images
 
 @api_router.get("/ikas/categories")
 async def list_ikas_categories(user: dict = Depends(get_current_user)):
@@ -3656,20 +3656,18 @@ async def generate_bc_seo(request: Request, user: dict = Depends(get_current_use
     our_site_data = {}
     slug = name.lower().replace(" ", "-").replace("ı", "i").replace("ö", "o").replace("ü", "u").replace("ş", "s").replace("ç", "c").replace("ğ", "g")
     our_url = f"https://arigastro.com/{slug}"
-    from brand_category_seo import scrape_url_basic
-    our_page = await scrape_url_basic(our_url)
+    from brand_category_seo import _scrape_url_sync
+    loop = asyncio.get_event_loop()
+    our_page = await loop.run_in_executor(None, _scrape_url_sync, our_url)
     if "error" not in our_page:
         our_site_data = {"url": our_url, "body_excerpt": our_page.get("body_text", "")[:1000]}
 
     # 3. Get product images by scraping site
-    from brand_category_seo import get_product_images_from_site
-    loop = asyncio.get_event_loop()
     product_images = []
     try:
-        # Get product names from İkas
         prods = await loop.run_in_executor(None, ikas_graphql, f'{{ listProduct(search: "{name[:50]}", pagination: {{page:1, limit:6}}) {{ data {{ name }} }} }}', None)
         prod_names = [p["name"] for p in prods.get("listProduct", {}).get("data", [])[:6]]
-        product_images = await get_product_images_from_site(prod_names, entity_name=name)
+        product_images = await get_product_images(prod_names, entity_name=name)
     except Exception as e:
         logger.warning(f"Product images fetch error: {e}")
 
@@ -3784,7 +3782,7 @@ async def push_bc_seo(request: Request, user: dict = Depends(get_current_user)):
 
         variables = {"input": {
             "id": entity_id,
-            "description": _clean_html_for_ikas(seo.get("content", ""))[:32000],
+            "description": seo.get("content", "")[:32000],
             "metaData": {
                 "pageTitle": seo.get("title", "")[:256],
                 "description": seo.get("description_meta", "")[:320],
@@ -3868,8 +3866,8 @@ async def run_bulk_bc_seo(entity_type: str, username: str):
 
                 # Get our site data
                 slug = ename.lower().replace(" ", "-").replace("ı", "i").replace("ö", "o").replace("ü", "u").replace("ş", "s").replace("ç", "c").replace("ğ", "g")
-                from brand_category_seo import scrape_url_basic
-                our_page = await scrape_url_basic(f"https://arigastro.com/{slug}")
+                from brand_category_seo import _scrape_url_sync
+                our_page = await loop.run_in_executor(None, _scrape_url_sync, f"https://arigastro.com/{slug}")
                 our_site_data = {}
                 if "error" not in our_page:
                     our_site_data = {"url": f"https://arigastro.com/{slug}", "body_excerpt": our_page.get("body_text", "")[:1000]}
@@ -3879,8 +3877,7 @@ async def run_bulk_bc_seo(entity_type: str, username: str):
                 try:
                     prods = await loop.run_in_executor(None, ikas_graphql, f'{{ listProduct(search: "{ename[:50]}", pagination: {{page:1, limit:6}}) {{ data {{ name }} }} }}', None)
                     prod_names = [p["name"] for p in prods.get("listProduct", {}).get("data", [])[:6]]
-                    from brand_category_seo import get_product_images_from_site
-                    product_images = await get_product_images_from_site(prod_names, entity_name=ename)
+                    product_images = await get_product_images(prod_names, entity_name=ename)
                 except Exception:
                     pass
 
@@ -3922,7 +3919,7 @@ async def run_bulk_bc_seo(entity_type: str, username: str):
                     mutation = "mutation UpdateCategory($input: UpdateCategoryInput!) { updateCategory(input: $input) { id } }"
                 else:
                     mutation = "mutation UpdateProductBrand($input: UpdateProductBrandInput!) { updateProductBrand(input: $input) { id } }"
-                variables = {"input": {"id": eid, "description": _clean_html_for_ikas(content_result.get("content", ""))[:32000], "metaData": {"pageTitle": content_result.get("title", "")[:256], "description": content_result.get("description", "")[:320]}}}
+                variables = {"input": {"id": eid, "description": content_result.get("content", "")[:32000], "metaData": {"pageTitle": content_result.get("title", "")[:256], "description": content_result.get("description", "")[:320]}}}
                 await loop.run_in_executor(None, ikas_graphql, mutation, variables)
                 await db.brand_category_seo.update_one({"entity_id": eid, "entity_type": entity_type}, {"$set": {"status": "pushed", "pushed_at": datetime.now(timezone.utc).isoformat()}})
                 pushed += 1
