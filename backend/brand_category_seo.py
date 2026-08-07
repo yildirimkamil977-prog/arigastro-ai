@@ -249,8 +249,8 @@ async def analyze_competitors(name: str, entity_type: str = "category") -> dict:
     our_result = [r for r in serp_results if "arigastro" in r.get("url", "")]
 
     scraped = []
-    for comp in competitors[:8]:
-        if len(scraped) >= 5:
+    for comp in competitors[:6]:
+        if len(scraped) >= 3:
             break
         page_data = await scrape_url_basic(comp["url"])
         if "error" not in page_data:

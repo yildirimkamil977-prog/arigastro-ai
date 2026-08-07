@@ -13,6 +13,7 @@ export default function BrandCategorySeoPage() {
   const [brandCount, setBrandCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(null);
+  const [genProgress, setGenProgress] = useState(null);
   const [pushing, setPushing] = useState(null);
   const [analysisModal, setAnalysisModal] = useState(null);
   const [bulkStatus, setBulkStatus] = useState(null);
@@ -52,16 +53,30 @@ export default function BrandCategorySeoPage() {
 
   const generateSingle = async (id, name) => {
     setGenerating(id);
+    const steps = [
+      "Google'da rakip analizi yapiliyor...",
+      "Rakip siteleri taraniyor...",
+      "Arigastro urun gorselleri aliniyor...",
+      "AI icerik uretiyor...",
+      "Sonuclar kaydediliyor..."
+    ];
+    let stepIdx = 0;
+    setGenProgress({ name, step: steps[0], stepIdx: 0, total: steps.length });
+    const timer = setInterval(() => {
+      stepIdx = Math.min(stepIdx + 1, steps.length - 1);
+      setGenProgress(prev => prev ? { ...prev, step: steps[stepIdx], stepIdx } : null);
+    }, 25000);
     try {
       const res = await fetch(`${API}/api/ikas/bc-seo/generate`, {
         method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
         body: JSON.stringify({ type: tab, id, name }),
       });
+      clearInterval(timer);
       if (!res.ok) { const e = await res.json(); throw new Error(e.detail); }
       toast.success(`"${name}" icin SEO icerigi uretildi`);
       fetchItems();
-    } catch (e) { toast.error("Hata: " + e.message); }
-    finally { setGenerating(null); }
+    } catch (e) { clearInterval(timer); toast.error("Hata: " + e.message); }
+    finally { setGenerating(null); setGenProgress(null); }
   };
 
   const pushSingle = async (id, name) => {
@@ -239,6 +254,41 @@ export default function BrandCategorySeoPage() {
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {/* Generation Progress Overlay */}
+      {genProgress && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-5">
+            <div className="flex items-center gap-3">
+              <div className="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center">
+                <Brain className="h-5 w-5 text-blue-600 animate-pulse" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">SEO Icerigi Uretiliyor</h3>
+                <p className="text-sm text-slate-500">{genProgress.name}</p>
+              </div>
+            </div>
+            <div className="space-y-3">
+              {["Google'da rakip analizi yapiliyor...", "Rakip siteleri taraniyor...", "Arigastro urun gorselleri aliniyor...", "AI icerik uretiyor...", "Sonuclar kaydediliyor..."].map((step, i) => (
+                <div key={i} className={`flex items-center gap-3 transition-all duration-500 ${i <= genProgress.stepIdx ? "opacity-100" : "opacity-30"}`}>
+                  {i < genProgress.stepIdx ? (
+                    <CheckCircle2 className="h-5 w-5 text-emerald-500 flex-shrink-0" />
+                  ) : i === genProgress.stepIdx ? (
+                    <Loader2 className="h-5 w-5 text-blue-500 animate-spin flex-shrink-0" />
+                  ) : (
+                    <div className="h-5 w-5 rounded-full border-2 border-slate-200 flex-shrink-0" />
+                  )}
+                  <span className={`text-sm ${i <= genProgress.stepIdx ? "text-slate-800 font-medium" : "text-slate-400"}`}>{step}</span>
+                </div>
+              ))}
+            </div>
+            <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+              <div className="h-2 bg-blue-500 rounded-full transition-all duration-1000 ease-out" style={{ width: `${((genProgress.stepIdx + 1) / genProgress.total) * 100}%` }} />
+            </div>
+            <p className="text-xs text-slate-400 text-center">Bu islem 2-4 dakika surebilir. Lutfen sayfayi kapatmayin.</p>
+          </div>
+        </div>
       )}
 
       {/* Analysis Modal */}
