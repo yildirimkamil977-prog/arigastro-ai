@@ -3667,8 +3667,14 @@ async def generate_bc_seo(request: Request, user: dict = Depends(get_current_use
     real_products = []
     real_brands = []
     try:
-        prods = await loop.run_in_executor(None, ikas_graphql, f'{{ listProduct(search: "{name[:50]}", pagination: {{page:1, limit:20}}) {{ data {{ name brand {{ name }} }} }} }}', None)
-        prod_data = prods.get("listProduct", {}).get("data", [])[:20]
+        # Try full name first, then shorter terms
+        search_terms = [name[:50], " ".join(name.split()[:2]), name.split()[0]]
+        prod_data = []
+        for term in search_terms:
+            prods = await loop.run_in_executor(None, ikas_graphql, f'{{ listProduct(search: "{term}", pagination: {{page:1, limit:20}}) {{ data {{ name brand {{ name }} }} }} }}', None)
+            prod_data = prods.get("listProduct", {}).get("data", [])[:20]
+            if prod_data:
+                break
         real_products = [p["name"] for p in prod_data]
         real_brands = list(set(p["brand"]["name"] for p in prod_data if p.get("brand") and p["brand"].get("name")))
         prod_names = real_products[:6]
