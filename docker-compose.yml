@@ -5,8 +5,6 @@ services:
     restart: always
     volumes:
       - mongo_data:/data/db
-    ports:
-      - "27017:27017"
 
   backend:
     build: ./backend
