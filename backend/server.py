@@ -3662,14 +3662,20 @@ async def generate_bc_seo(request: Request, user: dict = Depends(get_current_use
     if "error" not in our_page:
         our_site_data = {"url": our_url, "body_excerpt": our_page.get("body_text", "")[:1000]}
 
-    # 3. Get product images by scraping site
+    # 3. Get REAL product data from İkas (names + brands)
     product_images = []
+    real_products = []
+    real_brands = []
     try:
-        prods = await loop.run_in_executor(None, ikas_graphql, f'{{ listProduct(search: "{name[:50]}", pagination: {{page:1, limit:6}}) {{ data {{ name }} }} }}', None)
-        prod_names = [p["name"] for p in prods.get("listProduct", {}).get("data", [])[:6]]
+        prods = await loop.run_in_executor(None, ikas_graphql, f'{{ listProduct(search: "{name[:50]}", pagination: {{page:1, limit:20}}) {{ data {{ name brand {{ name }} }} }} }}', None)
+        prod_data = prods.get("listProduct", {}).get("data", [])[:20]
+        real_products = [p["name"] for p in prod_data]
+        real_brands = list(set(p["brand"]["name"] for p in prod_data if p.get("brand") and p["brand"].get("name")))
+        prod_names = real_products[:6]
         product_images = await get_product_images(prod_names, entity_name=name)
+        logger.info(f"İkas products for '{name}': {len(real_products)} products, {len(real_brands)} brands, {len(product_images)} images")
     except Exception as e:
-        logger.warning(f"Product images fetch error: {e}")
+        logger.warning(f"Product data fetch error: {e}")
 
     # 4. Build internal links data
     internal_links = None
@@ -3693,7 +3699,7 @@ async def generate_bc_seo(request: Request, user: dict = Depends(get_current_use
         }
 
     # 5. Generate content
-    result = await generate_content(name, entity_type, entity_id, analysis, product_images[:3], our_site_data, openai_key, internal_links)
+    result = await generate_content(name, entity_type, entity_id, analysis, product_images[:4], our_site_data, openai_key, internal_links, real_products, real_brands)
 
     # 5. Save to DB
     doc = {
@@ -3872,11 +3878,16 @@ async def run_bulk_bc_seo(entity_type: str, username: str):
                 if "error" not in our_page:
                     our_site_data = {"url": f"https://arigastro.com/{slug}", "body_excerpt": our_page.get("body_text", "")[:1000]}
 
-                # Get product images by scraping site
+                # Get product images and REAL product data
                 product_images = []
+                bulk_real_products = []
+                bulk_real_brands = []
                 try:
-                    prods = await loop.run_in_executor(None, ikas_graphql, f'{{ listProduct(search: "{ename[:50]}", pagination: {{page:1, limit:6}}) {{ data {{ name }} }} }}', None)
-                    prod_names = [p["name"] for p in prods.get("listProduct", {}).get("data", [])[:6]]
+                    prods = await loop.run_in_executor(None, ikas_graphql, f'{{ listProduct(search: "{ename[:50]}", pagination: {{page:1, limit:20}}) {{ data {{ name brand {{ name }} }} }} }}', None)
+                    prod_data = prods.get("listProduct", {}).get("data", [])[:20]
+                    bulk_real_products = [p["name"] for p in prod_data]
+                    bulk_real_brands = list(set(p["brand"]["name"] for p in prod_data if p.get("brand") and p["brand"].get("name")))
+                    prod_names = bulk_real_products[:6]
                     product_images = await get_product_images(prod_names, entity_name=ename)
                 except Exception:
                     pass
@@ -3895,7 +3906,7 @@ async def run_bulk_bc_seo(entity_type: str, username: str):
                     bulk_internal_links = {"children": ch, "siblings": sibs, "parent_name": ent_map.get(pid, {}).get("name") if pid else None}
 
                 # Generate content
-                content_result = await generate_content(ename, entity_type, eid, analysis, product_images[:3], our_site_data, openai_key, bulk_internal_links)
+                content_result = await generate_content(ename, entity_type, eid, analysis, product_images[:4], our_site_data, openai_key, bulk_internal_links, bulk_real_products, bulk_real_brands)
 
                 # Save
                 doc = {
