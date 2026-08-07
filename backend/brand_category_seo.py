@@ -39,7 +39,9 @@ async def get_product_images_from_site(product_names: list, entity_name: str = "
                 resp = await client.get(api_url)
             if resp.status_code == 200:
                 soup = BeautifulSoup(resp.text, "html.parser")
-                for img in soup.find_all("img"):
+                all_imgs = soup.find_all("img")
+                logger.info(f"Category page {cat_url}: found {len(all_imgs)} total images")
+                for img in all_imgs:
                     src = img.get("src", "") or img.get("data-src", "")
                     alt = (img.get("alt", "") or "").strip()
                     if not src or "theme-images" not in src:
@@ -111,6 +113,7 @@ async def get_product_images_from_site(product_names: list, entity_name: str = "
     except Exception as e:
         logger.warning(f"Product image scrape error: {e}")
 
+    logger.info(f"Product images found for '{entity_name}': {len(images)} images")
     return images
 
 
@@ -256,9 +259,13 @@ async def analyze_competitors(name: str, entity_type: str = "category") -> dict:
     our_result = [r for r in serp_results if "arigastro" in r.get("url", "")]
 
     scraped = []
-    for comp in competitors[:6]:
-        if len(scraped) >= 3:
+    excluded_domains = ["sahibinden.com", "hepsiburada.com", "trendyol.com", "n11.com", "gittigidiyor.com"]
+    for comp in competitors[:10]:
+        if len(scraped) >= 5:
             break
+        comp_url = comp.get("url", "")
+        if any(domain in comp_url for domain in excluded_domains):
+            continue
         page_data = await scrape_url_basic(comp["url"])
         if "error" not in page_data:
             page_data["serp_title"] = comp.get("title", "")
@@ -357,98 +364,100 @@ async def generate_content(
 
     # Build title examples based on type
     if entity_type == "brand":
-        title_example = f'"{name} Endustriyel Mutfak Urunleri | Arigastro"'
-        title_format_rule = f'Marka title formati: "{{Marka Adi}} Endustriyel Mutfak Urunleri | Arigastro" veya "{{Marka Adi}} Urunleri ve Fiyatlari | Arigastro"'
+        title_example = f'"{name} Endüstriyel Mutfak Ürünleri | Arıgastro"'
+        title_format_rule = f'Marka title formatı: "{{Marka Adı}} Endüstriyel Mutfak Ürünleri | Arıgastro" veya "{{Marka Adı}} Ürünleri ve Fiyatları | Arıgastro"'
     else:
-        title_example = f'"{name} Modelleri ve Fiyatlari | Arigastro"'
-        title_format_rule = f'Kategori title formati: "{{Kategori Adi}} Modelleri ve Fiyatlari | Arigastro"'
+        title_example = f'"{name} Modelleri ve Fiyatları | Arıgastro"'
+        title_format_rule = f'Kategori title formatı: "{{Kategori Adı}} Modelleri ve Fiyatları | Arıgastro"'
 
-    system_prompt = f"""Sen Turkiye'nin en iyi e-ticaret SEO icerik yazarisin. Arigastro.com (endustriyel mutfak ekipmanlari) icin profesyonel {entity_label} sayfasi icerigi uretiyorsun.
+    system_prompt = f"""Sen Türkiye'nin en iyi e-ticaret SEO içerik yazarısın. Arıgastro.com (endüstriyel mutfak ekipmanları) için profesyonel {entity_label} sayfası içeriği üretiyorsun.
 
-HEDEF: "{name}" {entity_label}si icin Google'da 1. sirada yer alacak, rakiplerden daha kapsamli ve kaliteli bir sayfa icerigi yaz.
+HEDEF: "{name}" {entity_label}si için Google'da 1. sırada yer alacak, rakiplerden daha kapsamlı ve kaliteli bir sayfa içeriği yaz.
 
-## KESIN KURALLAR:
+## KESİN KURALLAR:
 
-### TITLE KURALLARI (COK KRITIK — MUTLAKA UY):
+### TITLE KURALLARI (ÇOK KRİTİK — MUTLAKA UY):
 - {title_format_rule}
-- Ornek: {title_example}
-- MUTLAKA "Arigastro" kelimesini icermeli (genellikle " | Arigastro" seklinde sonda)
-- MUTLAKA "{name}" anahtar kelimesini icermeli
-- ASLA "Avantajlari" kelimesini title'da KULLANMA
-- Title MAKSIMUM 60 karakter olmali (bosluklar dahil)
-- Kisa ve net ol, devrik veya yarim cumle YAZMA
-- Rakip sitelerin title'larindan esinlen ama daha iyi yaz
+- Örnek: {title_example}
+- MUTLAKA "Arıgastro" kelimesini içermeli (genellikle " | Arıgastro" şeklinde sonda)
+- MUTLAKA "{name}" anahtar kelimesini içermeli
+- ASLA "Avantajları" kelimesini title'da KULLANMA
+- Title MAKSİMUM 60 karakter olmalı (boşluklar dahil)
+- Kısa ve net ol, devrik veya yarım cümle YAZMA
+- Rakip sitelerin title'larından esinlen ama daha iyi yaz
 
-### DESCRIPTION KURALLARI (COK KRITIK — MUTLAKA UY):
-- MUTLAKA "Arigastro" kelimesini icermeli
-- MUTLAKA "{name}" anahtar kelimesini icermeli
-- MAKSIMUM 150 karakter olmali (bosluklar dahil)
-- Tam ve anlamli bir cumle olmali, ASLA yarim cumle birakma
-- Avantaj vurgulayan, tiklamaya tesvik eden aciklama
-- Karakter limitine uygunlugu kontrol et, gerekirse cumleyi kisalt ama ASLA devrik birakma
+### DESCRIPTION KURALLARI (ÇOK KRİTİK — MUTLAKA UY):
+- MUTLAKA "Arıgastro" kelimesini içermeli
+- MUTLAKA "{name}" anahtar kelimesini içermeli
+- MAKSİMUM 150 karakter olmalı (boşluklar dahil)
+- Tam ve anlamlı bir cümle olmalı, ASLA yarım cümle bırakma
+- Avantaj vurgulayan, tıklamaya teşvik eden açıklama
+- Karakter limitine uygunluğu kontrol et, gerekirse cümleyi kısalt ama ASLA devrik bırakma
 
-### Icerik Yapisi:
-- H1 KULLANMA (Ikas zaten {entity_label} adini H1 olarak gosteriyor)
-- H2 ve H3 basliklari dogal, SEO uyumlu ve ilgi cekici olsun
-- "Bar Buzdolaplari Kategorisi" gibi robotik basliklar YAZMA. Yerine "Profesyonel Bar Buzdolaplari ile Isletmenizi Donatin" gibi dogal basliklar yaz
+### İçerik Yapısı:
+- H1 KULLANMA (İkas zaten {entity_label} adını H1 olarak gösteriyor)
+- H2 ve H3 başlıkları doğal, SEO uyumlu ve ilgi çekici olsun
+- "Bar Buzdolapları Kategorisi" gibi robotik başlıklar YAZMA. Yerine "Profesyonel Bar Buzdolapları ile İşletmenizi Donatın" gibi doğal başlıklar yaz
 - En az {target_words} kelime yaz
-- Anahtar kelime yogunlugu yaklasik %{target_density}
-- HTML formatinda yaz: <h2>, <h3>, <p>, <ul>, <li>, <strong>, <a href>, <table> etiketleri kullan
+- Anahtar kelime yoğunluğu yaklaşık %{target_density}
+- HTML formatında yaz: <h2>, <h3>, <p>, <ul>, <li>, <strong>, <a href>, <table> etiketleri kullan
 
-### GORSEL YERLESIMI (COK KRITIK):
-- Icerigin uygun yerlerine [GORSEL_1], [GORSEL_2], [GORSEL_3], [GORSEL_4] placeholder'larini KOY
-- Her gorsel bir paragrafin altina veya urun cesitleri anlatilirken yerlestirilmeli
-- En az 3 gorsel placeholder'i icerikte MUTLAKA olmali
-- Gorselleri bolumlere dagit — hepsini bir yere yigma
+### GÖRSEL YERLEŞİMİ (ÇOK KRİTİK):
+- İçeriğin uygun yerlerine [GORSEL_1], [GORSEL_2], [GORSEL_3], [GORSEL_4] placeholder'larını KOY
+- Her görsel bir paragrafın altına veya ürün çeşitleri anlatılırken yerleştirilmeli
+- En az 3 görsel placeholder'ı içerikte MUTLAKA olmalı
+- Görselleri bölümlere dağıt — hepsini bir yere yığma
 
-### Ton ve Uslup:
-- Profesyonel, kurumsal ama sicak ve guven veren
-- E-ticaret odakli — okuyucuyu satin almaya tesvik et
-- Gercek bilgi ver, genel/bos laflar yazma
+### Ton ve Üslup:
+- Profesyonel, kurumsal ama sıcak ve güven veren
+- E-ticaret odaklı — okuyucuyu satın almaya teşvik et
+- Gerçek bilgi ver, genel/boş laflar yazma
 - Fiyat bilgisi YAZMA
 
-### Icerik Bolumleri (hepsini dahil et):
-1. **Giris paragrafi** (2-3 cumle, anahtar kelimeyi dogal sekilde iceren guclu acilis)
+### İçerik Bölümleri (hepsini dahil et):
+1. **Giriş paragrafı** (2-3 cümle, anahtar kelimeyi doğal şekilde içeren güçlü açılış)
    [GORSEL_1]
-2. **{name} Nedir / Neden Onemlidir?** (sektorel bilgi, kullanim alanlari)
-3. **Arigastro'da {name} Cesitleri** (urun gruplarini, ozelliklerini anlat — sitede bulunan gercek urun isimlerini kullan)
+2. **{name} Nedir / Neden Önemlidir?** (sektörel bilgi, kullanım alanları)
+3. **Arıgastro'da {name} Çeşitleri** (ürün gruplarını, özelliklerini anlat — sitede bulunan gerçek ürün isimlerini kullan)
    [GORSEL_2]
-4. **{name} Secerken Dikkat Edilmesi Gerekenler** (kapasite, malzeme, enerji verimliligi vb. satin alma rehberi)
+4. **{name} Seçerken Dikkat Edilmesi Gerekenler** (kapasite, malzeme, enerji verimliliği vb. satın alma rehberi)
    [GORSEL_3]
-5. **Neden Arigastro'yu Tercih Etmelisiniz?** (ucretsiz kargo, guvenli odeme, genis urun yelpazesi, teknik destek, kurumsal guvenilirlik)
-6. **Sikca Sorulan Sorular** (en az 5 soru-cevap, <h3> ile baslikladir)
+5. **Neden Arıgastro'yu Tercih Etmelisiniz?** (ücretsiz kargo, güvenli ödeme, geniş ürün yelpazesi, teknik destek, kurumsal güvenilirlik)
+6. **Sıkça Sorulan Sorular** (en az 5 soru-cevap, <h3> ile başlıklandır)
    [GORSEL_4]
-7. **Sonuc / CTA** (satin almaya yonlendiren kapanis paragrafi)
+7. **Sonuç / CTA** (satın almaya yönlendiren kapanış paragrafı)
 
-### Urun Isimleri (COK KRITIK):
-- ASLA "Model X1", "Model Y2", "Model Z3" gibi uydurma urun isimleri YAZMA
-- Sadece asagida sana verilen gercek urun isimlerini kullan
-- Eger urun ismi verilmemisse, genel ifadeler kullan: "farkli kapasite secenekleri", "cesitli modeller" gibi
-- Hicbir zaman var olmayan bir urun modeli uydurma
+### Ürün İsimleri (ÇOK KRİTİK):
+- ASLA "Model X1", "Model Y2", "Model Z3" gibi uydurma ürün isimleri YAZMA
+- Sadece aşağıda sana verilen gerçek ürün isimlerini kullan
+- Eğer ürün ismi verilmemişse, genel ifadeler kullan: "farklı kapasite seçenekleri", "çeşitli modeller" gibi
+- Hiçbir zaman var olmayan bir ürün modeli uydurma
 
-### Baslik Formati:
-- Basliklar kesinlikle <h2> ve <h3> HTML etiketleri icinde olmali
-- Alt basliklar icin <h3> kullan
+### Başlık Formatı:
+- Başlıklar kesinlikle <h2> ve <h3> HTML etiketleri içinde olmalı
+- Alt başlıklar için <h3> kullan
 
 ### Rakip Analiz Notu:
-- Icerikte AYRI olarak, yaptigin analizle ilgili kisa bir not hazirla
-- Hangi siteleri inceledigin, title ve description'da nelere dikkat ettigin, rakiplerden hangi noktalari referans aldigin
-- Bu notu "generation_notes" alaninda JSON'da ver
+- İçerikte AYRI olarak, yaptığın analizle ilgili kısa bir not hazırla
+- Hangi siteleri incelediğin, title ve description'da nelere dikkat ettiğin, rakiplerden hangi noktaları referans aldığın
+- Bu notu "generation_notes" alanında JSON'da ver
 
 ### Liste ve Tablo:
-- Urun ozelliklerini veya karsilastirmalari <ul><li> listeleriyle goster
-- {'Uygunsa ozellik karsilastirma tablosu ekle (<table> formatinda)' if use_tables else 'Gerekirse ozellik listesi kullan'}
+- Ürün özelliklerini veya karşılaştırmaları <ul><li> listeleriyle göster
+- {'Uygunsa özellik karşılaştırma tablosu ekle (<table> formatında)' if use_tables else 'Gerekirse özellik listesi kullan'}
 {links_instruction}
 
-## YANITINI KESINLIKLE SADECE BU JSON FORMATINDA VER:
-{{"title": "...", "description": "...", "content": "<h2>...</h2><p>...</p>...", "generation_notes": "Bu icerigi hazirlarken su analizleri yaptim: ..."}}
+## YANITINI KESİNLİKLE SADECE BU JSON FORMATINDA VER:
+{{"title": "...", "description": "...", "content": "<h2>...</h2><p>...</p>...", "generation_notes": "Bu içeriği hazırlarken şu analizleri yaptım: ..."}}
 
-ONEMLI HATIRLATMA:
-- title MAKSIMUM 60 karakter (bosluklar dahil)
-- description MAKSIMUM 150 karakter (bosluklar dahil)
-- Her ikisi de TAM CUMLE olmali, ASLA devrik veya yarim birakma
-- Title'da "Avantajlari" kelimesi YASAK
-- Icerikte en az 3 adet [GORSEL_X] placeholder'i olmali"""
+ÖNEMLİ HATIRLATMA:
+- title MAKSİMUM 60 karakter (boşluklar dahil)
+- description MAKSİMUM 150 karakter (boşluklar dahil)
+- Her ikisi de TAM CÜMLE olmalı, ASLA devrik veya yarım bırakma
+- Title'da "Avantajları" kelimesi YASAK
+- İçerikte en az 3 adet [GORSEL_X] placeholder'ı olmalı
+- Tüm içerik TÜRKÇE karakterlerle yazılmalı (ı, ö, ü, ş, ç, ğ, İ, Ö, Ü, Ş, Ç, Ğ)
+- "Arıgastro" her zaman "Arıgastro" olarak yazılmalı (ı harfi ile), ASLA "Arigastro" yazma"""
 
     chat = LlmChat(
         api_key=openai_key,
@@ -461,30 +470,30 @@ ONEMLI HATIRLATMA:
 
     # Our site data
     if our_site_data and our_site_data.get("body_excerpt"):
-        data_text += f"## ARIGASTRO SITESINDEKI MEVCUT BILGILER:\n{our_site_data.get('body_excerpt','')[:800]}\n\n"
+        data_text += f"## ARIGASTRO SİTESİNDEKİ MEVCUT BİLGİLER:\n{our_site_data.get('body_excerpt','')[:800]}\n\n"
 
     # Product info
     if product_images:
-        data_text += f"## ARIGASTRO'DAKI URUNLER (gorselleri yaziya eklenecek):\n"
+        data_text += f"## ARIGASTRO'DAKİ ÜRÜNLER (görselleri yazıya eklenecek):\n"
         for img in product_images[:4]:
             data_text += f"- {img.get('product_name','')}\n"
         data_text += "\n"
 
     # Competitor analysis
     if analysis.get("competitors_scraped", 0) > 0:
-        data_text += f"## RAKIP ANALIZI ({analysis['competitors_scraped']} site analiz edildi):\n"
-        data_text += f"Ortalama kelime sayisi: {avg.get('word_count',0)}\nOrtalama AK yogunlugu: %{avg.get('keyword_density',0)}\n\n"
-        data_text += "### Rakip Title'lari:\n"
+        data_text += f"## RAKİP ANALİZİ ({analysis['competitors_scraped']} site analiz edildi):\n"
+        data_text += f"Ortalama kelime sayısı: {avg.get('word_count',0)}\nOrtalama AK yoğunluğu: %{avg.get('keyword_density',0)}\n\n"
+        data_text += "### Rakip Title'ları:\n"
         for t in analysis.get("competitor_titles", []):
             data_text += f"- {t}\n"
-        data_text += "\n### Rakip Description'lari:\n"
+        data_text += "\n### Rakip Description'ları:\n"
         for d in analysis.get("competitor_descriptions", []):
             data_text += f"- {d}\n"
-        data_text += "\n### Rakiplerde kullanilan H2 basliklari:\n"
+        data_text += "\n### Rakiplerde kullanılan H2 başlıkları:\n"
         for h in analysis.get("competitor_h2s", [])[:10]:
             data_text += f"- {h}\n"
     else:
-        data_text += "## NOT: Rakip analizi yapilamadi. Endustriyel mutfak sektoru bilgine dayanarak en profesyonel icerigi uret.\n"
+        data_text += "## NOT: Rakip analizi yapılamadı. Endüstriyel mutfak sektörü bilgine dayanarak en profesyonel içeriği üret.\n"
 
     response_text = await chat.send_message(UserMessage(text=data_text))
 
@@ -501,28 +510,33 @@ ONEMLI HATIRLATMA:
             try:
                 result = json.loads(match.group())
             except:
-                result = {"title": f"{name} Modelleri ve Fiyatlari | Arigastro", "description": "", "content": clean}
+                result = {"title": f"{name} Modelleri ve Fiyatları | Arıgastro", "description": "", "content": clean}
         else:
-            result = {"title": f"{name} Modelleri ve Fiyatlari | Arigastro", "description": "", "content": clean}
+            result = {"title": f"{name} Modelleri ve Fiyatları | Arıgastro", "description": "", "content": clean}
 
     # Enforce title length (max 60 chars to avoid broken titles)
     title = result.get("title", "")
     if len(title) > 60:
-        if "| Arigastro" in title:
-            prefix = title.split("| Arigastro")[0].strip()
-            while len(f"{prefix} | Arigastro") > 60 and " " in prefix:
+        if "| Arıgastro" in title:
+            prefix = title.split("| Arıgastro")[0].strip()
+            while len(f"{prefix} | Arıgastro") > 60 and " " in prefix:
                 prefix = prefix.rsplit(" ", 1)[0].strip()
             # Remove dangling conjunctions
             for conj in ["ve", "ile", "veya", ",", "-"]:
                 if prefix.endswith(conj):
                     prefix = prefix[:-len(conj)].strip()
-            title = f"{prefix} | Arigastro"
+            title = f"{prefix} | Arıgastro"
+        elif "| Arigastro" in title:
+            title = title.replace("| Arigastro", "| Arıgastro")
         else:
             title = title[:57] + "..."
+    # Ensure Arıgastro is always spelled correctly
+    title = title.replace("Arigastro", "Arıgastro")
     result["title"] = title
 
     # Enforce description length (max 150 chars)
     desc = result.get("description", "")
+    desc = desc.replace("Arigastro", "Arıgastro")
     if len(desc) > 150:
         # Find last complete sentence within limit
         truncated = desc[:150]
@@ -538,6 +552,8 @@ ONEMLI HATIRLATMA:
 
     # Replace image placeholders with actual HTML
     content = result.get("content", "")
+    # Fix Arigastro → Arıgastro in content
+    content = content.replace("Arigastro", "Arıgastro")
     for i, img_data in enumerate(image_html_parts):
         placeholder = f"[GORSEL_{i+1}]"
         content = content.replace(placeholder, img_data["html"])
