@@ -298,20 +298,25 @@ async def generate_content(
 - H1 KULLANMA (İkas zaten başlığı gösteriyor)
 - <h2>, <h3>, <p>, <ul>, <li>, <strong>, <a href> kullan
 - Başlıklarda İngilizce/jargon terimler YASAK (CTA, FAQ, SEO vb.)
+- "Giriş", "Kapanış", "Sonuç", "Sonuç / CTA" gibi genel başlıklar ASLA KULLANMA
+- Her başlık konuya özel, doğal ve SEO uyumlu olmalı
+- Örnek YANLIŞ: <h2>Giriş</h2> — Örnek DOĞRU: <h2>Profesyonel {name} ile İşletmenizi Güçlendirin</h2>
 
-### GÖRSEL YERLEŞİMİ:
-- İçeriğe [GORSEL_1], [GORSEL_2], [GORSEL_3], [GORSEL_4] placeholder'larını yerleştir
-- Görselleri farklı bölümlere dağıt
-- En az 3 placeholder ZORUNLU
+### GÖRSEL YERLEŞİMİ (ÇOK KRİTİK — ATLAMAYIN):
+- İçeriğin HTML kodunda şu placeholder'ları MUTLAKA yerleştir: [GORSEL_1], [GORSEL_2], [GORSEL_3], [GORSEL_4]
+- Her placeholder kendi satırında, bir paragraftan sonra olmalı
+- Örnek kullanım: <p>...paragraf metni...</p>\n[GORSEL_1]\n<h2>...sonraki başlık...</h2>
+- MINIMUM 3 placeholder olmalı — eksik bırakma
+- Placeholder'ları farklı bölümlere dağıt
 
-### İÇERİK YAPISI (her bölüm detaylı olsun):
-1. Giriş paragrafı (güçlü açılış, {name} anahtar kelimesini doğal kullan) — ardından [GORSEL_1]
-2. {name} Nedir ve Neden Önemlidir? (kullanım alanları, sektörel önem, teknik detaylar)
-3. Arıgastro'da {name} Çeşitleri (GERÇEK ürün isimlerini kullanarak detaylı anlatım) — ardından [GORSEL_2]
-4. {name} Seçerken Dikkat Edilmesi Gerekenler (kapasite, malzeme, enerji, boyut — pratik rehber) — ardından [GORSEL_3]
-5. Neden Arıgastro'yu Tercih Etmelisiniz? (ücretsiz kargo, güvenli ödeme, teknik destek, garanti)
-6. Sıkça Sorulan Sorular (en az 5 soru, <h3> başlıklı, gerçek bilgili cevaplar) — ardından [GORSEL_4]
-7. Kapanış (satın almaya teşvik, ASLA "CTA" kelimesi kullanma)
+### İÇERİK YAPISI (her bölüm detaylı olsun — başlıklar doğal ve SEO uyumlu):
+1. Açılış paragrafı ({name} anahtar kelimesiyle güçlü başlangıç, başlık YOK — direkt paragrafla başla) ardından:\n[GORSEL_1]
+2. <h2>{name} Nedir ve Neden Önemlidir?</h2> — kullanım alanları, sektörel önem
+3. <h2>Arıgastro'da {name} Çeşitleri</h2> — GERÇEK ürün isimleriyle anlatım, ardından:\n[GORSEL_2]
+4. <h2>{name} Seçerken Dikkat Edilmesi Gerekenler</h2> — kapasite, malzeme, enerji rehberi, ardından:\n[GORSEL_3]
+5. <h2>Neden Arıgastro'yu Tercih Etmelisiniz?</h2> — ücretsiz kargo, güvenli ödeme, teknik destek
+6. <h2>Sıkça Sorulan Sorular</h2> — en az 5 soru (<h3> başlıklı), ardından:\n[GORSEL_4]
+7. Kapanış paragrafı (başlık YOK — sadece satın almaya teşvik eden paragraf)
 {'8. Ürün karşılaştırma tablosu (<table> formatında)' if use_tables else ''}
 {links_instruction}
 
@@ -323,8 +328,9 @@ async def generate_content(
 - SADECE verilen gerçek ürün ve markaları kullan
 - Tüm metin TÜRKÇE karakterlerle (ı, ö, ü, ş, ç, ğ)
 - "Arıgastro" her zaman ı harfi ile
-- En az 3 [GORSEL_X] placeholder'ı
-- Her bölüm detaylı ve özgün bilgi içermeli"""
+- İçerikte EN AZ 3 adet [GORSEL_1], [GORSEL_2], [GORSEL_3] placeholder'ı OLMALI — bunları unutma
+- "Giriş", "Kapanış", "Sonuç" gibi başlıklar KULLANMA — başlıklar konuya özel olsun
+- İlk bölümde ve son bölümde başlık kullanma, direkt paragrafla başla/bitir"""
 
     chat = LlmChat(
         api_key=openai_key,
@@ -432,9 +438,35 @@ async def generate_content(
     # Replace image placeholders
     content = result.get("content", "")
     content = content.replace("Arigastro", "Arıgastro")
+    
+    # Count placeholders found in AI output
+    placeholders_in_content = len(re.findall(r'\[GORSEL_\d+\]', content))
+    logger.info(f"Image replacement: {len(image_html_parts)} images available, {placeholders_in_content} placeholders in content")
+    
     for i, img_data in enumerate(image_html_parts):
         placeholder = f"[GORSEL_{i+1}]"
-        content = content.replace(placeholder, img_data["html"])
+        if placeholder in content:
+            content = content.replace(placeholder, img_data["html"])
+            logger.info(f"Replaced {placeholder} with image: {img_data['product_name'][:40]}")
+        else:
+            logger.warning(f"{placeholder} NOT found in content — injecting after first <h2>")
+    
+    # If AI didn't place any placeholders, inject images manually
+    if placeholders_in_content == 0 and image_html_parts:
+        logger.info("No placeholders found — injecting images manually into content")
+        h2_positions = [m.end() for m in re.finditer(r'</h2>', content)]
+        for i, img_data in enumerate(image_html_parts[:min(len(h2_positions), 4)]):
+            if i < len(h2_positions):
+                # Find end of next paragraph after h2
+                next_p_end = content.find("</p>", h2_positions[i])
+                if next_p_end != -1:
+                    insert_pos = next_p_end + 4
+                    content = content[:insert_pos] + "\n" + img_data["html"] + "\n" + content[insert_pos:]
+                    # Update positions for subsequent inserts
+                    offset = len(img_data["html"]) + 2
+                    h2_positions = [p + offset if p > insert_pos else p for p in h2_positions]
+    
+    # Remove remaining unreplaced placeholders
     content = re.sub(r'\[GORSEL_\d+\]', '', content)
 
     result["content"] = content
