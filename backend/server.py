@@ -1834,6 +1834,61 @@ async def generate_seo(slug: str, user: dict = Depends(get_current_user)):
     except Exception as e:
         logger.warning(f"Product page scrape for SEO failed: {e}")
     
+    # Step 2: Scrape competitor sites for technical specifications
+    competitor_specs = ""
+    import requests as req_sync
+    COMPETITOR_SITES = [
+        {"domain": "mutfak10.com", "base": "https://www.mutfak10.com"},
+        {"domain": "cafemarkt.com", "base": "https://www.cafemarkt.com"},
+        {"domain": "mutbex.com", "base": "https://www.mutbex.com"},
+    ]
+    if SCRAPERAPI_KEY:
+        product_name_for_search = product.get('name', '')
+        # Build search-friendly product name (shorter for better results)
+        search_name = " ".join(product_name_for_search.split()[:6])
+        search_name_ascii = search_name.translate(str.maketrans("ıİşŞğĞüÜöÖçÇ", "iIsSgGuUoOcC"))
+        
+        for site in COMPETITOR_SITES:
+            if competitor_specs:
+                break
+            try:
+                # Search Google for this product on the competitor site
+                search_query = f"site:{site['domain']} {search_name_ascii}"
+                resp = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: req_sync.get("https://api.scraperapi.com/structured/google/search", params={
+                        "api_key": SCRAPERAPI_KEY, "query": search_query, "country_code": "tr", "tld": "com.tr", "num": "3"
+                    }, timeout=20)
+                )
+                if resp.status_code == 200:
+                    serp_data = resp.json()
+                    results = serp_data.get("organic_results", [])
+                    if results:
+                        comp_url = results[0].get("link", "")
+                        if comp_url:
+                            # Scrape the competitor product page
+                            page_resp = await asyncio.get_event_loop().run_in_executor(
+                                None,
+                                lambda url=comp_url: req_sync.get("http://api.scraperapi.com", params={
+                                    "api_key": SCRAPERAPI_KEY, "url": url, "render": "true"
+                                }, timeout=25)
+                            )
+                            if page_resp.status_code == 200:
+                                comp_soup = BeautifulSoup(page_resp.text, "html.parser")
+                                comp_text = comp_soup.get_text(" ", strip=True)
+                                # Extract technical specs
+                                for kw in ["Teknik Özellik", "Teknik Detay", "Teknik Bilgi", "Özellikler"]:
+                                    idx = comp_text.find(kw)
+                                    if idx != -1:
+                                        competitor_specs = f"RAKİP SİTEDEN ({site['domain']}) ALINAN TEKNİK BİLGİLER:\n{comp_text[idx:idx+2000]}"
+                                        logger.info(f"Competitor specs found from {site['domain']}: {len(competitor_specs)} chars")
+                                        break
+                                if not competitor_specs and len(comp_text) > 200:
+                                    competitor_specs = f"RAKİP SİTEDEN ({site['domain']}) ALINAN BİLGİLER:\n{comp_text[:2000]}"
+                                    logger.info(f"Competitor page content from {site['domain']}: {len(competitor_specs)} chars")
+            except Exception as e:
+                logger.warning(f"Competitor scrape from {site['domain']} failed: {e}")
+    
     try:
         from emergentintegrations.llm.chat import LlmChat, UserMessage
         import json
@@ -1886,16 +1941,17 @@ Yanıtını tam olarak şu JSON formatında ver:
 
 {product_page_data}
 
+{competitor_specs}
+
 HEDEF KİTLE: Restoran sahipleri, otel mutfak yöneticileri, catering firmaları, pastane ve fırın işletmecileri
 
 ÖNEMLİ TALİMATLAR:
 - Ürün açıklaması MİNİMUM 500 KELİME olmalı
-- Teknik Detaylar bölümünde TÜM alanları doldur: Boyutlar, Güç (kW/W), Voltaj, Malzeme, Kapasite, Ağırlık vb.
-- ASLA "Bilgi verilmedi" veya "Belirtilmemiş" YAZMA — sektör bilgine dayanarak gerçekçi değerler yaz
-- Ürün adında boyut bilgisi varsa (örn: 50x50 cm) bunu teknik detaylarda kullan
-- Endüstriyel mutfak ekipmanı olarak güç genellikle kW, voltaj 220V veya 380V'tur
+- Teknik Detaylar bölümünde rakip siteden alınan TÜM teknik bilgileri kullan (voltaj, güç, kapasite, boyut, ağırlık vb.)
+- ASLA "Bilgi verilmedi" veya "Belirtilmemiş" YAZMA
 - FİYAT RAKAMI YAZMA
 - Sıkça Sorulan Sorular en az 3 soru içermeli, cevaplar detaylı olsun
+- Teknik bilgiler rakip siteden alınıyorsa, bunları doğru şekilde birebir kullan
 
 JSON formatında yanıt ver."""
 
