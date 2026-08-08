@@ -1663,7 +1663,7 @@ async def run_generate_all_seo():
     try:
         # Get all active products
         products = []
-        async for p in db.products.find({"inactive": {"$ne": True}}, {"_id": 0, "slug": 1, "name": 1, "title": 1, "brand": 1, "category": 1, "price": 1}):
+        async for p in db.products.find({"inactive": {"$ne": True}}, {"_id": 0, "slug": 1, "name": 1, "title": 1, "brand": 1, "category": 1, "category_path": 1, "price": 1, "url": 1, "gtin": 1}):
             products.append(p)
 
         total = len(products)
@@ -1684,52 +1684,12 @@ async def run_generate_all_seo():
                 existing_seo = await db.seo_content.find_one({"product_slug": slug})
                 
                 if not existing_seo or not existing_seo.get("product_description"):
-                    # Generate SEO content
                     if not openai_key:
                         failed += 1
                         continue
 
-                    from emergentintegrations.llm.chat import LlmChat, UserMessage
-                    
-                    chat = LlmChat(
-                        api_key=openai_key,
-                        session_id=f"seo-all-{slug[:20]}-{uuid.uuid4().hex[:6]}",
-                        system_message="""Sen endüstriyel mutfak uzmanı bir SEO içerik yazarısın. Arıgastro.com için ürün açıklamaları yazıyorsun.
-
-Her ürün için üret:
-1. SEO başlığı (50-60 karakter, marka + ürün adı)
-2. Meta açıklama (max 150 karakter)
-3. Ürün açıklaması (min 500 kelime, markdown formatında, teknik detaylar dahil)
-
-KRİTİK: Teknik detaylarda ASLA "Bilgi verilmedi" YAZMA. Ürün adı ve sektör bilgine dayanarak gerçekçi teknik bilgiler yaz.
-FİYAT RAKAMI YAZMA.
-
-Yanıtını şu JSON formatında ver:
-{"seo_title": "...", "seo_description": "...", "product_description": "..."}"""
-                    ).with_model("openai", "gpt-4o")
-
-                    prompt = f"Ürün: {product_name}\nMarka: {product.get('brand', '')}\nKategori: {product.get('category', '')}\n\nTeknik detayları sektör standartlarına göre yaz. Boyut bilgisi ürün adında varsa kullan. ASLA 'Bilgi verilmedi' yazma."
-                    response_text = await chat.send_message(UserMessage(text=prompt))
-                    
-                    # Parse JSON response
-                    import json as json_mod
-                    clean = response_text.strip()
-                    if clean.startswith("```"):
-                        clean = clean.split("\n", 1)[1] if "\n" in clean else clean[3:]
-                        clean = clean.rsplit("```", 1)[0]
-                    seo_data = json_mod.loads(clean)
-                    
-                    desc = seo_data.get("product_description", "")
-                    seo_record = {
-                        "product_slug": slug,
-                        "product_name": product_name,
-                        "seo_title": seo_data.get("seo_title", ""),
-                        "seo_description": seo_data.get("seo_description", ""),
-                        "product_description": desc,
-                        "generated_at": datetime.now(timezone.utc).isoformat(),
-                        "status": "generated"
-                    }
-                    await db.seo_content.update_one({"product_slug": slug}, {"$set": seo_record}, upsert=True)
+                    # Use the SAME generation logic as single product SEO
+                    seo_record = await _generate_single_product_seo(product, openai_key)
                     generated += 1
                     existing_seo = seo_record
                 
@@ -1790,26 +1750,42 @@ async def generate_seo(slug: str, user: dict = Depends(get_current_user)):
     if not openai_key:
         raise HTTPException(status_code=500, detail="OpenAI API key not configured")
     
-    # Step 1: Scrape our own product page for technical specs and description
+    try:
+        seo_record = await _generate_single_product_seo(product, openai_key)
+        return seo_record
+    except Exception as e:
+        logger.error(f"SEO generation error: {e}")
+        raise HTTPException(status_code=500, detail=f"SEO generation failed: {str(e)}")
+
+
+async def _generate_single_product_seo(product: dict, openai_key: str) -> dict:
+    """Core SEO generation logic — used by both single and bulk generation."""
+    import requests as req_sync
+    import json
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+    
+    slug = product["slug"]
+    product_name = product.get("name") or product.get("title", slug)
+    brand = product.get("brand", "")
+    category = product.get("category_path", "") or product.get("category", "")
+    
+    # Step 1: Scrape our own product page for technical specs
     product_page_data = ""
     try:
         product_url = product.get("url", "")
         if product_url and SCRAPERAPI_KEY:
-            # Use ScraperAPI to bypass Cloudflare
             scraper_url = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={product_url}&render=true"
             async with httpx.AsyncClient(timeout=30.0) as http_client:
                 resp = await http_client.get(scraper_url)
                 if resp.status_code == 200:
                     page_soup = BeautifulSoup(resp.text, "html.parser")
                     page_text = page_soup.get_text(" ", strip=True)
-                    # Find technical specs section
                     specs_section = ""
                     for keyword in ["Teknik Özellik", "Teknik Detay", "Özellikler", "Tip:", "En (mm):", "Boy (mm):", "Kapasite", "Güç", "Voltaj", "Boyut"]:
                         idx = page_text.find(keyword)
                         if idx != -1:
                             specs_section = page_text[max(0, idx-50):idx+2000]
                             break
-                    # Also find product description
                     desc_section = ""
                     for keyword in ["Ürün Detayı", "Ürün Açıklama", "Açıklama"]:
                         idx = page_text.find(keyword)
@@ -1819,9 +1795,8 @@ async def generate_seo(slug: str, user: dict = Depends(get_current_user)):
                     product_page_data = f"MEVCUT ÜRÜN SAYFASI VERİLERİ:\n{specs_section}\n\n{desc_section}".strip()
                     if len(product_page_data) < 50:
                         product_page_data = f"SAYFA İÇERİĞİ:\n{page_text[:3000]}"
-                    logger.info(f"Product page scraped for SEO: {len(product_page_data)} chars")
+                    logger.info(f"Product page scraped for SEO ({slug}): {len(product_page_data)} chars")
         elif product_url:
-            # Fallback: direct access without ScraperAPI
             async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as http_client:
                 resp = await http_client.get(product_url, headers={
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -1832,32 +1807,29 @@ async def generate_seo(slug: str, user: dict = Depends(get_current_user)):
                     page_text = page_soup.get_text(" ", strip=True)
                     product_page_data = f"SAYFA İÇERİĞİ:\n{page_text[:3000]}"
     except Exception as e:
-        logger.warning(f"Product page scrape for SEO failed: {e}")
+        logger.warning(f"Product page scrape failed ({slug}): {e}")
     
     # Step 2: Scrape competitor sites for technical specifications
     competitor_specs = ""
-    import requests as req_sync
     COMPETITOR_SITES = [
-        {"domain": "mutfak10.com", "base": "https://www.mutfak10.com"},
-        {"domain": "cafemarkt.com", "base": "https://www.cafemarkt.com"},
-        {"domain": "mutbex.com", "base": "https://www.mutbex.com"},
+        {"domain": "mutfak10.com"},
+        {"domain": "cafemarkt.com"},
+        {"domain": "mutbex.com"},
     ]
     if SCRAPERAPI_KEY:
-        product_name_for_search = product.get('name', '')
-        # Build search-friendly product name (shorter for better results)
-        search_name = " ".join(product_name_for_search.split()[:6])
+        search_name = " ".join(product_name.split()[:6])
         search_name_ascii = search_name.translate(str.maketrans("ıİşŞğĞüÜöÖçÇ", "iIsSgGuUoOcC"))
         
         for site in COMPETITOR_SITES:
             if competitor_specs:
                 break
             try:
-                # Search Google for this product on the competitor site
                 search_query = f"site:{site['domain']} {search_name_ascii}"
-                resp = await asyncio.get_event_loop().run_in_executor(
+                loop = asyncio.get_event_loop()
+                resp = await loop.run_in_executor(
                     None,
-                    lambda: req_sync.get("https://api.scraperapi.com/structured/google/search", params={
-                        "api_key": SCRAPERAPI_KEY, "query": search_query, "country_code": "tr", "tld": "com.tr", "num": "3"
+                    lambda q=search_query: req_sync.get("https://api.scraperapi.com/structured/google/search", params={
+                        "api_key": SCRAPERAPI_KEY, "query": q, "country_code": "tr", "tld": "com.tr", "num": "3"
                     }, timeout=20)
                 )
                 if resp.status_code == 200:
@@ -1866,8 +1838,7 @@ async def generate_seo(slug: str, user: dict = Depends(get_current_user)):
                     if results:
                         comp_url = results[0].get("link", "")
                         if comp_url:
-                            # Scrape the competitor product page
-                            page_resp = await asyncio.get_event_loop().run_in_executor(
+                            page_resp = await loop.run_in_executor(
                                 None,
                                 lambda url=comp_url: req_sync.get("http://api.scraperapi.com", params={
                                     "api_key": SCRAPERAPI_KEY, "url": url, "render": "true"
@@ -1876,31 +1847,22 @@ async def generate_seo(slug: str, user: dict = Depends(get_current_user)):
                             if page_resp.status_code == 200:
                                 comp_soup = BeautifulSoup(page_resp.text, "html.parser")
                                 comp_text = comp_soup.get_text(" ", strip=True)
-                                # Extract technical specs
                                 for kw in ["Teknik Özellik", "Teknik Detay", "Teknik Bilgi", "Özellikler"]:
                                     idx = comp_text.find(kw)
                                     if idx != -1:
                                         competitor_specs = f"RAKİP SİTEDEN ({site['domain']}) ALINAN TEKNİK BİLGİLER:\n{comp_text[idx:idx+2000]}"
-                                        logger.info(f"Competitor specs found from {site['domain']}: {len(competitor_specs)} chars")
+                                        logger.info(f"Competitor specs from {site['domain']} for {slug}")
                                         break
                                 if not competitor_specs and len(comp_text) > 200:
                                     competitor_specs = f"RAKİP SİTEDEN ({site['domain']}) ALINAN BİLGİLER:\n{comp_text[:2000]}"
-                                    logger.info(f"Competitor page content from {site['domain']}: {len(competitor_specs)} chars")
             except Exception as e:
-                logger.warning(f"Competitor scrape from {site['domain']} failed: {e}")
+                logger.warning(f"Competitor scrape {site['domain']} for {slug}: {e}")
     
-    try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        import json
-        
-        product_name = product['name']
-        brand = product.get('brand', '')
-        category = product.get('category_path', '')
-        
-        chat = LlmChat(
-            api_key=openai_key,
-            session_id=f"seo-{slug}-{uuid.uuid4().hex[:8]}",
-            system_message="""Sen Türkiye'nin en deneyimli SEO ve endüstriyel mutfak uzmanısın. Arıgastro.com için çalışıyorsun.
+    # Step 3: Generate with AI
+    chat = LlmChat(
+        api_key=openai_key,
+        session_id=f"seo-{slug[:20]}-{uuid.uuid4().hex[:8]}",
+        system_message="""Sen Türkiye'nin en deneyimli SEO ve endüstriyel mutfak uzmanısın. Arıgastro.com için çalışıyorsun.
 
 GÖREV: Verilen ürün için Google'da üst sıralarda çıkacak, kapsamlı SEO içerikleri hazırla.
 
@@ -1918,8 +1880,8 @@ KESİN KURALLAR:
 
 TEKNİK DETAY KURALI (ÇOK KRİTİK):
 - ASLA "Bilgi verilmedi", "Bilgi mevcut değil", "Belirtilmemiş" gibi ifadeler YAZMA
-- Eğer teknik veri sana verilmemişse, ürün adındaki bilgilerden (boyut, kapasite vb.) ve endüstriyel mutfak sektörü bilginden yararlanarak GERÇEKÇE tahmin et
-- Örneğin "50x50 cm" boyutlu bir bulaşık makinesi için güç, voltaj, su tüketimi gibi bilgileri sektör standartlarına göre yaz
+- Rakip siteden gelen teknik bilgileri BİREBİR kullan
+- Eksik bilgileri sektör bilgine dayanarak gerçekçi tahmin et
 - Her teknik özellik alanını DOLDUR, boş bırakma
 
 4. Keyword Density: %1-%1.5 arasında.
@@ -1929,9 +1891,9 @@ TEKNİK DETAY KURALI (ÇOK KRİTİK):
 
 Yanıtını tam olarak şu JSON formatında ver:
 {"seo_title": "...", "seo_description": "...", "product_description": "..."}"""
-        ).with_model("openai", "gpt-4o")
-        
-        prompt = f"""Aşağıdaki ürün için kapsamlı SEO içerikleri hazırla:
+    ).with_model("openai", "gpt-4o")
+    
+    prompt = f"""Aşağıdaki ürün için kapsamlı SEO içerikleri hazırla:
 
 ÜRÜN BİLGİLERİ:
 - Ürün Adı: {product_name}
@@ -1947,53 +1909,47 @@ HEDEF KİTLE: Restoran sahipleri, otel mutfak yöneticileri, catering firmaları
 
 ÖNEMLİ TALİMATLAR:
 - Ürün açıklaması MİNİMUM 500 KELİME olmalı
-- Teknik Detaylar bölümünde rakip siteden alınan TÜM teknik bilgileri kullan (voltaj, güç, kapasite, boyut, ağırlık vb.)
+- Teknik Detaylar bölümünde rakip siteden alınan TÜM teknik bilgileri kullan
 - ASLA "Bilgi verilmedi" veya "Belirtilmemiş" YAZMA
 - FİYAT RAKAMI YAZMA
-- Sıkça Sorulan Sorular en az 3 soru içermeli, cevaplar detaylı olsun
-- Teknik bilgiler rakip siteden alınıyorsa, bunları doğru şekilde birebir kullan
+- Sıkça Sorulan Sorular en az 3 soru içermeli
 
 JSON formatında yanıt ver."""
 
-        response = await chat.send_message(UserMessage(text=prompt))
-        
-        response_text = response.strip()
-        if response_text.startswith("```"):
-            response_text = re.sub(r'^```(?:json)?\s*', '', response_text)
-            response_text = re.sub(r'\s*```$', '', response_text)
-        
-        seo_data = json.loads(response_text)
-        
-        desc = seo_data.get("product_description", "")
-        word_count = len(desc.split())
-        keyword_count = desc.lower().count(product_name.lower())
-        keyword_density = round((keyword_count / max(word_count, 1)) * 100, 1)
-        
-        seo_record = {
-            "product_slug": slug,
-            "product_name": product_name,
-            "seo_title": seo_data.get("seo_title", ""),
-            "seo_description": seo_data.get("seo_description", ""),
-            "product_description": desc,
-            "word_count": word_count,
-            "keyword_density": keyword_density,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "status": "draft"
-        }
-        
-        await db.seo_content.update_one(
-            {"product_slug": slug},
-            {"$set": seo_record},
-            upsert=True
-        )
-        
-        return seo_record
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON parse error in SEO generation: {e}, response: {response_text[:200]}")
-        raise HTTPException(status_code=500, detail="AI yanıtı parse edilemedi. Lütfen tekrar deneyin.")
-    except Exception as e:
-        logger.error(f"SEO generation error: {e}")
-        raise HTTPException(status_code=500, detail=f"SEO generation failed: {str(e)}")
+    response = await chat.send_message(UserMessage(text=prompt))
+    
+    response_text = response.strip()
+    if response_text.startswith("```"):
+        response_text = re.sub(r'^```(?:json)?\s*', '', response_text)
+        response_text = re.sub(r'\s*```$', '', response_text)
+    
+    seo_data = json.loads(response_text)
+    
+    desc = seo_data.get("product_description", "")
+    word_count = len(desc.split())
+    keyword_count = desc.lower().count(product_name.lower())
+    keyword_density = round((keyword_count / max(word_count, 1)) * 100, 1)
+    
+    seo_record = {
+        "product_slug": slug,
+        "product_name": product_name,
+        "seo_title": seo_data.get("seo_title", ""),
+        "seo_description": seo_data.get("seo_description", ""),
+        "product_description": desc,
+        "word_count": word_count,
+        "keyword_density": keyword_density,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "status": "draft"
+    }
+    
+    await db.seo_content.update_one(
+        {"product_slug": slug},
+        {"$set": seo_record},
+        upsert=True
+    )
+    
+    logger.info(f"SEO generated for {slug}: {word_count} words, {keyword_density}% density")
+    return seo_record
 
 @api_router.get("/seo/{slug}")
 async def get_seo_content(slug: str, user: dict = Depends(get_current_user)):
