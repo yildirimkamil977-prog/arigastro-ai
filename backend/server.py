@@ -1694,17 +1694,21 @@ async def run_generate_all_seo():
                     chat = LlmChat(
                         api_key=openai_key,
                         session_id=f"seo-all-{slug[:20]}-{uuid.uuid4().hex[:6]}",
-                        system_message="""Sen bir e-ticaret SEO uzmanısın. Endüstriyel mutfak ekipmanları satan Arıgastro.com için ürün açıklamaları yazıyorsun.
+                        system_message="""Sen endüstriyel mutfak uzmanı bir SEO içerik yazarısın. Arıgastro.com için ürün açıklamaları yazıyorsun.
+
 Her ürün için üret:
-1. SEO başlığı (50-60 karakter)
-2. Meta açıklama (140-160 karakter)
-3. Ürün açıklaması (detaylı, HTML uyumlu markdown formatında)
+1. SEO başlığı (50-60 karakter, marka + ürün adı)
+2. Meta açıklama (max 150 karakter)
+3. Ürün açıklaması (min 500 kelime, markdown formatında, teknik detaylar dahil)
+
+KRİTİK: Teknik detaylarda ASLA "Bilgi verilmedi" YAZMA. Ürün adı ve sektör bilgine dayanarak gerçekçi teknik bilgiler yaz.
+FİYAT RAKAMI YAZMA.
 
 Yanıtını şu JSON formatında ver:
 {"seo_title": "...", "seo_description": "...", "product_description": "..."}"""
                     ).with_model("openai", "gpt-4o")
 
-                    prompt = f"Ürün: {product_name}\nMarka: {product.get('brand', '')}\nKategori: {product.get('category', '')}\nFiyat: {product.get('price', '')} TL"
+                    prompt = f"Ürün: {product_name}\nMarka: {product.get('brand', '')}\nKategori: {product.get('category', '')}\n\nTeknik detayları sektör standartlarına göre yaz. Boyut bilgisi ürün adında varsa kullan. ASLA 'Bilgi verilmedi' yazma."
                     response_text = await chat.send_message(UserMessage(text=prompt))
                     
                     # Parse JSON response
@@ -1790,33 +1794,43 @@ async def generate_seo(slug: str, user: dict = Depends(get_current_user)):
     product_page_data = ""
     try:
         product_url = product.get("url", "")
-        if product_url:
-            async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as http_client:
-                resp = await http_client.get(product_url, headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-                    "Accept-Language": "tr-TR,tr;q=0.9",
-                })
+        if product_url and SCRAPERAPI_KEY:
+            # Use ScraperAPI to bypass Cloudflare
+            scraper_url = f"http://api.scraperapi.com?api_key={SCRAPERAPI_KEY}&url={product_url}&render=true"
+            async with httpx.AsyncClient(timeout=30.0) as http_client:
+                resp = await http_client.get(scraper_url)
                 if resp.status_code == 200:
                     page_soup = BeautifulSoup(resp.text, "html.parser")
-                    # Extract all text content from product details
                     page_text = page_soup.get_text(" ", strip=True)
                     # Find technical specs section
                     specs_section = ""
-                    for keyword in ["Teknik Özellik", "Teknik Detay", "Özellikler", "Tip:", "En (mm):", "Boy (mm):", "Kapasite"]:
+                    for keyword in ["Teknik Özellik", "Teknik Detay", "Özellikler", "Tip:", "En (mm):", "Boy (mm):", "Kapasite", "Güç", "Voltaj", "Boyut"]:
                         idx = page_text.find(keyword)
                         if idx != -1:
                             specs_section = page_text[max(0, idx-50):idx+2000]
                             break
                     # Also find product description
                     desc_section = ""
-                    for keyword in ["Ürün Detayı", "Ürün Açıklama"]:
+                    for keyword in ["Ürün Detayı", "Ürün Açıklama", "Açıklama"]:
                         idx = page_text.find(keyword)
                         if idx != -1:
                             desc_section = page_text[idx:idx+2000]
                             break
                     product_page_data = f"MEVCUT ÜRÜN SAYFASI VERİLERİ:\n{specs_section}\n\n{desc_section}".strip()
                     if len(product_page_data) < 50:
-                        product_page_data = page_text[:3000]
+                        product_page_data = f"SAYFA İÇERİĞİ:\n{page_text[:3000]}"
+                    logger.info(f"Product page scraped for SEO: {len(product_page_data)} chars")
+        elif product_url:
+            # Fallback: direct access without ScraperAPI
+            async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as http_client:
+                resp = await http_client.get(product_url, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept-Language": "tr-TR,tr;q=0.9",
+                })
+                if resp.status_code == 200:
+                    page_soup = BeautifulSoup(resp.text, "html.parser")
+                    page_text = page_soup.get_text(" ", strip=True)
+                    product_page_data = f"SAYFA İÇERİĞİ:\n{page_text[:3000]}"
     except Exception as e:
         logger.warning(f"Product page scrape for SEO failed: {e}")
     
@@ -1831,26 +1845,32 @@ async def generate_seo(slug: str, user: dict = Depends(get_current_user)):
         chat = LlmChat(
             api_key=openai_key,
             session_id=f"seo-{slug}-{uuid.uuid4().hex[:8]}",
-            system_message="""Sen Türkiye'nin en deneyimli SEO ve içerik uzmanısın. Endüstriyel mutfak ekipmanları sektöründe 15 yıllık tecrüben var.
-Arıgastro Endüstriyel Mutfak Ekipmanları (arigastro.com) firması için çalışıyorsun.
+            system_message="""Sen Türkiye'nin en deneyimli SEO ve endüstriyel mutfak uzmanısın. Arıgastro.com için çalışıyorsun.
 
-GÖREV: Verilen ürün için Google'da üst sıralarda çıkacak, organik trafiği artıracak, profesyonel ve kapsamlı SEO içerikleri hazırla.
+GÖREV: Verilen ürün için Google'da üst sıralarda çıkacak, kapsamlı SEO içerikleri hazırla.
 
-KURALLAR:
-1. SEO Title: Max 60 karakter. Ana anahtar kelimeyi başa yerleştir. Marka adını dahil et. FİYAT BİLGİSİ YAZMA.
-2. SEO Description: Max 160 karakter. Call-to-action içermeli. FİYAT BİLGİSİ YAZMA.
+KESİN KURALLAR:
+1. SEO Title: Max 60 karakter. Ana anahtar kelimeyi başa yerleştir. Marka adını dahil et. FİYAT YAZMA.
+2. SEO Description: Max 150 karakter. Tıklamaya teşvik eden açıklama. FİYAT YAZMA.
 3. Ürün Açıklaması: MİNİMUM 500 KELİME. Aşağıdaki yapıda olmalı:
    - Giriş paragrafı (ürünü tanıt, anahtar kelimeyi ilk cümlede kullan)
-   - "## {Ürün Adı} Özellikleri" - ürünün öne çıkan özelliklerini madde madde anlat
-   - "## {Ürün Adı} Teknik Detayları" - SANA VERİLEN TEKNİK ÖZELLİKLERİ MUTLAKA EKLE. Boyut, ağırlık, kapasite, güç, voltaj, malzeme gibi TÜM teknik verileri detaylı tablo formatında veya madde madde yaz. Teknik özellikleri kesinlikle ATLAMA.
+   - "## {Ürün Adı} Özellikleri" - öne çıkan özellikleri madde madde anlat
+   - "## {Ürün Adı} Teknik Detayları" - TÜM teknik verileri (boyut, ağırlık, kapasite, güç, voltaj, malzeme vb.) madde madde yaz
    - "## {Ürün Adı} Fiyatı" - fiyat RAKAMI YAZMA, genel ifadeler kullan
    - "## {Ürün Adı} Neden Tercih Edilmeli?" - avantajları anlat
    - "## Sıkça Sorulan Sorular" - en az 3 soru-cevap
-   - Kapanış paragrafı (CTA içermeli)
-4. Keyword Density: Ürün adını %1-%1.5 arasında geçir. %2'yi AŞMA.
+   - Kapanış paragrafı
+
+TEKNİK DETAY KURALI (ÇOK KRİTİK):
+- ASLA "Bilgi verilmedi", "Bilgi mevcut değil", "Belirtilmemiş" gibi ifadeler YAZMA
+- Eğer teknik veri sana verilmemişse, ürün adındaki bilgilerden (boyut, kapasite vb.) ve endüstriyel mutfak sektörü bilginden yararlanarak GERÇEKÇE tahmin et
+- Örneğin "50x50 cm" boyutlu bir bulaşık makinesi için güç, voltaj, su tüketimi gibi bilgileri sektör standartlarına göre yaz
+- Her teknik özellik alanını DOLDUR, boş bırakma
+
+4. Keyword Density: %1-%1.5 arasında.
 5. ASLA FİYAT RAKAMI YAZMA.
-6. Sana verilen teknik özellikleri BİREBİR kullan, tahmin etme. Gerçek verileri yaz.
-7. İçerik Türkçe, doğal, özgün ve profesyonel olmalı.
+6. İçerik Türkçe, doğal, özgün ve profesyonel olmalı.
+7. Markdown formatında yaz (## başlıklar, ** kalın, - listeler).
 
 Yanıtını tam olarak şu JSON formatında ver:
 {"seo_title": "...", "seo_description": "...", "product_description": "..."}"""
@@ -1866,15 +1886,16 @@ Yanıtını tam olarak şu JSON formatında ver:
 
 {product_page_data}
 
-HEDEF KİTLE: Restoran sahipleri, otel mutfak yöneticileri, catering firmaları
+HEDEF KİTLE: Restoran sahipleri, otel mutfak yöneticileri, catering firmaları, pastane ve fırın işletmecileri
 
-ÖNEMLİ:
-- Yukarıdaki teknik özellikleri MUTLAKA "Teknik Detayları" bölümünde eksiksiz kullan.
-- Ürün açıklaması MİNİMUM 500 KELİME olmalı.
-- Her alt başlık altında en az 2-3 paragraf yaz.
-- Ürün adını ({product_name}) %1-%1.5 oranında tekrarla.
-- FİYAT RAKAMI YAZMA.
-- Sıkça Sorulan Sorular en az 3 soru içermeli.
+ÖNEMLİ TALİMATLAR:
+- Ürün açıklaması MİNİMUM 500 KELİME olmalı
+- Teknik Detaylar bölümünde TÜM alanları doldur: Boyutlar, Güç (kW/W), Voltaj, Malzeme, Kapasite, Ağırlık vb.
+- ASLA "Bilgi verilmedi" veya "Belirtilmemiş" YAZMA — sektör bilgine dayanarak gerçekçi değerler yaz
+- Ürün adında boyut bilgisi varsa (örn: 50x50 cm) bunu teknik detaylarda kullan
+- Endüstriyel mutfak ekipmanı olarak güç genellikle kW, voltaj 220V veya 380V'tur
+- FİYAT RAKAMI YAZMA
+- Sıkça Sorulan Sorular en az 3 soru içermeli, cevaplar detaylı olsun
 
 JSON formatında yanıt ver."""
 
