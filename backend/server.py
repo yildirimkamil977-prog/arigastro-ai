@@ -1653,6 +1653,17 @@ async def generate_all_seo(request: Request, user: dict = Depends(get_current_us
     asyncio.create_task(run_generate_all_seo())
     return {"message": "Tum urunler icin SEO uretimi ve Ikas aktarimi baslatildi", "running": True}
 
+@api_router.post("/seo/generate-all-stop")
+async def stop_generate_all_seo(user: dict = Depends(get_current_user)):
+    """Stop the running bulk SEO generation."""
+    result = await db.system_status.update_one(
+        {"task": "generate_all_seo", "running": True},
+        {"$set": {"stop_requested": True}}
+    )
+    if result.modified_count > 0:
+        return {"message": "Durdurma istegi gonderildi. Mevcut urun tamamlandiktan sonra duracak."}
+    return {"message": "Calisan toplu uretim bulunamadi."}
+
 async def run_generate_all_seo():
     """Background task: generate SEO for products without it, then push all to İkas."""
     await db.system_status.update_one(
@@ -1676,6 +1687,12 @@ async def run_generate_all_seo():
         loop = asyncio.get_event_loop()
 
         for i, product in enumerate(products):
+            # Check for stop request
+            stop_check = await db.system_status.find_one({"task": "generate_all_seo"})
+            if stop_check and stop_check.get("stop_requested"):
+                logger.info(f"Generate-all stopped by user at {i}/{total}")
+                break
+            
             slug = product["slug"]
             product_name = product.get("name") or product.get("title", slug)
 
@@ -1716,7 +1733,7 @@ async def run_generate_all_seo():
             await asyncio.sleep(2)  # Rate limit
 
         await db.system_status.update_one({"task": "generate_all_seo"}, {"$set": {
-            "running": False, "completed_at": datetime.now(timezone.utc).isoformat(),
+            "running": False, "stop_requested": False, "completed_at": datetime.now(timezone.utc).isoformat(),
             "progress": total, "generated": generated, "pushed": pushed, "failed": failed,
         }})
         logger.info(f"Generate-all completed: {total} total, {generated} generated, {pushed} pushed, {failed} failed")

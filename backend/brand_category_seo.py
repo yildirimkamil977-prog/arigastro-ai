@@ -175,7 +175,8 @@ async def analyze_competitors(name: str, entity_type: str = "category") -> dict:
         our_page = await loop.run_in_executor(None, _scrape_url_sync, our_result[0]["url"])
 
     avg_word_count = round(sum(s.get("word_count", 0) for s in scraped) / max(len(scraped), 1)) if scraped else 800
-    avg_density = round(sum(s.get("keyword_density", 0) for s in scraped) / max(len(scraped), 1), 2) if scraped else 1.2
+    non_zero_densities = [s.get("keyword_density", 0) for s in scraped if s.get("keyword_density", 0) > 0]
+    avg_density = round(sum(non_zero_densities) / max(len(non_zero_densities), 1), 2) if non_zero_densities else 1.2
     uses_lists = sum(1 for s in scraped if s.get("has_lists")) if scraped else 3
     uses_tables = sum(1 for s in scraped if s.get("has_tables")) if scraped else 1
 
@@ -216,7 +217,7 @@ async def generate_content(
     from emergentintegrations.llm.chat import LlmChat, UserMessage
 
     avg = analysis.get("averages", {})
-    target_words = max(avg.get("word_count", 1000) + 300, 1000)
+    target_words = max(avg.get("word_count", 1200) + 300, 1200)
     target_density = avg.get("keyword_density", 1.2)
     use_tables = avg.get("uses_tables_pct", 0) > 30
 
@@ -266,14 +267,21 @@ async def generate_content(
 
     system_prompt = f"""Sen Türkiye'nin en deneyimli e-ticaret SEO içerik uzmanısın. Arıgastro.com (endüstriyel mutfak ekipmanları) için "{name}" {entity_label} sayfası üretiyorsun.
 
+## FİRMA BİLGİSİ:
+Arıgastro, endüstriyel mutfak ekipmanları satıcısıdır. Müşteri kitlesi: kafe, restoran, otel, kiralık villa, pizzacı, dönerci, pastane, fırın, catering firmaları ve toplu yemek üretim tesisleri gibi İŞLETMELERdir. Bireysel/ev kullanıcıları DEĞİL.
+
 ## MUTLAK KURALLAR:
 
 ### ÜRÜN VE MARKA BİLGİLERİ (EN KRİTİK KURAL):
 - Arıgastro'da satılan GERÇEK markalar YALNIZCA şunlardır: {brands_text if brands_text else 'Bilgi verilmedi — marka adı UYDURMA'}
 - ASLA Arıgastro'da OLMAYAN bir marka adı yazma (örn: Bosch, Siemens, Samsung gibi)
-- ASLA uydurma ürün modeli yazma (Model X1, ABC-200 gibi)
-- Sadece aşağıda "GERÇEK ÜRÜNLER" başlığı altında verilen ürün isimlerini kullanabilirsin
-- Marka veya ürün ismi verilmemişse, genel ifadeler kullan: "profesyonel modeller", "endüstriyel çözümler"
+- ASLA uydurma ürün modeli yazma
+- Marka/ürün ismi verilmemişse, genel ifadeler kullan
+
+### ÖDEME VE KARGO BİLGİLERİ (KRİTİK):
+- ASLA "kapıda ödeme", "taksit imkanı", "ücretsiz kargo" gibi belirli ödeme/kargo vaatleri YAZMA — bunların doğruluğunu bilemezsin
+- Bunun yerine şunu yaz: "Detaylı bilgi ve güncel kampanyalar için Arıgastro.com'u ziyaret edin"
+- Genel ifade kullan: "uygun ödeme seçenekleri", "hızlı teslimat"
 
 ### TITLE (MAKSİMUM 60 KARAKTER):
 - {title_format_rule}
@@ -285,52 +293,59 @@ async def generate_content(
 - "Arıgastro" ve "{name}" MUTLAKA olmalı
 - Tam cümle, yarım bırakma
 
-### İÇERİK KALİTESİ (ÇOK ÖNEMLİ):
-- MİNİMUM {target_words} kelime yaz — bu çok önemli, kısa yazı KABUL EDİLMEZ
+### İÇERİK KALİTESİ:
+- MİNİMUM {target_words} kelime — bu çok önemli, kısa yazı KABUL EDİLMEZ
 - Her bölüm en az 3-4 paragraf olmalı
 - Anahtar kelime yoğunluğu ~%{target_density}
 - Rakip sitelerden daha UZUN ve KAPSAMLI olmalı
-- Her paragraf özgün bilgi içermeli, tekrar yapma
-- Sektörel uzmanlık göster: kapasite hesaplamaları, enerji sınıfları, malzeme türleri, bakım ipuçları
-- E-ticaret odaklı: ürün karşılaştırmaları, seçim kriterleri, fiyat-performans analizi
+- E-ticaret ve işletme odaklı yaz — hedef kitle işletme sahipleri
 
 ### HTML YAPISI:
-- H1 KULLANMA (İkas zaten başlığı gösteriyor)
+- H1 KULLANMA
 - <h2>, <h3>, <p>, <ul>, <li>, <strong>, <a href> kullan
-- Başlıklarda İngilizce/jargon terimler YASAK (CTA, FAQ, SEO vb.)
-- "Giriş", "Kapanış", "Sonuç", "Sonuç / CTA" gibi genel başlıklar ASLA KULLANMA
-- Her başlık konuya özel, doğal ve SEO uyumlu olmalı
-- Örnek YANLIŞ: <h2>Giriş</h2> — Örnek DOĞRU: <h2>Profesyonel {name} ile İşletmenizi Güçlendirin</h2>
 
-### GÖRSEL YERLEŞİMİ (ÇOK KRİTİK — ATLAMAYIN):
+### YASAKLI BAŞLIKLAR (ASLA KULLANMA):
+- "Giriş", "Kapanış", "Sonuç", "Sonuç / CTA", "CTA", "FAQ", "Genel Bakış" gibi başlıklar YASAK
+- Her başlık konuya özel ve SEO anahtar kelime içermeli
+- Başlıklar insanların Google'da aradığı ifadeler olmalı
+
+### GÖRSEL YERLEŞİMİ:
 - İçeriğin HTML kodunda şu placeholder'ları MUTLAKA yerleştir: [GORSEL_1], [GORSEL_2], [GORSEL_3], [GORSEL_4]
-- Her placeholder kendi satırında, bir paragraftan sonra olmalı
-- Örnek kullanım: <p>...paragraf metni...</p>\n[GORSEL_1]\n<h2>...sonraki başlık...</h2>
-- MINIMUM 3 placeholder olmalı — eksik bırakma
-- Placeholder'ları farklı bölümlere dağıt
+- Placeholder'lar kendi satırında, </p> etiketinden sonra olmalı
+- Örnek: <p>...metin...</p>\n[GORSEL_1]\n<h2>...başlık...</h2>
+- EN AZ 3 placeholder ZORUNLU
 
-### İÇERİK YAPISI (her bölüm detaylı olsun — başlıklar doğal ve SEO uyumlu):
-1. Açılış paragrafı ({name} anahtar kelimesiyle güçlü başlangıç, başlık YOK — direkt paragrafla başla) ardından:\n[GORSEL_1]
-2. <h2>{name} Nedir ve Neden Önemlidir?</h2> — kullanım alanları, sektörel önem
-3. <h2>Arıgastro'da {name} Çeşitleri</h2> — GERÇEK ürün isimleriyle anlatım, ardından:\n[GORSEL_2]
-4. <h2>{name} Seçerken Dikkat Edilmesi Gerekenler</h2> — kapasite, malzeme, enerji rehberi, ardından:\n[GORSEL_3]
-5. <h2>Neden Arıgastro'yu Tercih Etmelisiniz?</h2> — ücretsiz kargo, güvenli ödeme, teknik destek
-6. <h2>Sıkça Sorulan Sorular</h2> — en az 5 soru (<h3> başlıklı), ardından:\n[GORSEL_4]
-7. Kapanış paragrafı (başlık YOK — sadece satın almaya teşvik eden paragraf)
-{'8. Ürün karşılaştırma tablosu (<table> formatında)' if use_tables else ''}
+### İÇERİK YAPISI VE ALT BAŞLIKLAR:
+Alt başlıklar insanların Google'da aradığı ikincil anahtar kelimeleri hedeflemeli. Örneğin "{name}" kategorisi için:
+- "{name} fiyatları" — fiyat aralığı hakkında (rakam vermeden)
+- "{name} modelleri" — çeşitler ve farklı tipler
+- "İşletme için {name} seçimi" — işletme tipine göre rehber
+- "{name} teknik özellikleri" — kapasite, güç, boyut karşılaştırma
+
+Yapı:
+1. Açılış paragrafı (başlık YOK, direkt paragrafla başla, {name} anahtar kelimesi ilk cümlede) ardından [GORSEL_1]
+2. <h2>{name} Nedir ve Neden Önemlidir?</h2>
+3. <h2>{name} Modelleri ve Çeşitleri</h2> — GERÇEK ürün isimleriyle, ardından [GORSEL_2]
+4. <h2>{name} Fiyatları ve Fiyat Karşılaştırması</h2> — fiyat RAKAMI vermeden genel bilgi
+5. <h2>İşletmeniz İçin {name} Seçim Rehberi</h2> — kapasite, malzeme, enerji, ardından [GORSEL_3]
+6. <h2>Arıgastro'da {name} Satın Almanın Avantajları</h2>
+7. <h2>{name} Hakkında Sıkça Sorulan Sorular</h2> — en az 5 soru (<h3>), ardından [GORSEL_4]
+8. Kapanış paragrafı (başlık YOK, direkt paragrafla bitir)
+{'9. Ürün karşılaştırma tablosu' if use_tables else ''}
 {links_instruction}
 
 ## JSON FORMATI:
 {{"title": "...", "description": "...", "content": "<h2>...</h2><p>...</p>...", "generation_notes": "Analiz özeti..."}}
 
 ## SON HATIRLATMALAR:
-- MİNİMUM {target_words} kelime — kısa yazma
+- MİNİMUM {target_words} kelime
 - SADECE verilen gerçek ürün ve markaları kullan
-- Tüm metin TÜRKÇE karakterlerle (ı, ö, ü, ş, ç, ğ)
+- Tüm metin TÜRKÇE karakterlerle
 - "Arıgastro" her zaman ı harfi ile
-- İçerikte EN AZ 3 adet [GORSEL_1], [GORSEL_2], [GORSEL_3] placeholder'ı OLMALI — bunları unutma
-- "Giriş", "Kapanış", "Sonuç" gibi başlıklar KULLANMA — başlıklar konuya özel olsun
-- İlk bölümde ve son bölümde başlık kullanma, direkt paragrafla başla/bitir"""
+- İçerikte EN AZ 3 adet [GORSEL_1], [GORSEL_2], [GORSEL_3] placeholder'ı OLMALI
+- "Giriş", "Kapanış", "Sonuç" başlıkları YASAK
+- Kapıda ödeme, ücretsiz kargo gibi vaatler YAZMA
+- İlk ve son bölümde başlık yok, direkt paragraf"""
 
     chat = LlmChat(
         api_key=openai_key,

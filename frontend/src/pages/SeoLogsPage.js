@@ -81,6 +81,15 @@ export default function SeoLogsPage() {
     }
   };
 
+  const stopGenerateAll = async () => {
+    try {
+      const { data } = await axios.post(`${API}/seo/generate-all-stop`, {}, { headers: getAuthHeaders(), withCredentials: true });
+      toast.info(data.message, { duration: 5000 });
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Durdurma basarisiz");
+    }
+  };
+
   const hasAnyRunning = bulkStatuses.some(t => t.running && !t.paused);
   const hasAnyPaused = bulkStatuses.some(t => t.paused);
 
@@ -141,10 +150,17 @@ export default function SeoLogsPage() {
               <p className="text-sm font-semibold text-amber-900">Tum Urunleri Uret ve Guncelle</p>
               <p className="text-xs text-amber-600">SEO icerigi olmayan tum urunler icin uret, hepsini Ikas'a aktar</p>
             </div>
-            <Button size="sm" className="bg-amber-600 hover:bg-amber-700 text-white" onClick={startGenerateAll} disabled={genAllStatus?.running} data-testid="generate-all-btn">
-              <Zap className={`h-3.5 w-3.5 mr-1.5 ${genAllStatus?.running ? 'animate-pulse' : ''}`} />
-              {genAllStatus?.running ? `${genAllStatus.progress}/${genAllStatus.total}` : 'Hepsini Uret'}
-            </Button>
+            <div className="flex gap-2">
+              <Button size="sm" className="bg-amber-600 hover:bg-amber-700 text-white" onClick={startGenerateAll} disabled={genAllStatus?.running} data-testid="generate-all-btn">
+                <Zap className={`h-3.5 w-3.5 mr-1.5 ${genAllStatus?.running ? 'animate-pulse' : ''}`} />
+                {genAllStatus?.running ? `${genAllStatus.progress}/${genAllStatus.total}` : 'Hepsini Uret'}
+              </Button>
+              {genAllStatus?.running && (
+                <Button size="sm" variant="destructive" onClick={stopGenerateAll} data-testid="stop-generate-all-btn">
+                  Durdur
+                </Button>
+              )}
+            </div>
           </CardContent>
         </Card>
       </div>
