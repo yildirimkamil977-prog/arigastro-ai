@@ -1709,22 +1709,25 @@ async def run_generate_all_seo():
                     seo_record = await _generate_single_product_seo(product, openai_key)
                     generated += 1
                     existing_seo = seo_record
-                
-                # Push to İkas
-                if IKAS_CLIENT_ID and IKAS_CLIENT_SECRET and existing_seo:
-                    ikas_products = await loop.run_in_executor(None, ikas_search_product, product_name)
-                    if ikas_products:
-                        ikas_id = ikas_products[0]["id"]
-                        desc_html = markdown_to_html(existing_seo.get("product_description", ""))
-                        await loop.run_in_executor(
-                            None, ikas_update_product, ikas_id,
-                            existing_seo.get("seo_title", ""), existing_seo.get("seo_description", ""), desc_html
-                        )
-                        await db.products.update_one({"slug": slug}, {"$set": {
-                            "ikas_seo_pushed": True, "ikas_product_id": ikas_id,
-                            "ikas_pushed_at": datetime.now(timezone.utc).isoformat(),
-                        }})
-                        pushed += 1
+                    
+                    # Push newly generated to İkas
+                    if IKAS_CLIENT_ID and IKAS_CLIENT_SECRET and existing_seo:
+                        ikas_products = await loop.run_in_executor(None, ikas_search_product, product_name)
+                        if ikas_products:
+                            ikas_id = ikas_products[0]["id"]
+                            desc_html = markdown_to_html(existing_seo.get("product_description", ""))
+                            await loop.run_in_executor(
+                                None, ikas_update_product, ikas_id,
+                                existing_seo.get("seo_title", ""), existing_seo.get("seo_description", ""), desc_html
+                            )
+                            await db.products.update_one({"slug": slug}, {"$set": {
+                                "ikas_seo_pushed": True, "ikas_product_id": ikas_id,
+                                "ikas_pushed_at": datetime.now(timezone.utc).isoformat(),
+                            }})
+                            pushed += 1
+                else:
+                    # Already has SEO — skip (already pushed or will be pushed via "Hepsini Düzelt")
+                    pass
             except Exception as e:
                 logger.warning(f"Generate-all failed for {slug}: {e}")
                 failed += 1
