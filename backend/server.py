@@ -1345,7 +1345,7 @@ def ikas_update_product(product_id: str, meta_title: str = None, meta_descriptio
     # First, fetch the product's current categories to preserve them
     fetch_query = """
     query GetProduct($id: StringFilterInput!) {
-        listProduct(id: $id) { data { id categories { id } brand { id } } }
+        listProduct(id: $id) { data { id categories { id name } brand { id } } }
     }
     """
     try:
@@ -1366,7 +1366,7 @@ def ikas_update_product(product_id: str, meta_title: str = None, meta_descriptio
     
     # Preserve existing categories
     if current_categories:
-        input_data["categories"] = [{"id": c["id"]} for c in current_categories]
+        input_data["categories"] = [{"name": c.get("name", "")} for c in current_categories if c.get("name")]
     
     # Preserve existing brand
     if current_brand and current_brand.get("id"):

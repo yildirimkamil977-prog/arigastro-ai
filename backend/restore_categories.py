@@ -1,4 +1,4 @@
-"""Category Restoration Script v2 — Assigns products to parent categories based on hierarchy."""
+"""Category Restoration Script v3 — Uses category NAMES (not IDs) as İkas requires."""
 import os
 import requests
 import time
@@ -18,10 +18,12 @@ def ikas_query(token, query, variables=None):
     resp = requests.post("https://api.myikas.com/api/v2/admin/graphql",
         json={"query": query, "variables": variables or {}},
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
-    return resp.json().get("data", {})
+    data = resp.json()
+    if data.get("errors"):
+        return {"_errors": data["errors"]}
+    return data.get("data", {})
 
 def get_all_parent_ids(cat_id, parent_map):
-    """Get all parent category IDs up the hierarchy."""
     parents = []
     current = cat_id
     seen = set()
@@ -36,24 +38,19 @@ def get_all_parent_ids(cat_id, parent_map):
     return parents
 
 def main():
-    print("=== Kategori Kurtarma v2 — Üst Kategori Ataması ===\n")
+    print("=== Kategori Kurtarma v3 ===\n")
     
     token = get_ikas_token()
     print("✅ İkas token alındı")
     
-    # 1. Get all categories with parent info
+    # 1. Get all categories
     data = ikas_query(token, "{ listCategory { id name parentId } }")
     categories = data.get("listCategory", [])
     cat_id_to_name = {c["id"]: c["name"] for c in categories}
     parent_map = {c["id"]: c.get("parentId") for c in categories}
     print(f"✅ {len(categories)} kategori yüklendi")
     
-    # Show hierarchy
-    root_cats = [c for c in categories if not c.get("parentId")]
-    child_cats = [c for c in categories if c.get("parentId")]
-    print(f"   Üst kategoriler: {len(root_cats)}, Alt kategoriler: {len(child_cats)}")
-    
-    # 2. Get all products with current categories
+    # 2. Get all products
     print("📥 İkas ürünleri yükleniyor...")
     all_products = []
     page = 1
@@ -61,72 +58,71 @@ def main():
         data = ikas_query(token, f'{{ listProduct(pagination: {{page: {page}, limit: 100}}) {{ data {{ id name categories {{ id name }} }} count }} }}')
         prods = data.get("listProduct", {})
         all_products.extend(prods.get("data", []))
-        total_count = prods.get("count", 0)
-        if page * 100 >= total_count:
+        if page * 100 >= prods.get("count", 0):
             break
         page += 1
         time.sleep(0.3)
-    print(f"✅ {len(all_products)} İkas ürünü yüklendi")
+    print(f"✅ {len(all_products)} ürün yüklendi")
     
-    # 3. For each product, check if parent categories are missing
+    # 3. Find products missing parent categories
     fixes_needed = []
     for prod in all_products:
         current_cat_ids = set(c["id"] for c in (prod.get("categories") or []))
+        current_cat_names = set(c["name"] for c in (prod.get("categories") or []))
         if not current_cat_ids:
             continue
         
-        # Find all parent categories that should be assigned
-        needed_parents = set()
+        needed_parent_names = set()
         for cat_id in current_cat_ids:
-            parent_ids = get_all_parent_ids(cat_id, parent_map)
-            for pid in parent_ids:
+            for pid in get_all_parent_ids(cat_id, parent_map):
                 if pid not in current_cat_ids:
-                    needed_parents.add(pid)
+                    pname = cat_id_to_name.get(pid, "")
+                    if pname:
+                        needed_parent_names.add(pname)
         
-        if needed_parents:
-            all_ids = list(current_cat_ids | needed_parents)
+        if needed_parent_names:
+            all_names = list(current_cat_names | needed_parent_names)
             fixes_needed.append({
                 "product_id": prod["id"],
                 "product_name": prod["name"],
-                "current_cats": [cat_id_to_name.get(cid, cid) for cid in current_cat_ids],
-                "missing_parents": [cat_id_to_name.get(pid, pid) for pid in needed_parents],
-                "all_cat_ids": [{"id": cid} for cid in all_ids],
+                "missing": list(needed_parent_names),
+                "all_cat_names": [{"name": n} for n in all_names],
             })
     
     print(f"\n🔍 {len(fixes_needed)} ürünün üst kategorisi eksik")
     
     if not fixes_needed:
-        print("✅ Tüm ürünler üst kategorilerine de atanmış!")
+        print("✅ Tüm ürünler doğru!")
         return
     
-    # Show preview
     for f in fixes_needed[:10]:
-        print(f"  {f['product_name'][:40]} | Eksik üst: {f['missing_parents']}")
+        print(f"  {f['product_name'][:40]} | Eksik: {f['missing']}")
     if len(fixes_needed) > 10:
         print(f"  ... ve {len(fixes_needed) - 10} ürün daha")
     
-    # 4. Ask for confirmation
-    print(f"\n⚠️  {len(fixes_needed)} ürün düzeltilecek. Devam ediliyor...")
-    
-    # 5. Fix categories
+    # 4. Fix
+    print(f"\n🔧 {len(fixes_needed)} ürün düzeltiliyor...")
     fixed = 0
     failed = 0
     for fix in fixes_needed:
         try:
             result = ikas_query(token,
                 "mutation UpdateProduct($input: UpdateProductInput!) { updateProduct(input: $input) { id } }",
-                {"input": {"id": fix["product_id"], "categories": fix["all_cat_ids"]}}
+                {"input": {"id": fix["product_id"], "categories": fix["all_cat_names"]}}
             )
-            if result.get("updateProduct"):
+            if result.get("_errors"):
+                failed += 1
+                if failed <= 3:
+                    print(f"  ❌ {fix['product_name'][:30]}: {result['_errors'][0]['message'][:80]}")
+            elif result.get("updateProduct"):
                 fixed += 1
             else:
                 failed += 1
         except Exception as e:
             failed += 1
-            print(f"  ❌ {fix['product_name'][:40]}: {e}")
         
         time.sleep(0.5)
-        if (fixed + failed) % 100 == 0:
+        if (fixed + failed) % 50 == 0:
             print(f"  İlerleme: {fixed}/{len(fixes_needed)} düzeltildi, {failed} başarısız")
     
     print(f"\n✅ TAMAMLANDI: {fixed} düzeltildi, {failed} başarısız")
