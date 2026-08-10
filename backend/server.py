@@ -1345,7 +1345,7 @@ def ikas_update_product(product_id: str, meta_title: str = None, meta_descriptio
     # First, fetch the product's current categories to preserve them
     fetch_query = """
     query GetProduct($id: StringFilterInput!) {
-        listProduct(id: $id) { data { id categories { id name } brand { id } } }
+        listProduct(id: $id) { data { id categories { id name } brand { id name } } }
     }
     """
     try:
@@ -1364,13 +1364,13 @@ def ikas_update_product(product_id: str, meta_title: str = None, meta_descriptio
     """
     input_data = {"id": product_id}
     
-    # Preserve existing categories
+    # Preserve existing categories (using name, not id)
     if current_categories:
-        input_data["categories"] = [{"name": c.get("name", "")} for c in current_categories if c.get("name")]
+        input_data["categories"] = [{"name": c["name"]} for c in current_categories if c.get("name")]
     
-    # Preserve existing brand
-    if current_brand and current_brand.get("id"):
-        input_data["brand"] = {"id": current_brand["id"]}
+    # Preserve existing brand (using name, not id)
+    if current_brand and current_brand.get("name"):
+        input_data["brand"] = {"name": current_brand["name"]}
     
     # Product description (main body)
     if description is not None:
