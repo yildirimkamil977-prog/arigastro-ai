@@ -3,7 +3,6 @@ import os
 import requests
 import xml.etree.ElementTree as ET
 import time
-import json
 
 IKAS_CLIENT_ID = os.environ.get("IKAS_CLIENT_ID")
 IKAS_CLIENT_SECRET = os.environ.get("IKAS_CLIENT_SECRET")
@@ -26,11 +25,10 @@ def ikas_query(token, query, variables=None):
 def main():
     print("=== Kategori Kurtarma Scripti ===\n")
     
-    # 1. Get İkas token
     token = get_ikas_token()
     print("✅ İkas token alındı")
     
-    # 2. Get all İkas categories
+    # 1. Get all İkas categories
     data = ikas_query(token, "{ listCategory { id name parentId } }")
     categories = data.get("listCategory", [])
     cat_name_to_id = {}
@@ -38,74 +36,64 @@ def main():
         cat_name_to_id[c["name"].strip()] = c["id"]
     print(f"✅ {len(categories)} kategori yüklendi")
     
-    # 3. Download and parse Google Feed XML
-    print(f"📥 Feed indiriliyor: {FEED_URL[:60]}...")
-    resp = requests.get(FEED_URL, timeout=60)
+    # 2. Download and parse Google Feed XML (RSS 2.0 format)
+    print(f"📥 Feed indiriliyor...")
+    resp = requests.get(FEED_URL, timeout=120)
     root = ET.fromstring(resp.content)
-    ns = {"g": "http://base.google.com/ns/1.0", "atom": "http://www.w3.org/2005/Atom"}
+    ns = "http://base.google.com/ns/1.0"
     
-    # Parse feed entries
     feed_products = {}
-    for entry in root.findall(".//atom:entry", ns) or root.findall(".//{http://www.w3.org/2005/Atom}entry"):
-        title_el = entry.find("{http://www.w3.org/2005/Atom}title")
-        product_type_el = entry.find("{http://base.google.com/ns/1.0}product_type")
-        gtin_el = entry.find("{http://base.google.com/ns/1.0}gtin")
-        id_el = entry.find("{http://www.w3.org/2005/Atom}id")
+    for item in root.findall(".//item"):
+        title_el = item.find(f"{{{ns}}}title")
+        product_type_el = item.find(f"{{{ns}}}product_type")
         
         title = title_el.text.strip() if title_el is not None and title_el.text else ""
         product_type = product_type_el.text.strip() if product_type_el is not None and product_type_el.text else ""
-        gtin = gtin_el.text.strip() if gtin_el is not None and gtin_el.text else ""
         
         if title and product_type:
-            # Parse category hierarchy: "Ana Kategori > Alt Kategori > Alt Alt Kategori"
-            cat_parts = [p.strip() for p in product_type.split(">")]
-            feed_products[title] = {
-                "categories": cat_parts,
-                "gtin": gtin,
-            }
+            cat_parts = [p.strip() for p in product_type.split(",")]
+            feed_products[title] = cat_parts
     
     print(f"✅ Feed'den {len(feed_products)} ürün okundu")
     
-    # 4. Get all İkas products with current categories
+    # 3. Get all İkas products with current categories
     print("📥 İkas ürünleri yükleniyor...")
     all_products = []
     page = 1
     while True:
         data = ikas_query(token, f'{{ listProduct(pagination: {{page: {page}, limit: 100}}) {{ data {{ id name categories {{ id name }} }} count }} }}')
-        products = data.get("listProduct", {}).get("data", [])
-        count = data.get("listProduct", {}).get("count", 0)
-        all_products.extend(products)
-        if page * 100 >= count:
+        prods = data.get("listProduct", {})
+        all_products.extend(prods.get("data", []))
+        if page * 100 >= prods.get("count", 0):
             break
         page += 1
-        time.sleep(0.5)
+        time.sleep(0.3)
     print(f"✅ {len(all_products)} İkas ürünü yüklendi")
     
-    # 5. Compare and find missing categories
+    # 4. Compare and find missing categories
     fixes_needed = []
     for ikas_prod in all_products:
         prod_name = ikas_prod["name"].strip()
-        current_cats = {c["name"]: c["id"] for c in (ikas_prod.get("categories") or [])}
+        current_cats = {c["name"].strip(): c["id"] for c in (ikas_prod.get("categories") or [])}
         
-        # Find in feed
-        feed_data = feed_products.get(prod_name)
-        if not feed_data:
+        feed_cats = feed_products.get(prod_name, [])
+        if not feed_cats:
             continue
         
-        # Find missing categories
         missing = []
-        for cat_name in feed_data["categories"]:
-            cat_name = cat_name.strip()
+        for cat_name in feed_cats:
             if cat_name not in current_cats and cat_name in cat_name_to_id:
                 missing.append({"name": cat_name, "id": cat_name_to_id[cat_name]})
         
         if missing:
+            all_cat_ids = [{"id": c["id"]} for c in (ikas_prod.get("categories") or [])]
+            all_cat_ids += [{"id": m["id"]} for m in missing]
             fixes_needed.append({
                 "product_id": ikas_prod["id"],
                 "product_name": prod_name,
-                "current_cats": list(current_cats.keys()),
-                "missing_cats": [m["name"] for m in missing],
-                "all_cat_ids": [{"id": c["id"]} for c in (ikas_prod.get("categories") or [])] + [{"id": m["id"]} for m in missing]
+                "current": list(current_cats.keys()),
+                "missing": [m["name"] for m in missing],
+                "all_cat_ids": all_cat_ids,
             })
     
     print(f"\n🔍 {len(fixes_needed)} ürünün kategorisi eksik")
@@ -114,39 +102,32 @@ def main():
         print("✅ Tüm ürünler doğru kategorilerde!")
         return
     
-    # Show preview
     for f in fixes_needed[:10]:
-        print(f"  {f['product_name'][:45]} | Eksik: {f['missing_cats']}")
+        print(f"  {f['product_name'][:40]} | Mevcut: {f['current']} | Eksik: {f['missing']}")
     if len(fixes_needed) > 10:
         print(f"  ... ve {len(fixes_needed) - 10} ürün daha")
     
-    # 6. Fix categories
+    # 5. Fix categories
     print(f"\n🔧 {len(fixes_needed)} ürün düzeltiliyor...")
     fixed = 0
     failed = 0
     for fix in fixes_needed:
         try:
-            mutation = """mutation UpdateProduct($input: UpdateProductInput!) { 
-                updateProduct(input: $input) { id name } 
-            }"""
-            variables = {"input": {
-                "id": fix["product_id"],
-                "categories": fix["all_cat_ids"]
-            }}
-            result = ikas_query(token, mutation, variables)
+            result = ikas_query(token, 
+                "mutation UpdateProduct($input: UpdateProductInput!) { updateProduct(input: $input) { id } }",
+                {"input": {"id": fix["product_id"], "categories": fix["all_cat_ids"]}}
+            )
             if result.get("updateProduct"):
                 fixed += 1
             else:
                 failed += 1
-                print(f"  ❌ {fix['product_name'][:40]}: {result}")
         except Exception as e:
             failed += 1
             print(f"  ❌ {fix['product_name'][:40]}: {e}")
         
-        time.sleep(1)  # Rate limit
-        
+        time.sleep(0.5)
         if (fixed + failed) % 50 == 0:
-            print(f"  İlerleme: {fixed} düzeltildi, {failed} başarısız / {len(fixes_needed)} toplam")
+            print(f"  İlerleme: {fixed}/{len(fixes_needed)} düzeltildi")
     
     print(f"\n✅ TAMAMLANDI: {fixed} düzeltildi, {failed} başarısız")
 
