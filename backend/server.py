@@ -1341,13 +1341,36 @@ def ikas_search_product(product_name: str) -> list:
     return products
 
 def ikas_update_product(product_id: str, meta_title: str = None, meta_description: str = None, description: str = None) -> dict:
-    """Update product SEO fields in İkas."""
+    """Update product SEO fields in İkas — preserves existing categories and other data."""
+    # First, fetch the product's current categories to preserve them
+    fetch_query = """
+    query GetProduct($id: StringFilterInput!) {
+        listProduct(id: $id) { data { id categories { id } brand { id } } }
+    }
+    """
+    try:
+        current = ikas_graphql(fetch_query, {"id": {"eq": product_id}})
+        product_data = (current.get("listProduct", {}).get("data", []) or [{}])[0]
+        current_categories = product_data.get("categories", [])
+        current_brand = product_data.get("brand")
+    except Exception:
+        current_categories = []
+        current_brand = None
+    
     mutation = """
     mutation UpdateProduct($input: UpdateProductInput!) {
         updateProduct(input: $input) { id name updatedAt }
     }
     """
     input_data = {"id": product_id}
+    
+    # Preserve existing categories
+    if current_categories:
+        input_data["categories"] = [{"id": c["id"]} for c in current_categories]
+    
+    # Preserve existing brand
+    if current_brand and current_brand.get("id"):
+        input_data["brand"] = {"id": current_brand["id"]}
     
     # Product description (main body)
     if description is not None:
@@ -3840,6 +3863,34 @@ async def push_bc_seo(request: Request, user: dict = Depends(get_current_user)):
 
     loop = asyncio.get_event_loop()
     try:
+        # First, fetch existing category/brand data to preserve conditions, salesChannels etc.
+        fetch_query = ""
+        if entity_type == "category":
+            fetch_query = """query { listCategory { id conditions { conditionType field value } salesChannels { id } isAutomated shouldMatchAllConditions orderType } }"""
+        else:
+            fetch_query = """query { listProductBrand { id } }"""
+        
+        preserve_fields = {}
+        if entity_type == "category" and fetch_query:
+            try:
+                all_cats = await loop.run_in_executor(None, ikas_graphql, fetch_query, None)
+                cat_list = all_cats.get("listCategory", [])
+                for cat in cat_list:
+                    if cat.get("id") == entity_id:
+                        if cat.get("conditions"):
+                            preserve_fields["conditions"] = cat["conditions"]
+                        if cat.get("salesChannels"):
+                            preserve_fields["salesChannels"] = [{"id": sc["id"]} for sc in cat["salesChannels"]]
+                        if cat.get("isAutomated") is not None:
+                            preserve_fields["isAutomated"] = cat["isAutomated"]
+                        if cat.get("shouldMatchAllConditions") is not None:
+                            preserve_fields["shouldMatchAllConditions"] = cat["shouldMatchAllConditions"]
+                        if cat.get("orderType"):
+                            preserve_fields["orderType"] = cat["orderType"]
+                        break
+            except Exception as e:
+                logger.warning(f"Failed to fetch existing category data: {e}")
+
         if entity_type == "category":
             mutation = """mutation UpdateCategory($input: UpdateCategoryInput!) { updateCategory(input: $input) { id name updatedAt } }"""
         else:
@@ -3851,7 +3902,8 @@ async def push_bc_seo(request: Request, user: dict = Depends(get_current_user)):
             "metaData": {
                 "pageTitle": seo.get("title", "")[:256],
                 "description": seo.get("description_meta", "")[:320],
-            }
+            },
+            **preserve_fields,
         }}
         
         logger.info(f"BC SEO Push: type={entity_type}, id={entity_id}, title='{seo.get('title','')[:50]}', desc_len={len(seo.get('content',''))}")
@@ -3913,6 +3965,28 @@ async def run_bulk_bc_seo(entity_type: str, username: str):
         generated = 0
         pushed = 0
         failed = 0
+
+        # Pre-fetch all category conditions to preserve during push
+        all_cat_conditions = {}
+        if entity_type == "category":
+            try:
+                cat_data = await loop.run_in_executor(None, ikas_graphql, '{ listCategory { id conditions { conditionType field value } salesChannels { id } isAutomated shouldMatchAllConditions orderType } }', None)
+                for cat in cat_data.get("listCategory", []):
+                    preserve = {}
+                    if cat.get("conditions"):
+                        preserve["conditions"] = cat["conditions"]
+                    if cat.get("salesChannels"):
+                        preserve["salesChannels"] = [{"id": sc["id"]} for sc in cat["salesChannels"]]
+                    if cat.get("isAutomated") is not None:
+                        preserve["isAutomated"] = cat["isAutomated"]
+                    if cat.get("shouldMatchAllConditions") is not None:
+                        preserve["shouldMatchAllConditions"] = cat["shouldMatchAllConditions"]
+                    if cat.get("orderType"):
+                        preserve["orderType"] = cat["orderType"]
+                    if preserve:
+                        all_cat_conditions[cat["id"]] = preserve
+            except Exception as e:
+                logger.warning(f"Failed to pre-fetch category conditions: {e}")
 
         for i, entity in enumerate(entities):
             eid = entity["id"]
@@ -3984,12 +4058,16 @@ async def run_bulk_bc_seo(entity_type: str, username: str):
                 await db.brand_category_seo.update_one({"entity_id": eid, "entity_type": entity_type}, {"$set": doc}, upsert=True)
                 generated += 1
 
-                # Push to İkas
+                # Push to İkas with preserved conditions
                 if entity_type == "category":
                     mutation = "mutation UpdateCategory($input: UpdateCategoryInput!) { updateCategory(input: $input) { id } }"
                 else:
                     mutation = "mutation UpdateProductBrand($input: UpdateProductBrandInput!) { updateProductBrand(input: $input) { id } }"
-                variables = {"input": {"id": eid, "description": content_result.get("content", "")[:32000], "metaData": {"pageTitle": content_result.get("title", "")[:256], "description": content_result.get("description", "")[:320]}}}
+                push_input = {"id": eid, "description": content_result.get("content", "")[:32000], "metaData": {"pageTitle": content_result.get("title", "")[:256], "description": content_result.get("description", "")[:320]}}
+                # Preserve category conditions
+                if eid in all_cat_conditions:
+                    push_input.update(all_cat_conditions[eid])
+                variables = {"input": push_input}
                 await loop.run_in_executor(None, ikas_graphql, mutation, variables)
                 await db.brand_category_seo.update_one({"entity_id": eid, "entity_type": entity_type}, {"$set": {"status": "pushed", "pushed_at": datetime.now(timezone.utc).isoformat()}})
                 pushed += 1
