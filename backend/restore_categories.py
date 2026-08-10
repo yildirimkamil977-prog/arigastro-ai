@@ -1,10 +1,12 @@
-"""Category Restoration Script v3 — Uses category NAMES (not IDs) as İkas requires."""
+"""Category Restoration Script v4 — Restores from İkas CSV export with full hierarchy."""
 import os
+import csv
 import requests
 import time
 
 IKAS_CLIENT_ID = os.environ.get("IKAS_CLIENT_ID")
 IKAS_CLIENT_SECRET = os.environ.get("IKAS_CLIENT_SECRET")
+CSV_PATH = "/tmp/ikas.csv"
 
 def get_ikas_token():
     resp = requests.post("https://api.myikas.com/api/admin/oauth/token", json={
@@ -23,34 +25,47 @@ def ikas_query(token, query, variables=None):
         return {"_errors": data["errors"]}
     return data.get("data", {})
 
-def get_all_parent_ids(cat_id, parent_map):
-    parents = []
-    current = cat_id
-    seen = set()
-    while current in parent_map and current not in seen:
-        seen.add(current)
-        parent_id = parent_map[current]
-        if parent_id:
-            parents.append(parent_id)
-            current = parent_id
-        else:
-            break
-    return parents
-
 def main():
-    print("=== Kategori Kurtarma v3 ===\n")
+    print("=== Kategori Kurtarma v4 — İkas CSV'den ===\n")
     
     token = get_ikas_token()
     print("✅ İkas token alındı")
     
-    # 1. Get all categories
-    data = ikas_query(token, "{ listCategory { id name parentId } }")
-    categories = data.get("listCategory", [])
-    cat_id_to_name = {c["id"]: c["name"] for c in categories}
-    parent_map = {c["id"]: c.get("parentId") for c in categories}
-    print(f"✅ {len(categories)} kategori yüklendi")
+    # 1. Get all İkas categories (to validate names)
+    data = ikas_query(token, "{ listCategory { id name } }")
+    ikas_categories = set(c["name"].strip() for c in data.get("listCategory", []))
+    print(f"✅ İkas'ta {len(ikas_categories)} kategori mevcut")
     
-    # 2. Get all products
+    # 2. Parse CSV — build product_group_id → required categories mapping
+    csv_data = {}
+    with open(CSV_PATH, "r", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            group_id = row.get("Ürün Grup ID", "").strip()
+            name = row.get("İsim", "").strip()
+            cats_raw = row.get("Kategoriler", "").strip()
+            
+            if not group_id or not cats_raw:
+                continue
+            
+            # Split hierarchy: "A>B>C" means product should be in A, B, AND C
+            required_cats = set()
+            for cat_path in cats_raw.split(","):
+                parts = [p.strip() for p in cat_path.strip().split(">")]
+                for part in parts:
+                    if part and part in ikas_categories:
+                        required_cats.add(part)
+            
+            # Only keep first variant per product group
+            if group_id not in csv_data:
+                csv_data[group_id] = {
+                    "name": name,
+                    "required_cats": required_cats,
+                }
+    
+    print(f"✅ CSV'den {len(csv_data)} benzersiz ürün okundu")
+    
+    # 3. Get all current İkas products with categories
     print("📥 İkas ürünleri yükleniyor...")
     all_products = []
     page = 1
@@ -58,62 +73,80 @@ def main():
         data = ikas_query(token, f'{{ listProduct(pagination: {{page: {page}, limit: 100}}) {{ data {{ id name categories {{ id name }} }} count }} }}')
         prods = data.get("listProduct", {})
         all_products.extend(prods.get("data", []))
-        if page * 100 >= prods.get("count", 0):
+        total = prods.get("count", 0)
+        if page * 100 >= total:
             break
         page += 1
         time.sleep(0.3)
-    print(f"✅ {len(all_products)} ürün yüklendi")
+    print(f"✅ Sitede {len(all_products)} ürün mevcut")
     
-    # 3. Find products missing parent categories
+    # 4. Compare and find products with missing categories
     fixes_needed = []
+    not_in_csv = 0
+    already_ok = 0
+    
     for prod in all_products:
-        current_cat_ids = set(c["id"] for c in (prod.get("categories") or []))
-        current_cat_names = set(c["name"] for c in (prod.get("categories") or []))
-        if not current_cat_ids:
+        prod_name = prod["name"].strip()
+        current_cats = set(c["name"].strip() for c in (prod.get("categories") or []))
+        
+        # Find in CSV by name (since product IDs might differ)
+        csv_entry = None
+        for gid, entry in csv_data.items():
+            if entry["name"] == prod_name:
+                csv_entry = entry
+                break
+        
+        if not csv_entry:
+            not_in_csv += 1
             continue
         
-        needed_parent_names = set()
-        for cat_id in current_cat_ids:
-            for pid in get_all_parent_ids(cat_id, parent_map):
-                if pid not in current_cat_ids:
-                    pname = cat_id_to_name.get(pid, "")
-                    if pname:
-                        needed_parent_names.add(pname)
+        # Find missing categories
+        missing = csv_entry["required_cats"] - current_cats
         
-        if needed_parent_names:
-            all_names = list(current_cat_names | needed_parent_names)
-            fixes_needed.append({
-                "product_id": prod["id"],
-                "product_name": prod["name"],
-                "missing": list(needed_parent_names),
-                "all_cat_names": [{"name": n} for n in all_names],
-            })
+        if not missing:
+            already_ok += 1
+            continue
+        
+        # Combine current + missing
+        all_cat_names = list(current_cats | csv_entry["required_cats"])
+        fixes_needed.append({
+            "product_id": prod["id"],
+            "product_name": prod_name,
+            "current": list(current_cats),
+            "missing": list(missing),
+            "all_cats": [{"name": n} for n in all_cat_names],
+        })
     
-    print(f"\n🔍 {len(fixes_needed)} ürünün üst kategorisi eksik")
+    print(f"\n📊 Sonuç:")
+    print(f"   ✅ Kategorileri doğru: {already_ok}")
+    print(f"   ⚠️  Kategorisi eksik: {len(fixes_needed)}")
+    print(f"   ℹ️  CSV'de bulunamayan: {not_in_csv}")
     
     if not fixes_needed:
-        print("✅ Tüm ürünler doğru!")
+        print("\n✅ Tüm ürünler doğru kategorilerde!")
         return
     
-    for f in fixes_needed[:10]:
+    # Preview
+    print(f"\nÖnizleme (ilk 15):")
+    for f in fixes_needed[:15]:
         print(f"  {f['product_name'][:40]} | Eksik: {f['missing']}")
-    if len(fixes_needed) > 10:
-        print(f"  ... ve {len(fixes_needed) - 10} ürün daha")
+    if len(fixes_needed) > 15:
+        print(f"  ... ve {len(fixes_needed) - 15} ürün daha")
     
-    # 4. Fix
-    print(f"\n🔧 {len(fixes_needed)} ürün düzeltiliyor...")
+    # 5. Fix categories
+    print(f"\n🔧 {len(fixes_needed)} ürün düzeltiliyor (SADECE kategori, başka hiçbir şey değişmiyor)...")
     fixed = 0
     failed = 0
     for fix in fixes_needed:
         try:
             result = ikas_query(token,
                 "mutation UpdateProduct($input: UpdateProductInput!) { updateProduct(input: $input) { id } }",
-                {"input": {"id": fix["product_id"], "categories": fix["all_cat_names"]}}
+                {"input": {"id": fix["product_id"], "categories": fix["all_cats"]}}
             )
             if result.get("_errors"):
                 failed += 1
-                if failed <= 3:
-                    print(f"  ❌ {fix['product_name'][:30]}: {result['_errors'][0]['message'][:80]}")
+                if failed <= 5:
+                    print(f"  ❌ {fix['product_name'][:30]}: {result['_errors'][0].get('message','')[:80]}")
             elif result.get("updateProduct"):
                 fixed += 1
             else:
@@ -122,7 +155,7 @@ def main():
             failed += 1
         
         time.sleep(0.5)
-        if (fixed + failed) % 50 == 0:
+        if (fixed + failed) % 100 == 0:
             print(f"  İlerleme: {fixed}/{len(fixes_needed)} düzeltildi, {failed} başarısız")
     
     print(f"\n✅ TAMAMLANDI: {fixed} düzeltildi, {failed} başarısız")
