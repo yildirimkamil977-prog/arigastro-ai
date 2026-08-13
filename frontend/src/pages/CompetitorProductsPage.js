@@ -82,12 +82,35 @@ export default function CompetitorProductsPage() {
     setMatchingSlug(slug);
     try {
       const { data } = await axios.post(`${API}/competitor/auto-match/${slug}`, {}, { headers: getAuthHeaders(), withCredentials: true });
-      toast.success(`${data.matched}/${data.total} rakipte eşleşme bulundu`);
-      fetchProducts();
+      toast.info(data.message || "Eşleştirme başlatıldı...");
+      
+      // Poll for completion
+      if (data.task_key) {
+        const pollInterval = setInterval(async () => {
+          try {
+            const { data: status } = await axios.get(`${API}/competitor/auto-match-status/${data.task_key}`, { headers: getAuthHeaders(), withCredentials: true });
+            if (!status.running) {
+              clearInterval(pollInterval);
+              setMatchingSlug(null);
+              if (status.error) {
+                toast.error(`Eşleştirme hatası: ${status.error.substring(0, 100)}`);
+              } else {
+                toast.success(`${status.matched}/${Object.keys(status.results || {}).length} rakipte eşleşme bulundu`);
+              }
+              fetchProducts();
+            }
+          } catch {
+            clearInterval(pollInterval);
+            setMatchingSlug(null);
+          }
+        }, 2000);
+      } else {
+        setMatchingSlug(null);
+      }
     } catch (err) {
-      toast.error("Eşleştirme başarısız");
+      toast.error(err.response?.data?.detail || "Eşleştirme başlatılamadı");
+      setMatchingSlug(null);
     }
-    setMatchingSlug(null);
   };
 
   const checkPrices = async (slug) => {

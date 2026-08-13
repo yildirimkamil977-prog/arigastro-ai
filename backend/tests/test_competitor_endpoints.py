@@ -179,3 +179,122 @@ class TestPriceChanges:
         assert r.status_code == 200
         d = r.json()
         assert "changes" in d and "total" in d
+
+
+# --- Module 4: Apply Price (İkas) ---
+class TestApplyPrice:
+    def test_apply_price_missing_ikas_id(self, client):
+        # Get any slug
+        r = client.get(f"{API}/competitor/products", params={"limit": 1}, timeout=30)
+        slug = r.json()["products"][0]["slug"]
+        r2 = client.post(f"{API}/competitor/apply-price",
+                         json={"slug": slug, "new_price_tl": 999.0, "reason": "test"}, timeout=30)
+        assert r2.status_code == 200
+        d = r2.json()
+        # Preview has no ikas_id, so success=False expected
+        assert d.get("success") is False
+        assert "error" in d
+        assert "İkas" in d["error"] or "ikas" in d["error"].lower() or "kur" in d["error"].lower()
+
+    def test_apply_price_invalid_slug(self, client):
+        r = client.post(f"{API}/competitor/apply-price",
+                        json={"slug": "TEST_nonexistent_slug_xyz", "new_price_tl": 100.0, "reason": "t"},
+                        timeout=20)
+        assert r.status_code == 404
+
+
+# --- Module 5: Full price changes with pagination/filter ---
+class TestPriceChangesFull:
+    def test_price_changes_full_default(self, client):
+        r = client.get(f"{API}/competitor/price-changes-full", timeout=20)
+        assert r.status_code == 200
+        d = r.json()
+        for k in ["changes", "total", "page", "pages"]:
+            assert k in d
+        assert isinstance(d["changes"], list)
+
+    def test_price_changes_full_pagination(self, client):
+        r = client.get(f"{API}/competitor/price-changes-full",
+                       params={"page": 1, "limit": 10}, timeout=20)
+        assert r.status_code == 200
+        d = r.json()
+        assert d["page"] == 1
+        assert len(d["changes"]) <= 10
+
+    def test_price_changes_full_status_filter(self, client):
+        for st in ["applied", "pending"]:
+            r = client.get(f"{API}/competitor/price-changes-full",
+                           params={"status_filter": st}, timeout=20)
+            assert r.status_code == 200
+
+    def test_price_changes_full_search(self, client):
+        r = client.get(f"{API}/competitor/price-changes-full",
+                       params={"search": "Tava"}, timeout=20)
+        assert r.status_code == 200
+
+
+# --- Auto-match (non-blocking / background task) ---
+class TestAutoMatch:
+    def test_auto_match_returns_immediately_with_task_key(self, client):
+        r = client.get(f"{API}/competitor/products", params={"limit": 1}, timeout=30)
+        slug = r.json()["products"][0]["slug"]
+
+        import time
+        t0 = time.time()
+        r2 = client.post(f"{API}/competitor/auto-match/{slug}", timeout=15)
+        elapsed = time.time() - t0
+        assert r2.status_code == 200, r2.text
+        d = r2.json()
+        assert d.get("success") is True
+        assert "task_key" in d
+        # Should return in <10s (non-blocking); scraping happens in background
+        assert elapsed < 10, f"auto-match blocked for {elapsed}s"
+        # Poll status endpoint
+        task_key = d["task_key"]
+        r3 = client.get(f"{API}/competitor/auto-match-status/{task_key}", timeout=10)
+        assert r3.status_code == 200
+        assert "running" in r3.json()
+
+    def test_auto_match_status_unknown_task(self, client):
+        r = client.get(f"{API}/competitor/auto-match-status/nonexistent_task_xxx", timeout=10)
+        assert r.status_code == 200
+        assert r.json().get("running") is False
+
+
+# --- Products priority sorting: matched/priced products come first ---
+class TestProductsPriority:
+    def test_matched_products_appear_first(self, client):
+        r = client.get(f"{API}/competitor/products",
+                       params={"page": 1, "limit": 30}, timeout=30)
+        assert r.status_code == 200
+        products = r.json()["products"]
+        # Find first unmatched (no matches, no price data) position
+        first_unmatched_idx = None
+        last_matched_idx = -1
+        for i, p in enumerate(products):
+            has_priority = (
+                p.get("match_count", 0) > 0
+                or p.get("cheapest_competitor_price") is not None
+                or p.get("cheapest_price") is not None
+            )
+            if has_priority:
+                last_matched_idx = i
+            elif first_unmatched_idx is None:
+                first_unmatched_idx = i
+        # All matched should come before first unmatched
+        if first_unmatched_idx is not None and last_matched_idx != -1:
+            assert last_matched_idx < first_unmatched_idx, \
+                "Priority products should appear before unmatched products"
+
+    def test_en_ucuz_rakip_data_from_akakce(self, client):
+        # Search for products likely to have Akakçe cheapest_price
+        for term in ["Kuzine", "Dolap", "Ocak"]:
+            r = client.get(f"{API}/competitor/products",
+                           params={"search": term, "limit": 30}, timeout=30)
+            if r.status_code == 200:
+                for p in r.json()["products"]:
+                    if p.get("cheapest_competitor_price"):
+                        # Great — Akakçe data merged
+                        assert isinstance(p["cheapest_competitor_price"], (int, float))
+                        return
+        pytest.skip("No products with cheapest_competitor_price found for the tested search terms")

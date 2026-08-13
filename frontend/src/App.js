@@ -9,6 +9,7 @@ import ProductsPage from "./pages/ProductsPage";
 import CompetitorProductsPage from "./pages/CompetitorProductsPage";
 import PriceTrackingPage from "./pages/PriceTrackingPage";
 import CompetitorScanPage from "./pages/CompetitorScanPage";
+import PriceChangesPage from "./pages/PriceChangesPage";
 import SeoGeneratorPage from "./pages/SeoGeneratorPage";
 import SeoLogsPage from "./pages/SeoLogsPage";
 import MarketingPage from "./pages/MarketingPage";
@@ -54,6 +55,7 @@ function App() {
           <Route path="/products" element={<ProtectedRoute><CompetitorProductsPage /></ProtectedRoute>} />
           <Route path="/price-tracking" element={<ProtectedRoute><PriceTrackingPage /></ProtectedRoute>} />
           <Route path="/competitor-scan" element={<ProtectedRoute><CompetitorScanPage /></ProtectedRoute>} />
+          <Route path="/price-changes" element={<ProtectedRoute><PriceChangesPage /></ProtectedRoute>} />
           <Route path="/seo" element={<ProtectedRoute><SeoGeneratorPage /></ProtectedRoute>} />
           <Route path="/seo-logs" element={<ProtectedRoute><SeoLogsPage /></ProtectedRoute>} />
           <Route path="/marketing" element={<ProtectedRoute><MarketingPage /></ProtectedRoute>} />

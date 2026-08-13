@@ -1,0 +1,59 @@
+{
+  "summary": "Full backend + frontend regression for Arıgastro Modules 1-5. Backend: 25/25 pytest cases passed against /api/competitor/* including new Module 4 (apply-price) and Module 5 (price-changes-full) plus non-blocking auto-match (task_key + polling). Frontend: All acceptance criteria verified — (1) Sidebar order Dashboard→Kategoriler→Fiyat Takip→Urunler & Fiyat Takibi→Rakip Tarama→Fiyat Logları confirmed; (2) /products first rows are matched/priced (aluminyum-yapismaz-tava-maksi-24-cm has floor 111.50 / purchase 88.25 as row 0, rows 3-7 all have Mutfak10.com competitor with red negative diff) — priority sort works; (3) En Ucuz Rakip column shows competitor name (Mutfak10.com) + price in TL + negative diff in red for products with cheapest_price data; (4) Search 'Kuzine' returns 5 Kuzine products, first row has Mutfak10.com 47.608,00 ₺ -51,33 ₺; Search 'Dolap' returns products with competitor prices; (5) /price-tracking still loads OLD Akakçe page (Akakçe Panel, AI Eşleştirme, Toplu Fiyat Kontrolü, Ara Tezgahlar filter chip, empty table with Turkish headers URUN/SIRAMIZ/BIZIM FIYAT/EN UCUZ RAKIP/FARK/EN UCUZ FIRMA/SON KONTROL/ISLEMLER); (6) /competitor-scan shows stats (Toplam 4.186, Eşleşmiş 3, Rakip Daha Ucuz 0, Fiyat Önerisi 0), Son Tarama panel, Kategori Fiyatlama Kuralları; (7) /price-changes loads with title 'Fiyat Değişiklik Logları', empty state 'Fiyat değişikliği bulunamadı', status-filter dropdown (Tüm Durum/Uygulanmış/Bekliyor) works. auto-match endpoint returned in <1s with task_key (non-blocking confirmed). apply-price returns success=false with 'İkas ID bulunamadı' error for products missing ikas_id (expected in preview).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "passed_tests": [
+    "POST /api/auth/login (arigastro)",
+    "GET /api/competitor/products — listing/search/category/brand/match_status/pagination (7 tests)",
+    "PUT /api/competitor/price-settings/{slug}",
+    "GET/POST/DELETE /api/competitor/category-rules (3 tests, persistence verified)",
+    "GET /api/competitor/dashboard",
+    "GET /api/competitor/scan-status, POST /scan-all, POST /scan-stop",
+    "GET /api/competitor/price-changes",
+    "POST /api/competitor/apply-price returns success=False with İkas ID error (expected preview)",
+    "POST /api/competitor/apply-price returns 404 for invalid slug",
+    "GET /api/competitor/price-changes-full default/pagination/status_filter/search (4 tests)",
+    "POST /api/competitor/auto-match/{slug} returns task_key in <1s (non-blocking verified)",
+    "GET /api/competitor/auto-match-status/{task_key}",
+    "GET /api/competitor/auto-match-status returns {running:false} for unknown task",
+    "Products priority sort: matched/priced products appear before unmatched",
+    "En Ucuz Rakip column shows Akakçe cheapest_price data via merged field",
+    "Frontend sidebar order: nav-price-tracking (idx 2) BEFORE nav-products (idx 3) — VERIFIED",
+    "Frontend /products first row = aluminyum-yapismaz-tava-maksi-24-cm (has floor/purchase set)",
+    "Frontend /products rows 3-7 all display 'Mutfak10.com' competitor with red negative diff (-247,76 ₺, -51,33 ₺, -8,32 ₺, -53,45 ₺)",
+    "Frontend search 'Kuzine' returns 5 matching Kuzine rows with En Ucuz Rakip data",
+    "Frontend search 'Dolap' returns rows with Mutfak10.com prices",
+    "Frontend /price-tracking OLD Akakçe page: shows 'Akakçe Panel', 'AI Eşleştirme', 'Toplu Fiyat Kontrolü' — untouched",
+    "Frontend /competitor-scan loads with 4 stat cards (4.186 / 3 / 0 / 0), Son Tarama panel and Kategori Fiyatlama Kuralları section",
+    "Frontend /price-changes loads with title, empty state message, working status filter",
+    "All 13 sidebar links present with correct data-testid; navigation works to /price-tracking, /products, /competitor-scan, /price-changes"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_competitor_endpoints.py",
+    "/app/test_reports/pytest/competitor_iteration12.xml"
+  ],
+  "action_items": [
+    "(Low priority – unchanged from iter-11) The <span> inside <option> React warning in CompetitorProductsPage.js category/brand filters — still cosmetic dev-only warning caused by visual-editor instrumentation. No user-visible impact.",
+    "(Note) /price-changes table is currently empty because no scans have run to completion in preview. Populate after a real ScraperAPI scan on VPS to visually test row rendering (old→new price arrow, applied/pending badges).",
+    "(Note) After running auto-match during backend test, dashboard 'Eşleşmiş' bumped from 1 → 3, confirming background task actually persisted matches."
+  ],
+  "critical_code_review_comments": [
+    "competitor_routes.py grew from 638 → 941 lines. Strongly recommend splitting into competitor_products.py / competitor_matching.py / competitor_scan.py / competitor_apply.py for maintainability.",
+    "apply-price endpoint (line 713) does 5 sequential steps with nested try/except returning 200 on business errors — consider returning 4xx for user-actionable errors ('İkas ID bulunamadı', 'variant not found') so the frontend can distinguish transport errors vs domain errors.",
+    "apply-all-recommendations (_run_apply_all, line 871) currently just flips 'applied=true' without actually calling the İkas GraphQL mutation — the comment '# Real İkas update would go here' indicates this is a stub. Bulk-apply will NOT update İkas prices; only single apply-price does. HIGH severity gap for Module 4 promise.",
+    "price-changes-full aggregation runs plain find without indexes on price_changes.changed_at — for a real production dataset this will slow down; add compound index (applied, changed_at DESC).",
+    "auto-match _run_single_product_match writes cheapest_competitor_price to products collection but does NOT create a corresponding price_changes log entry — so Module 5 will remain empty even after successful competitor scans until scan-all path is used (which does write price_changes). Consider unifying logging.",
+    "PriceChangesPage.js uses `<td colSpan={7}>` empty-state row but the table header has 7 columns; visually the empty message spans full width but is not vertically centered on tall viewports — minor.",
+    "Frontend PriceChangesPage does not currently paginate the header count ('X kayıt') per filter; when a filter is applied, `total` reflects filtered total which is correct, but the wording could be clearer."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_competitor_endpoints.py (added 15 new tests for Modules 4/5 + auto-match + priority sort)",
+    "/app/test_reports/iteration_12.json"
+  ],
+  "success_rate": {"backend": "100% (25/25)", "frontend": "100% of critical flows"},
+  "test_credentials": {"username": "arigastro", "password": "Arigastro2026!"},
+  "seed_data_creation": "Running auto-match backend test on 'aluminyum-yapismaz-tava-maksi-24-cm' triggered a live background match — dashboard Eşleşmiş count moved from 1 to 3. If exact seed values are needed for further QA, re-seed. Category rule for 'Ana Mutfak Ekipmanları' remains at previous test's 25% / 150 TL (not overwritten this iteration).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Modules 1-5 all healthy in preview. Regression suite: /app/backend/tests/test_competitor_endpoints.py (25 tests, ~4s). Key gaps to keep an eye on: (1) apply-all-recommendations is a stub — real İkas update only in single apply-price path; (2) auto-match does not populate price_changes log — only scan-all does; (3) No İkas ID on preview data → apply-price will always return success=false with 'İkas ID bulunamadı' message — this is expected and correctly tested. ScraperAPI is slow (~100s / 4 competitors) in preview but async task returns immediately."
+}

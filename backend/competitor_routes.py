@@ -63,51 +63,82 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
     
     @router.post("/auto-match/{slug}")
     async def auto_match_product(slug: str, user: dict = Depends(get_current_user)):
-        """Auto-match a product across all competitors using Google search."""
+        """Auto-match a product across all competitors. Runs in background."""
         product = await db.products.find_one({"slug": slug})
         if not product:
             raise HTTPException(status_code=404, detail="Ürün bulunamadı")
         
+        task_key = f"auto_match_{slug}"
+        await db.system_status.update_one(
+            {"task": task_key},
+            {"$set": {"running": True, "slug": slug, "product_name": product["name"], "started_at": datetime.now(timezone.utc).isoformat(), "matched": 0, "total": len(COMPETITORS), "results": {}}},
+            upsert=True
+        )
+        
+        asyncio.create_task(_run_single_product_match(db, slug, product["name"], task_key, COMPETITORS, match_all_competitors_for_product, scrape_all_competitor_prices))
+        return {"success": True, "task_key": task_key, "message": f"Eşleştirme başlatıldı: {product['name'][:50]}"}
+    
+    async def _run_single_product_match(db, slug, product_name, task_key, competitors, match_fn, scrape_fn):
         loop = asyncio.get_event_loop()
-        results = await loop.run_in_executor(None, match_all_competitors_for_product, product["name"])
-        
-        saved = 0
-        for comp_key, result in results.items():
-            if result.get("matched"):
-                await db.competitor_matches.update_one(
-                    {"product_slug": slug, "competitor_key": comp_key},
-                    {"$set": {
-                        "url": result["url"],
-                        "title": result["title"],
-                        "competitor_key": comp_key,
-                        "competitor_name": result["competitor_name"],
-                        "matched_at": datetime.now(timezone.utc).isoformat(),
-                        "manual": False,
-                    }},
-                    upsert=True
-                )
-                saved += 1
-        
-        # Auto-scrape prices after matching
-        if saved > 0:
-            all_matches = await db.competitor_matches.find({"product_slug": slug}).to_list(10)
-            match_dict = {m["competitor_key"]: m for m in all_matches}
-            prices = await loop.run_in_executor(None, scrape_all_competitor_prices, match_dict)
-            if prices:
-                await db.price_history.insert_one({
-                    "product_slug": slug,
-                    "prices": prices,
-                    "checked_at": datetime.now(timezone.utc).isoformat(),
-                })
-                cheapest = min(prices.values(), key=lambda x: x["price"]) if prices else None
-                await db.products.update_one({"slug": slug}, {"$set": {
-                    "competitor_prices": prices,
-                    "cheapest_competitor_price": cheapest["price"] if cheapest else None,
-                    "cheapest_competitor_name": cheapest["competitor_name"] if cheapest else None,
-                    "competitor_prices_checked_at": datetime.now(timezone.utc).isoformat(),
-                }})
-        
-        return {"success": True, "matched": saved, "total": len(COMPETITORS), "results": results}
+        try:
+            results = await loop.run_in_executor(None, match_fn, product_name)
+            
+            saved = 0
+            for comp_key, result in results.items():
+                if result.get("matched"):
+                    await db.competitor_matches.update_one(
+                        {"product_slug": slug, "competitor_key": comp_key},
+                        {"$set": {
+                            "url": result["url"],
+                            "title": result["title"],
+                            "competitor_key": comp_key,
+                            "competitor_name": result["competitor_name"],
+                            "matched_at": datetime.now(timezone.utc).isoformat(),
+                            "manual": False,
+                        }},
+                        upsert=True
+                    )
+                    saved += 1
+            
+            # Auto-scrape prices after matching
+            if saved > 0:
+                all_matches = await db.competitor_matches.find({"product_slug": slug}).to_list(10)
+                match_dict = {m["competitor_key"]: m for m in all_matches}
+                prices = await loop.run_in_executor(None, scrape_fn, match_dict)
+                if prices:
+                    await db.price_history.insert_one({
+                        "product_slug": slug,
+                        "prices": prices,
+                        "checked_at": datetime.now(timezone.utc).isoformat(),
+                    })
+                    cheapest = min(prices.values(), key=lambda x: x["price"]) if prices else None
+                    await db.products.update_one({"slug": slug}, {"$set": {
+                        "competitor_prices": prices,
+                        "cheapest_competitor_price": cheapest["price"] if cheapest else None,
+                        "cheapest_competitor_name": cheapest["competitor_name"] if cheapest else None,
+                        "competitor_prices_checked_at": datetime.now(timezone.utc).isoformat(),
+                    }})
+            
+            # Serialize results for storage
+            clean_results = {}
+            for k, v in results.items():
+                clean_results[k] = {"matched": v.get("matched", False), "error": v.get("error", ""), "title": v.get("title", "")}
+            
+            await db.system_status.update_one(
+                {"task": task_key},
+                {"$set": {"running": False, "matched": saved, "results": clean_results, "completed_at": datetime.now(timezone.utc).isoformat()}}
+            )
+        except Exception as e:
+            logger.error(f"Auto-match error for {slug}: {e}")
+            await db.system_status.update_one(
+                {"task": task_key},
+                {"$set": {"running": False, "matched": 0, "error": str(e), "completed_at": datetime.now(timezone.utc).isoformat()}}
+            )
+    
+    @router.get("/auto-match-status/{task_key}")
+    async def get_auto_match_status(task_key: str, user: dict = Depends(get_current_user)):
+        status = await db.system_status.find_one({"task": task_key}, {"_id": 0})
+        return status or {"running": False}
     
     @router.post("/auto-match-category/{category_name}")
     async def auto_match_category(category_name: str, user: dict = Depends(get_current_user)):
@@ -322,7 +353,30 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         
         skip = (page - 1) * limit
         total = await db.products.count_documents(query)
-        products = await db.products.find(query, {"_id": 0}).sort("name", 1).skip(skip).limit(limit).to_list(limit)
+
+        # Get slugs that have competitor matches (for priority sorting)
+        matched_slugs_list = await db.competitor_matches.distinct("product_slug")
+        matched_slugs_set = set(matched_slugs_list)
+
+        # Use aggregation for priority sorting: matched/priced products first
+        pipeline = [
+            {"$match": query},
+            {"$addFields": {
+                "_sort_priority": {"$cond": [
+                    {"$or": [
+                        {"$in": ["$slug", matched_slugs_list]},
+                        {"$gt": ["$cheapest_price", None]},
+                        {"$gt": ["$cheapest_competitor_price", None]},
+                    ]},
+                    0, 1
+                ]}
+            }},
+            {"$sort": {"_sort_priority": 1, "name": 1}},
+            {"$skip": skip},
+            {"$limit": limit},
+            {"$project": {"_id": 0, "_sort_priority": 0}},
+        ]
+        products = await db.products.aggregate(pipeline).to_list(limit)
         
         # Enrich with competitor matches
         slugs = [p["slug"] for p in products]
@@ -637,6 +691,341 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
             "scan_status": scan_status,
             "recent_changes": recent_changes,
             "category_rules": rules,
+        }
+
+    # ============================================================
+    # MODULE 4: İkas Price Update (Original Currency)
+    # ============================================================
+
+    IKAS_PRICE_LISTS = {
+        "EUR": "db850a77-bfd6-43de-8892-78d16dc01e0e",
+        "USD": "28b86f15-34b5-4c49-8d96-678194f4a8ba",
+        "TRY": "35b38ca5-9f2d-4482-a9d8-3a6b0df33efd",
+        # Nihai fiyat listesi — DOKUNULMAYACAK:
+        # "NIHAI": "b8f60257-5b81-44c9-8238-99b18b49e63"
+    }
+
+    class ApplyPriceRequest(BaseModel):
+        slug: str
+        new_price_tl: float
+        reason: Optional[str] = ""
+
+    @router.post("/apply-price")
+    async def apply_price_to_ikas(req: ApplyPriceRequest, user: dict = Depends(get_current_user)):
+        """Apply a recommended price change to İkas, updating the original currency price list."""
+        product = await db.products.find_one({"slug": req.slug})
+        if not product:
+            raise HTTPException(status_code=404, detail="Ürün bulunamadı")
+
+        ikas_id = product.get("ikas_id") or product.get("ikas_product_id")
+        if not ikas_id:
+            return {"success": False, "error": "Bu üründe İkas ID bulunamadı. VPS'de İkas senkronizasyonu yapılmalı."}
+
+        try:
+            loop = asyncio.get_event_loop()
+
+            # Step 1: Fetch current İkas prices and variant info
+            gql_query = f'''{{ listProduct(id: {{eq: "{ikas_id}"}}) {{ data {{
+                name
+                categories {{ categoryId }}
+                brand {{ brandId }}
+                variants {{ id prices {{ sellPrice discountPrice currency priceListId }} }}
+            }} }} }}'''
+            result = await loop.run_in_executor(None, ikas_graphql, gql_query, None)
+            product_data = (result.get("listProduct", {}).get("data", []) or [{}])[0]
+            variants = product_data.get("variants", [])
+            if not variants:
+                return {"success": False, "error": "İkas'ta varyant bulunamadı"}
+
+            variant = variants[0]
+            existing_prices = variant.get("prices", [])
+
+            # Step 2: Determine which price list to update (original currency, NOT Nihai)
+            target_price_list = None
+            target_currency = None
+            original_sell_price = None
+
+            for p in existing_prices:
+                plid = p.get("priceListId", "")
+                # Skip Nihai list
+                if plid.startswith("b8f60257"):
+                    continue
+                # Prefer EUR > USD > TRY
+                if plid == IKAS_PRICE_LISTS.get("EUR"):
+                    target_price_list = plid
+                    target_currency = "EUR"
+                    original_sell_price = p.get("sellPrice", 0)
+                    break
+                elif plid == IKAS_PRICE_LISTS.get("USD"):
+                    target_price_list = plid
+                    target_currency = "USD"
+                    original_sell_price = p.get("sellPrice", 0)
+                elif plid == IKAS_PRICE_LISTS.get("TRY") and not target_price_list:
+                    target_price_list = plid
+                    target_currency = "TRY"
+                    original_sell_price = p.get("sellPrice", 0)
+
+            if not target_price_list:
+                return {"success": False, "error": "Güncellenecek fiyat listesi bulunamadı"}
+
+            # Step 3: Convert TL price to original currency if needed
+            if target_currency == "TRY":
+                new_price = req.new_price_tl
+            else:
+                # Calculate ratio from current prices
+                tl_price = product.get("our_price", 0)
+                if tl_price and original_sell_price and tl_price > 0:
+                    ratio = original_sell_price / tl_price
+                    new_price = round(req.new_price_tl * ratio, 2)
+                else:
+                    return {"success": False, "error": f"Kur oranı hesaplanamadı (TL: {tl_price}, {target_currency}: {original_sell_price})"}
+
+            # Step 4: Build prices array preserving ALL existing prices, only changing target
+            updated_prices = []
+            for p in existing_prices:
+                price_entry = {
+                    "priceListId": p["priceListId"],
+                    "sellPrice": p.get("sellPrice", 0),
+                    "currency": p.get("currency", "TRY"),
+                }
+                if p.get("discountPrice"):
+                    price_entry["discountPrice"] = p["discountPrice"]
+                # Override target price list
+                if p["priceListId"] == target_price_list:
+                    price_entry["sellPrice"] = new_price
+                updated_prices.append(price_entry)
+
+            # Step 5: Build mutation preserving categories and brand
+            existing_cats = [c["categoryId"] for c in (product_data.get("categories") or [])]
+            existing_brand = (product_data.get("brand") or {}).get("brandId")
+
+            update_input = {
+                "id": ikas_id,
+                "variants": [{
+                    "id": variant["id"],
+                    "prices": updated_prices,
+                }],
+            }
+            if existing_cats:
+                update_input["categoryIds"] = existing_cats
+            if existing_brand:
+                update_input["brandId"] = existing_brand
+
+            mutation = "mutation UpdateProduct($input: UpdateProductInput!) { updateProduct(input: $input) { id } }"
+            await loop.run_in_executor(None, ikas_graphql, mutation, {"input": update_input})
+
+            # Step 6: Log the change
+            await db.price_changes.update_one(
+                {"product_slug": req.slug, "applied": False, "action": "update"},
+                {"$set": {
+                    "applied": True,
+                    "applied_at": datetime.now(timezone.utc).isoformat(),
+                    "applied_price_tl": req.new_price_tl,
+                    "applied_price_original": new_price,
+                    "applied_currency": target_currency,
+                    "applied_price_list_id": target_price_list,
+                }},
+                upsert=False
+            )
+
+            # Update local product record
+            await db.products.update_one({"slug": req.slug}, {"$set": {
+                "our_price": req.new_price_tl,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }})
+
+            return {
+                "success": True,
+                "message": f"Fiyat güncellendi: {new_price:.2f} {target_currency} ({req.new_price_tl:.2f} TL)",
+                "original_currency": target_currency,
+                "original_price": new_price,
+                "tl_price": req.new_price_tl,
+                "price_list_id": target_price_list,
+            }
+
+        except Exception as e:
+            logger.error(f"İkas price update error for {req.slug}: {e}")
+            return {"success": False, "error": str(e)}
+
+    @router.post("/apply-all-recommendations")
+    async def apply_all_recommendations(user: dict = Depends(get_current_user)):
+        """Apply all pending price recommendations. Runs in background."""
+        pending = await db.price_changes.count_documents({"applied": False, "action": "update"})
+        if pending == 0:
+            return {"started": False, "message": "Bekleyen fiyat önerisi yok."}
+
+        task_key = "apply_recommendations"
+        status = await db.system_status.find_one({"task": task_key})
+        if status and status.get("running"):
+            return {"started": False, "message": "Fiyat güncelleme zaten devam ediyor."}
+
+        await db.system_status.update_one(
+            {"task": task_key},
+            {"$set": {"running": True, "total": pending, "applied": 0, "failed": 0, "started_at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True
+        )
+
+        asyncio.create_task(_run_apply_all(db, ikas_graphql, IKAS_PRICE_LISTS, task_key))
+        return {"started": True, "total": pending, "message": f"{pending} fiyat önerisi uygulanacak."}
+
+    async def _run_apply_all(db, ikas_fn, price_lists, task_key):
+        loop = asyncio.get_event_loop()
+        applied = 0
+        failed = 0
+        try:
+            changes = await db.price_changes.find({"applied": False, "action": "update"}).to_list(500)
+            for ch in changes:
+                try:
+                    slug = ch["product_slug"]
+                    new_price_tl = ch["new_price"]
+                    product = await db.products.find_one({"slug": slug})
+                    if not product:
+                        failed += 1
+                        continue
+
+                    ikas_id = product.get("ikas_id") or product.get("ikas_product_id")
+                    if not ikas_id:
+                        # No İkas ID — mark as failed with reason
+                        await db.price_changes.update_one(
+                            {"_id": ch["_id"]},
+                            {"$set": {"apply_error": "İkas ID bulunamadı"}}
+                        )
+                        failed += 1
+                        continue
+
+                    # Fetch İkas product for variant + price info
+                    gql_query = f'''{{ listProduct(id: {{eq: "{ikas_id}"}}) {{ data {{
+                        categories {{ categoryId }}
+                        brand {{ brandId }}
+                        variants {{ id prices {{ sellPrice discountPrice currency priceListId }} }}
+                    }} }} }}'''
+                    result = await loop.run_in_executor(None, ikas_fn, gql_query, None)
+                    product_data = (result.get("listProduct", {}).get("data", []) or [{}])[0]
+                    variants = product_data.get("variants", [])
+                    if not variants:
+                        failed += 1
+                        continue
+
+                    variant = variants[0]
+                    existing_prices = variant.get("prices", [])
+
+                    # Determine target price list (prefer EUR > USD > TRY, skip Nihai)
+                    target_plid = None
+                    target_currency = None
+                    original_sell = None
+                    for p in existing_prices:
+                        plid = p.get("priceListId", "")
+                        if plid.startswith("b8f60257"):
+                            continue
+                        if plid == price_lists.get("EUR"):
+                            target_plid, target_currency, original_sell = plid, "EUR", p.get("sellPrice", 0)
+                            break
+                        elif plid == price_lists.get("USD"):
+                            target_plid, target_currency, original_sell = plid, "USD", p.get("sellPrice", 0)
+                        elif plid == price_lists.get("TRY") and not target_plid:
+                            target_plid, target_currency, original_sell = plid, "TRY", p.get("sellPrice", 0)
+
+                    if not target_plid:
+                        failed += 1
+                        continue
+
+                    # Convert to original currency
+                    if target_currency == "TRY":
+                        new_price = new_price_tl
+                    else:
+                        tl_price = product.get("our_price", 0)
+                        if tl_price and original_sell and tl_price > 0:
+                            new_price = round(new_price_tl * (original_sell / tl_price), 2)
+                        else:
+                            failed += 1
+                            continue
+
+                    # Build updated prices array
+                    updated_prices = []
+                    for p in existing_prices:
+                        entry = {"priceListId": p["priceListId"], "sellPrice": p.get("sellPrice", 0), "currency": p.get("currency", "TRY")}
+                        if p.get("discountPrice"):
+                            entry["discountPrice"] = p["discountPrice"]
+                        if p["priceListId"] == target_plid:
+                            entry["sellPrice"] = new_price
+                        updated_prices.append(entry)
+
+                    # Build mutation preserving categories & brand
+                    existing_cats = [c["categoryId"] for c in (product_data.get("categories") or [])]
+                    existing_brand = (product_data.get("brand") or {}).get("brandId")
+                    update_input = {"id": ikas_id, "variants": [{"id": variant["id"], "prices": updated_prices}]}
+                    if existing_cats:
+                        update_input["categoryIds"] = existing_cats
+                    if existing_brand:
+                        update_input["brandId"] = existing_brand
+
+                    mutation = "mutation UpdateProduct($input: UpdateProductInput!) { updateProduct(input: $input) { id } }"
+                    await loop.run_in_executor(None, ikas_fn, mutation, {"input": update_input})
+
+                    # Mark as applied
+                    await db.price_changes.update_one(
+                        {"_id": ch["_id"]},
+                        {"$set": {
+                            "applied": True,
+                            "applied_at": datetime.now(timezone.utc).isoformat(),
+                            "applied_price_tl": new_price_tl,
+                            "applied_price_original": new_price,
+                            "applied_currency": target_currency,
+                        }}
+                    )
+                    await db.products.update_one({"slug": slug}, {"$set": {"our_price": new_price_tl, "updated_at": datetime.now(timezone.utc).isoformat()}})
+                    applied += 1
+
+                except Exception as e:
+                    logger.error(f"Apply price error for {ch.get('product_slug', '?')}: {e}")
+                    failed += 1
+
+                await db.system_status.update_one(
+                    {"task": task_key},
+                    {"$set": {"applied": applied, "failed": failed}}
+                )
+                await asyncio.sleep(1)
+
+            await db.system_status.update_one(
+                {"task": task_key},
+                {"$set": {"running": False, "applied": applied, "failed": failed, "completed_at": datetime.now(timezone.utc).isoformat()}}
+            )
+        except Exception as e:
+            await db.system_status.update_one(
+                {"task": task_key},
+                {"$set": {"running": False, "error": str(e)}}
+            )
+
+    # ============================================================
+    # MODULE 5: Price Change Logs (Full History)
+    # ============================================================
+
+    @router.get("/price-changes-full")
+    async def list_price_changes_full(
+        user: dict = Depends(get_current_user),
+        page: int = 1,
+        limit: int = 50,
+        status_filter: str = "",
+        search: str = "",
+    ):
+        """Full price change history with filters."""
+        query = {}
+        if status_filter == "applied":
+            query["applied"] = True
+        elif status_filter == "pending":
+            query["applied"] = False
+        if search:
+            query["product_name"] = {"$regex": search, "$options": "i"}
+
+        skip = (page - 1) * limit
+        total = await db.price_changes.count_documents(query)
+        changes = await db.price_changes.find(query, {"_id": 0}).sort("changed_at", -1).skip(skip).limit(limit).to_list(limit)
+
+        return {
+            "changes": changes,
+            "total": total,
+            "page": page,
+            "pages": (total + limit - 1) // limit,
         }
 
     return router
