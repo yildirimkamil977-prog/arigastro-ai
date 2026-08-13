@@ -381,7 +381,7 @@ export default function CompetitorProductsPage() {
 
       {/* Product Detail Modal */}
       <Dialog open={!!detailProduct} onOpenChange={() => { setDetailProduct(null); setMatchDetail(null); setPriceHistory([]); setIkasPrice([]); }}>
-        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto p-0">
+        <DialogContent className="sm:max-w-3xl w-[95vw] max-h-[90vh] overflow-y-auto p-0">
           <DialogHeader className="px-6 pt-6 pb-4 border-b bg-slate-50 sticky top-0 z-10">
             <DialogTitle className="text-lg font-bold text-slate-900 pr-8" data-testid="detail-modal-title">{detailProduct?.name}</DialogTitle>
           </DialogHeader>

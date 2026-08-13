@@ -73,7 +73,7 @@ def scrape_competitor_price(url: str, competitor_key: str) -> dict:
             "api_key": SCRAPERAPI_KEY,
             "url": url,
             "render": "true",
-        }, timeout=30)
+        }, timeout=45)
         
         if resp.status_code != 200:
             return {"success": False, "error": f"HTTP {resp.status_code}"}
