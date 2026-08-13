@@ -163,22 +163,24 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
     
     async def _run_category_match(db, products, task_key):
         loop = asyncio.get_event_loop()
-        matched_total = 0
+        products_matched = 0  # Kaç ürün en az 1 eşleşme buldu
+        total_matches = 0     # Toplam bireysel eşleşme
+        matched_slugs = []    # Fiyat taraması için
         for i, prod in enumerate(products):
             try:
-                # Check stop
                 status = await db.system_status.find_one({"task": task_key})
                 if status and status.get("stop_requested"):
                     break
                 
-                # Skip already matched
                 existing = await db.competitor_matches.count_documents({"product_slug": prod["slug"]})
                 if existing >= len(COMPETITORS):
-                    matched_total += 1
-                    await db.system_status.update_one({"task": task_key}, {"$set": {"progress": i + 1, "matched": matched_total}})
+                    products_matched += 1
+                    matched_slugs.append(prod["slug"])
+                    await db.system_status.update_one({"task": task_key}, {"$set": {"progress": i + 1, "products_matched": products_matched, "total_matches": total_matches}})
                     continue
                 
                 results = await loop.run_in_executor(None, match_all_competitors_for_product, prod["name"])
+                prod_found = False
                 for comp_key, result in results.items():
                     if result.get("matched"):
                         await db.competitor_matches.update_one(
@@ -190,14 +192,48 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                             }},
                             upsert=True
                         )
-                        matched_total += 1
+                        total_matches += 1
+                        prod_found = True
                 
-                await db.system_status.update_one({"task": task_key}, {"$set": {"progress": i + 1, "matched": matched_total}})
+                if prod_found:
+                    products_matched += 1
+                    matched_slugs.append(prod["slug"])
+                
+                await db.system_status.update_one({"task": task_key}, {"$set": {"progress": i + 1, "products_matched": products_matched, "total_matches": total_matches}})
                 await asyncio.sleep(1)
             except Exception as e:
                 logger.error(f"Match error for {prod['slug']}: {e}")
         
-        await db.system_status.update_one({"task": task_key}, {"$set": {"running": False, "stop_requested": False, "completed_at": datetime.now(timezone.utc).isoformat()}})
+        # Phase 2: Auto price scan for matched products
+        await db.system_status.update_one({"task": task_key}, {"$set": {"phase": "scanning", "scan_progress": 0, "scan_total": len(matched_slugs)}})
+        
+        scan_progress = 0
+        for slug in matched_slugs:
+            try:
+                matches = await db.competitor_matches.find({"product_slug": slug}).to_list(10)
+                match_dict = {m["competitor_key"]: m for m in matches}
+                prices = await loop.run_in_executor(None, scrape_all_competitor_prices, match_dict)
+                if prices:
+                    await db.price_history.insert_one({"product_slug": slug, "prices": prices, "checked_at": datetime.now(timezone.utc).isoformat()})
+                    cheapest = min(prices.values(), key=lambda x: x["price"])
+                    await db.products.update_one({"slug": slug}, {"$set": {
+                        "competitor_prices": prices,
+                        "cheapest_competitor_price": cheapest["price"],
+                        "cheapest_competitor_name": cheapest["competitor_name"],
+                        "competitor_prices_checked_at": datetime.now(timezone.utc).isoformat(),
+                    }})
+                scan_progress += 1
+                await db.system_status.update_one({"task": task_key}, {"$set": {"scan_progress": scan_progress}})
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.error(f"Price scan error for {slug}: {e}")
+                scan_progress += 1
+        
+        await db.system_status.update_one({"task": task_key}, {"$set": {
+            "running": False, "stop_requested": False, "phase": "done",
+            "products_matched": products_matched, "total_matches": total_matches,
+            "completed_at": datetime.now(timezone.utc).isoformat()
+        }})
     
     @router.get("/match-status/{task_key}")
     async def get_match_status(task_key: str, user: dict = Depends(get_current_user)):

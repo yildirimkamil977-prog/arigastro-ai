@@ -235,17 +235,35 @@ export default function CompetitorProductsPage() {
       {/* Category Match Progress */}
       {categoryMatchStatus?.running && (
         <div className="bg-violet-50 border border-violet-200 rounded-xl p-4" data-testid="category-match-progress">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-2">
-              <Loader2 className="h-4 w-4 animate-spin text-violet-600" />
-              <span className="font-medium text-sm text-violet-900">Kategori eşleştirme devam ediyor...</span>
-            </div>
-            <span className="text-sm text-violet-700 font-mono">{categoryMatchStatus.progress || 0}/{categoryMatchStatus.total || 0}</span>
-          </div>
-          <div className="w-full bg-violet-200 rounded-full h-2">
-            <div className="bg-violet-600 h-2 rounded-full transition-all duration-500" style={{ width: `${categoryMatchStatus.total ? (categoryMatchStatus.progress / categoryMatchStatus.total * 100) : 0}%` }} />
-          </div>
-          <p className="text-xs text-violet-600 mt-1.5">Eşleşme bulunan: {categoryMatchStatus.matched || 0} ürün</p>
+          {(!categoryMatchStatus.phase || categoryMatchStatus.phase !== "scanning") ? (
+            <>
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin text-violet-600" />
+                  <span className="font-medium text-sm text-violet-900">Eşleştirme devam ediyor...</span>
+                </div>
+                <span className="text-sm text-violet-700 font-mono">{categoryMatchStatus.progress || 0}/{categoryMatchStatus.total || 0}</span>
+              </div>
+              <div className="w-full bg-violet-200 rounded-full h-2">
+                <div className="bg-violet-600 h-2 rounded-full transition-all duration-500" style={{ width: `${categoryMatchStatus.total ? (categoryMatchStatus.progress / categoryMatchStatus.total * 100) : 0}%` }} />
+              </div>
+              <p className="text-xs text-violet-600 mt-1.5">{categoryMatchStatus.products_matched || 0} ürün eşleşti ({categoryMatchStatus.total_matches || 0} rakip bağlantısı)</p>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin text-emerald-600" />
+                  <span className="font-medium text-sm text-emerald-900">Fiyatlar taranıyor...</span>
+                </div>
+                <span className="text-sm text-emerald-700 font-mono">{categoryMatchStatus.scan_progress || 0}/{categoryMatchStatus.scan_total || 0}</span>
+              </div>
+              <div className="w-full bg-emerald-200 rounded-full h-2">
+                <div className="bg-emerald-600 h-2 rounded-full transition-all duration-500" style={{ width: `${categoryMatchStatus.scan_total ? (categoryMatchStatus.scan_progress / categoryMatchStatus.scan_total * 100) : 0}%` }} />
+              </div>
+              <p className="text-xs text-emerald-600 mt-1.5">Eşleştirme tamamlandı: {categoryMatchStatus.products_matched || 0} ürün. Fiyatlar çekiliyor...</p>
+            </>
+          )}
         </div>
       )}
 
