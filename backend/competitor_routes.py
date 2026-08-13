@@ -88,6 +88,25 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                 )
                 saved += 1
         
+        # Auto-scrape prices after matching
+        if saved > 0:
+            all_matches = await db.competitor_matches.find({"product_slug": slug}).to_list(10)
+            match_dict = {m["competitor_key"]: m for m in all_matches}
+            prices = await loop.run_in_executor(None, scrape_all_competitor_prices, match_dict)
+            if prices:
+                await db.price_history.insert_one({
+                    "product_slug": slug,
+                    "prices": prices,
+                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                })
+                cheapest = min(prices.values(), key=lambda x: x["price"]) if prices else None
+                await db.products.update_one({"slug": slug}, {"$set": {
+                    "competitor_prices": prices,
+                    "cheapest_competitor_price": cheapest["price"] if cheapest else None,
+                    "cheapest_competitor_name": cheapest["competitor_name"] if cheapest else None,
+                    "competitor_prices_checked_at": datetime.now(timezone.utc).isoformat(),
+                }})
+        
         return {"success": True, "matched": saved, "total": len(COMPETITORS), "results": results}
     
     @router.post("/auto-match-category/{category_name}")
@@ -265,12 +284,30 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         return {"changes": changes, "total": total, "page": page, "pages": (total + limit - 1) // limit}
     
     # --- Products enhanced list (with competitor data) ---
+    def _parse_categories_from_paths(paths):
+        """Parse category_path values into structured top-level and sub-category lists."""
+        top_cats = set()
+        sub_cats = set()
+        for p in paths:
+            if not p:
+                continue
+            for segment in p.split(","):
+                segment = segment.strip()
+                if segment == "Tüm Ürünler":
+                    continue
+                parts = [x.strip() for x in segment.split(">")]
+                if parts and parts[0]:
+                    top_cats.add(parts[0])
+                if len(parts) > 1:
+                    sub_cats.add(f"{parts[0]} > {parts[1]}")
+        return sorted(top_cats), sorted(sub_cats)
+
     @router.get("/products")
     async def list_products_enhanced(
         user: dict = Depends(get_current_user),
         search: str = "",
         category: str = "",
-        price_list: str = "",
+        brand: str = "",
         match_status: str = "",
         page: int = 1,
         limit: int = 50
@@ -279,10 +316,9 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         if search:
             query["name"] = {"$regex": search, "$options": "i"}
         if category:
-            query["$or"] = [
-                {"category": {"$regex": category, "$options": "i"}},
-                {"category_path": {"$regex": category, "$options": "i"}},
-            ]
+            query["category_path"] = {"$regex": category, "$options": "i"}
+        if brand:
+            query["brand"] = {"$regex": f"^{brand}$", "$options": "i"}
         
         skip = (page - 1) * limit
         total = await db.products.count_documents(query)
@@ -300,23 +336,302 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         for p in products:
             p["competitor_matches"] = match_map.get(p["slug"], {})
             p["match_count"] = len(p["competitor_matches"])
+            # Parse top-level category from category_path for display
+            cp = p.get("category_path", "")
+            if cp:
+                first_segment = cp.split(",")[0].strip()
+                if first_segment != "Tüm Ürünler":
+                    parts = [x.strip() for x in first_segment.split(">")]
+                    p["category"] = parts[0] if parts else ""
+                    p["subcategory"] = parts[1] if len(parts) > 1 else ""
+                else:
+                    p["category"] = ""
+                    p["subcategory"] = ""
+            else:
+                p["category"] = ""
+                p["subcategory"] = ""
         
-        # Filter by match status
+        # Filter by match status (post-filter)
         if match_status == "matched":
             products = [p for p in products if p["match_count"] > 0]
         elif match_status == "unmatched":
             products = [p for p in products if p["match_count"] == 0]
         
-        # Get unique categories for filter
-        categories = await db.products.distinct("category", {"inactive": {"$ne": True}})
-        categories = sorted([c for c in categories if c])
+        # Get unique categories and brands for filters
+        all_paths = await db.products.distinct("category_path", {"inactive": {"$ne": True}})
+        top_categories, sub_categories = _parse_categories_from_paths(all_paths)
+        brands = await db.products.distinct("brand", {"inactive": {"$ne": True}})
+        brands = sorted([b for b in brands if b])
         
         return {
             "products": products,
             "total": total,
             "page": page,
             "pages": (total + limit - 1) // limit,
-            "categories": categories,
+            "categories": top_categories,
+            "sub_categories": sub_categories,
+            "brands": brands,
         }
     
+    # --- İkas price info for a product ---
+    @router.get("/ikas-price/{slug}")
+    async def get_ikas_price_info(slug: str, user: dict = Depends(get_current_user)):
+        """Fetch price list details from İkas for a product."""
+        product = await db.products.find_one({"slug": slug})
+        if not product:
+            raise HTTPException(status_code=404, detail="Ürün bulunamadı")
+        
+        ikas_id = product.get("ikas_id") or product.get("ikas_product_id")
+        if not ikas_id:
+            return {"prices": [], "error": "İkas ID bulunamadı"}
+        
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, ikas_graphql,
+                f'{{ listProduct(id: {{eq: "{ikas_id}"}}) {{ data {{ name variants {{ id prices {{ sellPrice discountPrice currency priceListId }} }} }} }} }}',
+                None
+            )
+            variants = (result.get("listProduct", {}).get("data", []) or [{}])[0].get("variants", [])
+            prices = []
+            for v in variants[:1]:
+                for p in (v.get("prices") or []):
+                    if p.get("sellPrice") and p.get("sellPrice") > 0:
+                        prices.append({
+                            "sell_price": p["sellPrice"],
+                            "discount_price": p.get("discountPrice"),
+                            "currency": p.get("currency", "TRY"),
+                            "price_list_id": p.get("priceListId", ""),
+                        })
+            return {"prices": prices}
+        except Exception as e:
+            return {"prices": [], "error": str(e)}
+
+    # ============================================================
+    # MODULE 3: Bulk Price Scanning, Comparison & Tracking
+    # ============================================================
+
+    @router.post("/scan-all")
+    async def scan_all_matched_products(user: dict = Depends(get_current_user)):
+        """Start bulk price scan for all matched products. Runs in background."""
+        status = await db.system_status.find_one({"task": "competitor_scan"}, {"_id": 0})
+        if status and status.get("running"):
+            return {"started": False, "message": "Tarama zaten devam ediyor.", "status": status}
+
+        # Count products that have at least one competitor match
+        pipeline = [
+            {"$group": {"_id": "$product_slug"}},
+            {"$count": "total"}
+        ]
+        count_result = await db.competitor_matches.aggregate(pipeline).to_list(1)
+        total = count_result[0]["total"] if count_result else 0
+
+        if total == 0:
+            return {"started": False, "message": "Eşleşmiş ürün yok. Önce ürünleri eşleştirin."}
+
+        await db.system_status.update_one(
+            {"task": "competitor_scan"},
+            {"$set": {
+                "running": True,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "total": total,
+                "scanned": 0,
+                "success": 0,
+                "failed": 0,
+                "current_product": "",
+            }},
+            upsert=True
+        )
+
+        asyncio.create_task(_run_bulk_competitor_scan(db, COMPETITORS, scrape_all_competitor_prices, calculate_optimal_price))
+        return {"started": True, "total": total, "message": f"{total} ürün için fiyat taraması başlatıldı."}
+
+    async def _run_bulk_competitor_scan(db, competitors, scrape_fn, calc_fn):
+        """Background: scan all matched products and record price history."""
+        loop = asyncio.get_event_loop()
+        try:
+            # Get all unique slugs with matches
+            slugs_cursor = db.competitor_matches.aggregate([
+                {"$group": {"_id": "$product_slug"}}
+            ])
+            slugs = [doc["_id"] async for doc in slugs_cursor]
+
+            scanned = 0
+            success = 0
+            failed = 0
+
+            for slug in slugs:
+                try:
+                    # Check stop
+                    stop_check = await db.system_status.find_one({"task": "competitor_scan"})
+                    if stop_check and stop_check.get("stop_requested"):
+                        break
+
+                    product = await db.products.find_one({"slug": slug})
+                    if not product:
+                        scanned += 1
+                        continue
+
+                    await db.system_status.update_one(
+                        {"task": "competitor_scan"},
+                        {"$set": {"current_product": (product.get("name") or slug)[:50], "scanned": scanned}}
+                    )
+
+                    # Get matches
+                    matches = await db.competitor_matches.find({"product_slug": slug}).to_list(10)
+                    match_dict = {m["competitor_key"]: m for m in matches}
+
+                    # Scrape prices (blocking call in executor)
+                    prices = await loop.run_in_executor(None, scrape_fn, match_dict)
+
+                    if prices:
+                        # Save to price history
+                        await db.price_history.insert_one({
+                            "product_slug": slug,
+                            "prices": prices,
+                            "checked_at": datetime.now(timezone.utc).isoformat(),
+                        })
+
+                        # Find cheapest
+                        cheapest = min(prices.values(), key=lambda x: x["price"])
+
+                        # Calculate optimal price
+                        floor_price = product.get("floor_price")
+                        purchase_price = product.get("purchase_price")
+
+                        # Dynamic floor: if no manual floor, use purchase_price + category margin
+                        if not floor_price and purchase_price:
+                            cp = product.get("category_path", "")
+                            top_cat = ""
+                            if cp:
+                                first_seg = cp.split(",")[0].strip()
+                                if first_seg != "Tüm Ürünler":
+                                    top_cat = first_seg.split(">")[0].strip()
+                            if top_cat:
+                                rule = await db.pricing_rules.find_one({"category_name": top_cat})
+                                if rule and rule.get("profit_margin_pct"):
+                                    floor_price = purchase_price * (1 + rule["profit_margin_pct"] / 100)
+
+                        # Get undercut amount from category rule
+                        undercut = 100  # default
+                        cp = product.get("category_path", "")
+                        if cp:
+                            top_cat = cp.split(",")[0].strip().split(">")[0].strip()
+                            rule = await db.pricing_rules.find_one({"category_name": top_cat})
+                            if rule:
+                                undercut = rule.get("undercut_amount", 100)
+
+                        result = calc_fn(prices, product.get("our_price", 0), floor_price or 0, undercut)
+
+                        # Update product
+                        update = {
+                            "competitor_prices": prices,
+                            "cheapest_competitor_price": cheapest["price"],
+                            "cheapest_competitor_name": cheapest["competitor_name"],
+                            "competitor_prices_checked_at": datetime.now(timezone.utc).isoformat(),
+                            "price_recommendation": result,
+                        }
+                        await db.products.update_one({"slug": slug}, {"$set": update})
+
+                        # Log the price change recommendation
+                        if result.get("action") == "update":
+                            await db.price_changes.insert_one({
+                                "product_slug": slug,
+                                "product_name": product.get("name", ""),
+                                "action": result["action"],
+                                "old_price": result.get("old_price"),
+                                "new_price": result.get("new_price"),
+                                "cheapest_competitor": result.get("cheapest_competitor"),
+                                "cheapest_price": result.get("cheapest_price"),
+                                "floor_price": floor_price,
+                                "reason": result.get("reason", ""),
+                                "applied": False,
+                                "changed_at": datetime.now(timezone.utc).isoformat(),
+                            })
+
+                        success += 1
+                    else:
+                        failed += 1
+
+                    scanned += 1
+                    await asyncio.sleep(0.5)
+
+                except Exception as e:
+                    logger.error(f"Scan error for {slug}: {e}")
+                    failed += 1
+                    scanned += 1
+
+            await db.system_status.update_one(
+                {"task": "competitor_scan"},
+                {"$set": {
+                    "running": False,
+                    "stop_requested": False,
+                    "scanned": scanned,
+                    "success": success,
+                    "failed": failed,
+                    "current_product": "",
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                }}
+            )
+        except Exception as e:
+            logger.error(f"Bulk competitor scan error: {e}")
+            await db.system_status.update_one(
+                {"task": "competitor_scan"},
+                {"$set": {"running": False, "error": str(e)}}
+            )
+
+    @router.get("/scan-status")
+    async def get_scan_status(user: dict = Depends(get_current_user)):
+        """Get current bulk scan status."""
+        status = await db.system_status.find_one({"task": "competitor_scan"}, {"_id": 0})
+        return status or {"running": False, "scanned": 0, "total": 0}
+
+    @router.post("/scan-stop")
+    async def stop_scan(user: dict = Depends(get_current_user)):
+        """Stop the running bulk scan."""
+        await db.system_status.update_one({"task": "competitor_scan"}, {"$set": {"stop_requested": True}})
+        return {"success": True}
+
+    # --- Dashboard summary ---
+    @router.get("/dashboard")
+    async def competitor_dashboard(user: dict = Depends(get_current_user)):
+        """Get summary stats for the competitor tracking dashboard."""
+        total_products = await db.products.count_documents({"inactive": {"$ne": True}})
+
+        # Count matched products (distinct slugs in competitor_matches)
+        matched_pipeline = [{"$group": {"_id": "$product_slug"}}, {"$count": "total"}]
+        matched_result = await db.competitor_matches.aggregate(matched_pipeline).to_list(1)
+        matched_products = matched_result[0]["total"] if matched_result else 0
+
+        # Products where competitor is cheaper
+        cheaper_count = await db.products.count_documents({
+            "cheapest_competitor_price": {"$exists": True, "$ne": None},
+            "$expr": {"$lt": ["$cheapest_competitor_price", "$our_price"]}
+        })
+
+        # Products with price recommendations
+        recommend_count = await db.products.count_documents({
+            "price_recommendation.action": "update"
+        })
+
+        # Last scan info
+        scan_status = await db.system_status.find_one({"task": "competitor_scan"}, {"_id": 0})
+
+        # Recent price changes (last 10)
+        recent_changes = await db.price_changes.find(
+            {}, {"_id": 0}
+        ).sort("changed_at", -1).limit(10).to_list(10)
+
+        # Category rules
+        rules = await db.pricing_rules.find({}, {"_id": 0}).to_list(100)
+
+        return {
+            "total_products": total_products,
+            "matched_products": matched_products,
+            "cheaper_count": cheaper_count,
+            "recommend_count": recommend_count,
+            "scan_status": scan_status,
+            "recent_changes": recent_changes,
+            "category_rules": rules,
+        }
+
     return router

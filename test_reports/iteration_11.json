@@ -1,0 +1,57 @@
+{
+  "summary": "Backend + frontend testing for Competitor Price Tracking (Modules 1-3). Backend: 15/15 pytest cases passed against /api/competitor/* endpoints (products listing with search/category/brand/match_status filters, pagination, price-settings PUT, category-rules CRUD, dashboard stats, scan-all/scan-status/scan-stop, price-changes). Frontend: /products page loads 4186 products with 30 rows/page; category filter shows 90 options (9 top + 79 sub), brand filter 56 options (55 brands + all), match-status filter works (matched=1 row, unmatched works), search 'Tava' filters correctly, pagination Next works, detail modal opens on eye icon click. /price-tracking page loads with 4 stat cards (Toplam 4186, Eşleşmiş 1, Rakip 0, Öneri 0). Add Rule dialog: category select populated from real categories, saved rule with 25% margin + 150 TL undercut successfully and it displayed in the list. Scan-all triggered from backend test caused stop-scan-btn to be shown on UI (expected). Login via /login works with arigastro credentials.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "CompetitorProductsPage filters", "issues": ["React hydration warning: <span> is not a valid child of <option> in category-filter and brand-filter dropdowns (line 219/235/236). Appears to be triggered by dev-time visual-editor instrumentation wrapping dynamic {categories.length}. Cosmetic warning only; does not affect functionality but should be silenced by moving the count outside the <option> label or unwrapping the dynamic expression."]}
+    ]
+  },
+  "passed_tests": [
+    "POST /api/auth/login OK with arigastro",
+    "GET /api/competitor/products returns products, categories(>=5), sub_categories, brands(>=20), total, pages",
+    "Search filter by name (search=Tava) works",
+    "Category filter works",
+    "Brand filter works (^exact^ regex)",
+    "match_status=matched/unmatched post-filter works",
+    "Pagination works (page 1 vs page 2 different slugs)",
+    "PUT /api/competitor/price-settings/{slug} saves floor_price+purchase_price",
+    "POST + GET + DELETE /api/competitor/category-rules verified persistence",
+    "GET /api/competitor/dashboard returns all stat keys and category_rules array",
+    "POST /api/competitor/scan-all starts scan; scan-status + scan-stop respond",
+    "GET /api/competitor/price-changes returns changes+total",
+    "Frontend /products loads with 4186 products; 90 category options; 56 brand options",
+    "Frontend search 'Tava' filters rows correctly (first row contains 'tava')",
+    "Frontend match-status=matched shows 1 row",
+    "Frontend brand filter 'Arigastro' shows 8 rows",
+    "Frontend Next-page button works",
+    "Frontend product detail modal opens on eye icon",
+    "Frontend /price-tracking page loads with 4 stat cards populated",
+    "Frontend Add Rule dialog saves rule and displays it in the rules list"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_competitor_endpoints.py",
+    "/app/test_reports/pytest/competitor_results.xml",
+    "/app/test_reports/products_page.png",
+    "/app/test_reports/price_tracking.png"
+  ],
+  "action_items": [
+    "(Low priority) Fix the <span> inside <option> React warning in CompetitorProductsPage.js lines 219/235 — the visual-editor instrumentation is inserting a <span> inside the <option> element, which triggers a hydration warning. Consider using a non-instrumented expression or hoisting the text outside the option.",
+    "(Note) Only one product is marked as 'Eşleşmiş' in the whole catalog (matched=1) — expected per test data seed. Auto-match / ScraperAPI actions won't succeed in preview environment per problem statement."
+  ],
+  "critical_code_review_comments": [
+    "competitor_routes.py is 638 lines and mixes list, match, price, category-rule and scan logic — consider splitting into competitor_products.py / competitor_matching.py / competitor_scan.py for maintainability.",
+    "list_products_enhanced applies match_status filter AFTER pagination (post-filter on already-sliced page), so a page can appear shorter than 'limit' when filtering matched/unmatched. Consider aggregating match_count in the DB query and filtering pre-pagination for accurate paging.",
+    "PriceSettingsRequest accepts optional floor_price/purchase_price but does not validate against negative values or ensure floor <= sale price — worth adding pydantic Field(ge=0).",
+    "delete_category_rule always returns success even if the category_name did not exist — consider 404 on missing.",
+    "CompetitorProductsPage.js is 607 lines — long file with table row rendering inline; extracting <ProductRow /> and <FiltersBar /> would improve readability."
+  ],
+  "updated_files": ["/app/backend/tests/test_competitor_endpoints.py", "/app/test_reports/iteration_11.json"],
+  "success_rate": {"backend": "100% (15/15)", "frontend": "100% of critical flows (products page, filters, modal, price-tracking dashboard, add-rule dialog)"},
+  "test_credentials": {"username": "arigastro", "password": "Arigastro2026!"},
+  "seed_data_creation": "During the test, a temporary category rule for 'Ana Mutfak Ekipmanları' with margin=25% undercut=150 was saved via the UI (this overwrote the seeded rule of 20% / 100 TL). Also PUT price-settings ran on the first product on page (aluminyum-yapismaz-tava-maksi-24-cm) with floor=111.5 purchase=88.25 — this overwrote the seeded 500/350 values. Main agent may want to re-seed if the specific 500/350 & 20%/100TL values are needed for further QA.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All Module 1-3 competitor endpoints and UI flows are healthy. Regression suite lives at /app/backend/tests/test_competitor_endpoints.py (15 tests). Note: category-rule for 'Ana Mutfak Ekipmanları' now has 25%/150TL (overwritten during testing), and product 'aluminyum-yapismaz-tava-maksi-24-cm' floor/purchase = 111.5/88.25. Only 1 product is 'matched'; auto-match & ScraperAPI calls will fail in preview (network boundary) — do not treat as bug. Frontend has a benign React hydration warning about <span> inside <option> — needs cleanup but not a blocker."
+}
