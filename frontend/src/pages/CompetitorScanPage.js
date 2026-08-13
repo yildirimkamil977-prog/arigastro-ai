@@ -171,6 +171,21 @@ export default function CompetitorScanPage() {
         </div>
       )}
 
+      {/* Scheduled Scan Info */}
+      <div className="bg-white rounded-xl border p-4" data-testid="schedule-info">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            <span className="font-medium text-sm text-slate-800">Otomatik Tarama Aktif</span>
+          </div>
+          <span className="text-xs bg-violet-100 text-violet-700 px-2 py-1 rounded-lg font-medium">Her gece 03:00 (TR)</span>
+        </div>
+        <p className="text-xs text-slate-500 mt-2">Sistem her gece eşleşmiş tüm ürünlerin rakip fiyatlarını otomatik tarar. Kategori kurallarına göre fiyat önerileri oluşturur.</p>
+        {dashboard?.scheduled_scan?.last_run && (
+          <p className="text-xs text-slate-400 mt-1">Son zamanlanmış tarama: {new Date(dashboard.scheduled_scan.last_run).toLocaleDateString("tr-TR")} {new Date(dashboard.scheduled_scan.last_run).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}</p>
+        )}
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-white rounded-xl border shadow-sm" data-testid="category-rules-section">
           <div className="flex items-center justify-between px-4 py-3 border-b">

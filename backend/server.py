@@ -4096,7 +4096,7 @@ async def root():
 # app.include_router(api_router)  # Moved below after competitor routes
 
 # Competitor pricing routes
-from competitor_routes import setup_competitor_routes, router as competitor_router
+from competitor_routes import setup_competitor_routes, router as competitor_router, run_scheduled_competitor_scan
 setup_competitor_routes(db, get_current_user, ikas_graphql)
 api_router.include_router(competitor_router)
 app.include_router(api_router)
@@ -4156,8 +4156,9 @@ async def startup():
     # Start scheduler
     scheduler.add_job(scheduled_feed_sync, CronTrigger(hour=1, minute=0), id="feed_sync", name="Feed Guncelleme (Her gece 01:00)", replace_existing=True)
     scheduler.add_job(scheduled_price_check, CronTrigger(hour=21, minute=0), id="price_check_cron", name="Fiyat Kontrolu (Her gece 00:00 TR)", replace_existing=True)
+    scheduler.add_job(lambda: asyncio.ensure_future(run_scheduled_competitor_scan(db)), CronTrigger(hour=0, minute=0), id="competitor_scan_cron", name="Rakip Tarama (Her gece 03:00 TR)", replace_existing=True)
     scheduler.start()
-    logger.info("Scheduler basladi: Feed guncelleme (her gece 01:00), Fiyat kontrolu (her gece 00:00 TR)")
+    logger.info("Scheduler basladi: Feed (01:00), Akakce Fiyat (00:00 TR), Rakip Tarama (03:00 TR)")
 
 @app.on_event("shutdown")
 async def shutdown():

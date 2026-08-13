@@ -683,6 +683,9 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         # Category rules
         rules = await db.pricing_rules.find({}, {"_id": 0}).to_list(100)
 
+        # Scheduled scan info
+        scheduled_scan = await db.system_status.find_one({"task": "scheduled_competitor_scan"}, {"_id": 0})
+
         return {
             "total_products": total_products,
             "matched_products": matched_products,
@@ -691,6 +694,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
             "scan_status": scan_status,
             "recent_changes": recent_changes,
             "category_rules": rules,
+            "scheduled_scan": scheduled_scan,
         }
 
     # ============================================================
@@ -1029,3 +1033,143 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         }
 
     return router
+
+
+async def run_scheduled_competitor_scan(db):
+    """Called by APScheduler — scans all matched products respecting category rules."""
+    from competitor_pricing import (
+        COMPETITORS, scrape_all_competitor_prices, calculate_optimal_price,
+    )
+    logger.info("CRON: Rakip fiyat taramasi basladi")
+    try:
+        # Check active category rules
+        rules = await db.pricing_rules.find({"enabled": True}).to_list(100)
+        if not rules:
+            logger.info("CRON: Aktif kategori kurali yok, tum eslesmis urunler taranacak")
+
+        # Get all matched product slugs
+        slugs_cursor = db.competitor_matches.aggregate([{"$group": {"_id": "$product_slug"}}])
+        slugs = [doc["_id"] async for doc in slugs_cursor]
+        if not slugs:
+            logger.info("CRON: Eslesmis urun yok, atlanıyor")
+            return
+
+        await db.system_status.update_one(
+            {"task": "competitor_scan"},
+            {"$set": {
+                "running": True,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "total": len(slugs), "scanned": 0, "success": 0, "failed": 0,
+                "current_product": "", "triggered_by": "scheduler",
+            }},
+            upsert=True,
+        )
+
+        loop = asyncio.get_event_loop()
+        scanned = success = failed = 0
+
+        for slug in slugs:
+            try:
+                stop = await db.system_status.find_one({"task": "competitor_scan"})
+                if stop and stop.get("stop_requested"):
+                    break
+
+                product = await db.products.find_one({"slug": slug})
+                if not product:
+                    scanned += 1
+                    continue
+
+                await db.system_status.update_one(
+                    {"task": "competitor_scan"},
+                    {"$set": {"current_product": (product.get("name") or slug)[:50], "scanned": scanned}},
+                )
+
+                matches = await db.competitor_matches.find({"product_slug": slug}).to_list(10)
+                match_dict = {m["competitor_key"]: m for m in matches}
+                prices = await loop.run_in_executor(None, scrape_all_competitor_prices, match_dict)
+
+                if prices:
+                    await db.price_history.insert_one({
+                        "product_slug": slug,
+                        "prices": prices,
+                        "checked_at": datetime.now(timezone.utc).isoformat(),
+                    })
+
+                    cheapest = min(prices.values(), key=lambda x: x["price"])
+                    floor_price = product.get("floor_price")
+                    purchase_price = product.get("purchase_price")
+
+                    # Dynamic floor from category rule
+                    if not floor_price and purchase_price:
+                        cp = product.get("category_path", "")
+                        top_cat = cp.split(",")[0].strip().split(">")[0].strip() if cp else ""
+                        if top_cat:
+                            rule = await db.pricing_rules.find_one({"category_name": top_cat, "enabled": True})
+                            if rule and rule.get("profit_margin_pct"):
+                                floor_price = purchase_price * (1 + rule["profit_margin_pct"] / 100)
+
+                    undercut = 100
+                    cp = product.get("category_path", "")
+                    if cp:
+                        top_cat = cp.split(",")[0].strip().split(">")[0].strip()
+                        rule = await db.pricing_rules.find_one({"category_name": top_cat})
+                        if rule:
+                            undercut = rule.get("undercut_amount", 100)
+
+                    result = calculate_optimal_price(prices, product.get("our_price", 0), floor_price or 0, undercut)
+
+                    await db.products.update_one({"slug": slug}, {"$set": {
+                        "competitor_prices": prices,
+                        "cheapest_competitor_price": cheapest["price"],
+                        "cheapest_competitor_name": cheapest["competitor_name"],
+                        "competitor_prices_checked_at": datetime.now(timezone.utc).isoformat(),
+                        "price_recommendation": result,
+                    }})
+
+                    if result.get("action") == "update":
+                        await db.price_changes.insert_one({
+                            "product_slug": slug,
+                            "product_name": product.get("name", ""),
+                            "action": "update",
+                            "old_price": result.get("old_price"),
+                            "new_price": result.get("new_price"),
+                            "cheapest_competitor": result.get("cheapest_competitor"),
+                            "cheapest_price": result.get("cheapest_price"),
+                            "floor_price": floor_price,
+                            "reason": result.get("reason", ""),
+                            "applied": False,
+                            "changed_at": datetime.now(timezone.utc).isoformat(),
+                        })
+
+                    success += 1
+                else:
+                    failed += 1
+
+                scanned += 1
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.error(f"CRON scan error for {slug}: {e}")
+                failed += 1
+                scanned += 1
+
+        await db.system_status.update_one(
+            {"task": "competitor_scan"},
+            {"$set": {
+                "running": False, "stop_requested": False,
+                "scanned": scanned, "success": success, "failed": failed,
+                "current_product": "",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+        await db.system_status.update_one(
+            {"task": "scheduled_competitor_scan"},
+            {"$set": {"last_run": datetime.now(timezone.utc).isoformat(), "scanned": scanned, "success": success, "failed": failed}},
+            upsert=True,
+        )
+        logger.info(f"CRON: Rakip tarama tamamlandi. {scanned} urun, {success} basarili, {failed} basarisiz")
+    except Exception as e:
+        logger.error(f"CRON: Rakip tarama hatasi: {e}")
+        await db.system_status.update_one(
+            {"task": "competitor_scan"},
+            {"$set": {"running": False, "error": str(e)}},
+        )
