@@ -218,6 +218,23 @@ export default function CompetitorProductsPage() {
         </div>
       </div>
 
+      {/* Category Match Progress */}
+      {categoryMatchStatus?.running && (
+        <div className="bg-violet-50 border border-violet-200 rounded-xl p-4" data-testid="category-match-progress">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin text-violet-600" />
+              <span className="font-medium text-sm text-violet-900">Kategori eşleştirme devam ediyor...</span>
+            </div>
+            <span className="text-sm text-violet-700 font-mono">{categoryMatchStatus.progress || 0}/{categoryMatchStatus.total || 0}</span>
+          </div>
+          <div className="w-full bg-violet-200 rounded-full h-2">
+            <div className="bg-violet-600 h-2 rounded-full transition-all duration-500" style={{ width: `${categoryMatchStatus.total ? (categoryMatchStatus.progress / categoryMatchStatus.total * 100) : 0}%` }} />
+          </div>
+          <p className="text-xs text-violet-600 mt-1.5">Eşleşme bulunan: {categoryMatchStatus.matched || 0} ürün</p>
+        </div>
+      )}
+
       {/* Filters */}
       <div className="bg-white rounded-xl border p-3 shadow-sm" data-testid="filters">
         <div className="flex gap-2 flex-wrap items-center">
@@ -356,13 +373,42 @@ export default function CompetitorProductsPage() {
           </DialogHeader>
           {detailProduct && (
             <div className="px-6 pb-6 space-y-5">
+              {/* Quick Actions */}
+              <div className="flex gap-2 pt-4 flex-wrap" data-testid="detail-actions">
+                <Button size="sm" variant="outline" onClick={async () => {
+                  try {
+                    toast.info("Rakip fiyatları taranıyor...");
+                    await axios.post(`${API}/competitor/check-price/${detailProduct.slug}`, {}, { headers: getAuthHeaders(), withCredentials: true });
+                    toast.success("Fiyatlar güncellendi");
+                    openDetail(detailProduct);
+                    fetchProducts();
+                  } catch { toast.error("Tarama başarısız"); }
+                }} disabled={!detailProduct.match_count} data-testid="detail-scan-btn">
+                  <TrendingDown className="h-3.5 w-3.5 mr-1.5" /> Rakip Fiyat Tara
+                </Button>
+                <Button size="sm" variant="outline" onClick={async () => {
+                  toast.info("Eşleştirme başlatıldı...");
+                  autoMatchProduct(detailProduct.slug);
+                }} data-testid="detail-match-btn">
+                  <Link2 className="h-3.5 w-3.5 mr-1.5" /> Eşleştir
+                </Button>
+              </div>
+
               {/* Price Overview Cards */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-4">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <PriceCard label="Satış Fiyatı" value={formatPrice(detailProduct.our_price)} suffix="₺" color="text-slate-900" />
                 <PriceCard label="Alış Fiyatı" value={detailProduct.purchase_price ? formatPrice(detailProduct.purchase_price) : "-"} suffix={detailProduct.purchase_price ? "₺" : ""} color="text-blue-700" />
                 <PriceCard label="Dip Fiyat" value={detailProduct.floor_price ? formatPrice(detailProduct.floor_price) : "-"} suffix={detailProduct.floor_price ? "₺" : ""} color="text-orange-700" />
                 <PriceCard label="En Ucuz Rakip" value={detailProduct.cheapest_competitor_price ? formatPrice(detailProduct.cheapest_competitor_price) : "-"} suffix={detailProduct.cheapest_competitor_price ? "₺" : ""} sub={detailProduct.cheapest_competitor_name || ""} color={detailProduct.cheapest_competitor_price && detailProduct.cheapest_competitor_price < detailProduct.our_price ? "text-red-600" : "text-emerald-700"} />
               </div>
+
+              {/* Safety warning if no floor/purchase */}
+              {!detailProduct.floor_price && !detailProduct.purchase_price && (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-700 flex items-center gap-2">
+                  <AlertTriangle className="h-4 w-4 shrink-0" />
+                  <span><strong>Dip fiyat ve alış fiyatı girilmemiş.</strong> Bu ürünün fiyatı otomatik olarak güncellenmez. Lütfen tabloda alış fiyatı veya dip fiyat girin.</span>
+                </div>
+              )}
 
               {/* İkas Price Lists */}
               {ikasPrice.length > 0 && (
@@ -400,34 +446,59 @@ export default function CompetitorProductsPage() {
               {/* Competitor Matches */}
               <div>
                 <h3 className="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-1.5">
-                  <Link2 className="h-4 w-4" /> Rakip Eşleştirmeleri
+                  <Link2 className="h-4 w-4" /> Rakip Eşleştirmeleri ({matchDetail?.length || 0}/4)
                 </h3>
                 <div className="space-y-2">
-                  {matchDetail?.length ? matchDetail.map(m => {
-                    const comp = COMPETITOR_ICONS[m.competitor_key];
-                    const price = detailProduct.competitor_prices?.[m.competitor_key];
+                  {Object.entries(COMPETITOR_ICONS).map(([key, comp]) => {
+                    const match = matchDetail?.find(m => m.competitor_key === key);
+                    const price = detailProduct.competitor_prices?.[key];
+                    if (match) {
+                      return (
+                        <div key={key} className="flex items-center gap-3 p-3 bg-white border border-emerald-200 rounded-lg">
+                          <div className="w-9 h-9 rounded-full flex items-center justify-center text-[11px] font-bold text-white shrink-0" style={{ backgroundColor: comp.color }}>
+                            {comp.name}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="font-medium text-sm truncate">{match.title || match.url}</div>
+                            <a href={match.url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-500 hover:underline truncate block">{match.url}</a>
+                          </div>
+                          <div className="text-right shrink-0">
+                            {price ? <div className="font-bold text-sm">{formatPrice(price.price)} ₺</div> : <span className="text-xs text-slate-400">Fiyat yok</span>}
+                          </div>
+                          <span className={`text-[10px] px-2 py-0.5 rounded shrink-0 ${match.manual ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}>
+                            {match.manual ? "Manuel" : "Oto"}
+                          </span>
+                        </div>
+                      );
+                    }
+                    // Unmatched competitor — show manual match input
                     return (
-                      <div key={m.competitor_key} className="flex items-center gap-3 p-3 bg-white border rounded-lg">
-                        <div className="w-9 h-9 rounded-full flex items-center justify-center text-[11px] font-bold text-white shrink-0" style={{ backgroundColor: comp?.color || "#888" }}>
-                          {comp?.name || "?"}
+                      <div key={key} className="flex items-center gap-3 p-3 bg-slate-50 border border-dashed border-slate-300 rounded-lg">
+                        <div className="w-9 h-9 rounded-full flex items-center justify-center text-[11px] font-bold text-white shrink-0 opacity-40" style={{ backgroundColor: comp.color }}>
+                          {comp.name}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <div className="font-medium text-sm truncate">{m.title || m.url}</div>
-                          <a href={m.url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-500 hover:underline truncate block">{m.url}</a>
+                          <div className="text-xs text-slate-400 mb-1">{comp.domain} — Eşleşme yok</div>
+                          <form className="flex gap-1" onSubmit={async (e) => {
+                            e.preventDefault();
+                            const url = e.target.url.value.trim();
+                            if (!url) return;
+                            try {
+                              await axios.post(`${API}/competitor/match/${detailProduct.slug}`, {
+                                competitor_key: key, url, title: ""
+                              }, { headers: getAuthHeaders(), withCredentials: true });
+                              toast.success(`${comp.name} eşleştirildi`);
+                              openDetail(detailProduct);
+                              fetchProducts();
+                            } catch { toast.error("Eşleştirme başarısız"); }
+                          }}>
+                            <input name="url" placeholder={`${comp.domain} ürün URL'si`} className="flex-1 text-xs border rounded px-2 py-1 focus:ring-1 focus:ring-violet-300 outline-none" />
+                            <Button type="submit" size="sm" variant="outline" className="h-7 text-xs px-2">Eşleştir</Button>
+                          </form>
                         </div>
-                        <div className="text-right shrink-0">
-                          {price ? (
-                            <div className="font-bold text-sm">{formatPrice(price.price)} ₺</div>
-                          ) : (
-                            <span className="text-xs text-slate-400">Fiyat yok</span>
-                          )}
-                        </div>
-                        <span className={`text-[10px] px-2 py-0.5 rounded shrink-0 ${m.manual ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}>
-                          {m.manual ? "Manuel" : "Oto"}
-                        </span>
                       </div>
                     );
-                  }) : <p className="text-sm text-slate-400 text-center py-4">Henüz eşleştirme yok</p>}
+                  })}
                 </div>
               </div>
 

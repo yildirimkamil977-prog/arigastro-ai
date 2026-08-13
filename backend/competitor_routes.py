@@ -543,12 +543,14 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                         # Find cheapest
                         cheapest = min(prices.values(), key=lambda x: x["price"])
 
-                        # Calculate optimal price
+                        # ===== SENARYO 1 & 2: Effective Floor =====
                         floor_price = product.get("floor_price")
                         purchase_price = product.get("purchase_price")
+                        effective_floor = None
 
-                        # Dynamic floor: if no manual floor, use purchase_price + category margin
-                        if not floor_price and purchase_price:
+                        if floor_price:
+                            effective_floor = floor_price
+                        elif purchase_price:
                             cp = product.get("category_path", "")
                             top_cat = ""
                             if cp:
@@ -558,10 +560,10 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                             if top_cat:
                                 rule = await db.pricing_rules.find_one({"category_name": top_cat})
                                 if rule and rule.get("profit_margin_pct"):
-                                    floor_price = purchase_price * (1 + rule["profit_margin_pct"] / 100)
+                                    effective_floor = purchase_price * (1 + rule["profit_margin_pct"] / 100)
 
                         # Get undercut amount from category rule
-                        undercut = 100  # default
+                        undercut = 100
                         cp = product.get("category_path", "")
                         if cp:
                             top_cat = cp.split(",")[0].strip().split(">")[0].strip()
@@ -569,7 +571,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                             if rule:
                                 undercut = rule.get("undercut_amount", 100)
 
-                        result = calc_fn(prices, product.get("our_price", 0), floor_price or 0, undercut)
+                        result = calc_fn(prices, product.get("our_price", 0), effective_floor or 0, undercut)
 
                         # Update product
                         update = {
@@ -581,19 +583,20 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                         }
                         await db.products.update_one({"slug": slug}, {"$set": update})
 
-                        # Log the price change recommendation
-                        if result.get("action") == "update":
+                        # Log price changes and floor_hit events
+                        if result.get("action") in ("update", "floor_hit"):
                             await db.price_changes.insert_one({
                                 "product_slug": slug,
                                 "product_name": product.get("name", ""),
                                 "action": result["action"],
-                                "old_price": result.get("old_price"),
+                                "old_price": result.get("old_price", product.get("our_price")),
                                 "new_price": result.get("new_price"),
                                 "cheapest_competitor": result.get("cheapest_competitor"),
                                 "cheapest_price": result.get("cheapest_price"),
-                                "floor_price": floor_price,
+                                "floor_price": effective_floor,
                                 "reason": result.get("reason", ""),
                                 "applied": False,
+                                "can_update": effective_floor is not None,
                                 "changed_at": datetime.now(timezone.utc).isoformat(),
                             })
 
@@ -711,9 +714,11 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         if not product:
             raise HTTPException(status_code=404, detail="Ürün bulunamadı")
 
-        # SAFETY CHECK: floor_price or purchase_price must exist
-        if not product.get("floor_price") and not product.get("purchase_price"):
-            return {"success": False, "error": "Bu ürünün dip fiyatı veya alış fiyatı girilmemiş. Fiyat güncellenmeden önce bu bilgilerin girilmesi zorunludur."}
+        # SAFETY CHECK: effective floor must be calculable
+        floor_price = product.get("floor_price")
+        purchase_price = product.get("purchase_price")
+        if not floor_price and not purchase_price:
+            return {"success": False, "error": "Bu ürünün ne dip fiyatı ne de alış fiyatı girilmiş. Fiyat güncellenmeden önce en az birinin girilmesi zorunludur."}
 
         ikas_id = product.get("ikas_id") or product.get("ikas_product_id")
         if not ikas_id:
@@ -1012,6 +1017,12 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
             query["applied"] = True
         elif status_filter == "pending":
             query["applied"] = False
+            query["action"] = "update"
+            query["apply_error"] = {"$exists": False}
+        elif status_filter == "floor_hit":
+            query["action"] = "floor_hit"
+        elif status_filter == "error":
+            query["apply_error"] = {"$exists": True, "$ne": ""}
         if search:
             query["product_name"] = {"$regex": search, "$options": "i"}
 
@@ -1109,17 +1120,23 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
 
                     cheapest = min(prices.values(), key=lambda x: x["price"])
 
-                    # Calculate floor price
-                    floor_price = product.get("floor_price")
-                    purchase_price = product.get("purchase_price")
-                    if not floor_price and purchase_price and rule.get("profit_margin_pct"):
-                        floor_price = purchase_price * (1 + rule["profit_margin_pct"] / 100)
+                    # ===== SENARYO 1 & 2: Effective Floor Hesaplama =====
+                    floor_price = product.get("floor_price")        # Manuel dip fiyat
+                    purchase_price = product.get("purchase_price")   # Alış fiyatı
+                    effective_floor = None
 
-                    # SAFETY: Check if floor/purchase price exists for price update eligibility
-                    has_price_protection = bool(floor_price or purchase_price)
+                    if floor_price:
+                        # SENARYO 1: Manuel dip fiyat girilmiş
+                        effective_floor = floor_price
+                    elif purchase_price and rule.get("profit_margin_pct"):
+                        # SENARYO 2: Alış fiyatı + kategori kar oranı ile hesapla
+                        effective_floor = purchase_price * (1 + rule["profit_margin_pct"] / 100)
+
+                    # SENARYO 3: Ne dip ne alış+marj yok → güncelleme yapılamaz
+                    can_update_price = effective_floor is not None
 
                     undercut = rule.get("undercut_amount", 100)
-                    result = calculate_optimal_price(prices, product.get("our_price", 0), floor_price or 0, undercut)
+                    result = calculate_optimal_price(prices, product.get("our_price", 0), effective_floor or 0, undercut)
 
                     update_fields = {
                         "competitor_prices": prices,
@@ -1141,15 +1158,14 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
                             "new_price": result.get("new_price"),
                             "cheapest_competitor": result.get("cheapest_competitor"),
                             "cheapest_price": result.get("cheapest_price"),
-                            "floor_price": floor_price,
+                            "floor_price": effective_floor,
                             "reason": result.get("reason", ""),
                             "applied": False,
                             "auto_update": should_auto,
                             "changed_at": datetime.now(timezone.utc).isoformat(),
                         }
 
-                        # CRITICAL SAFETY: Only auto-update if product has floor_price or purchase_price
-                        if should_auto and ikas_graphql and has_price_protection:
+                        if should_auto and ikas_graphql and can_update_price:
                             try:
                                 ikas_id = product.get("ikas_id") or product.get("ikas_product_id")
                                 if ikas_id:
@@ -1166,11 +1182,26 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
                             except Exception as e:
                                 logger.error(f"CRON auto-update error for {slug}: {e}")
                                 log_entry["apply_error"] = str(e)
-                        elif should_auto and not has_price_protection:
-                            log_entry["apply_error"] = "Dip fiyat veya alış fiyatı girilmemiş — fiyat güncellenmedi"
-                            logger.warning(f"CRON: {slug} icin fiyat korumasi yok, guncelleme atlanıyor")
+                        elif should_auto and not can_update_price:
+                            log_entry["apply_error"] = "Dip fiyat girilmemiş ve alış fiyatı+kar oranı hesaplanamıyor — güncelleme atlandı"
+                            logger.warning(f"CRON: {slug} icin effective floor yok, guncelleme atlanıyor")
 
                         await db.price_changes.insert_one(log_entry)
+                    elif result.get("action") == "floor_hit":
+                        # Dip fiyata çarptı — loglayalım
+                        await db.price_changes.insert_one({
+                            "product_slug": slug,
+                            "product_name": product.get("name", ""),
+                            "action": "floor_hit",
+                            "old_price": product.get("our_price"),
+                            "new_price": None,
+                            "cheapest_competitor": result.get("cheapest_competitor"),
+                            "cheapest_price": result.get("cheapest_price"),
+                            "floor_price": effective_floor,
+                            "reason": result.get("reason", ""),
+                            "applied": False,
+                            "changed_at": datetime.now(timezone.utc).isoformat(),
+                        })
 
                     success += 1
                 else:

@@ -4,7 +4,7 @@ import axios from "axios";
 import { toast } from "sonner";
 import {
   Search, ChevronLeft, ChevronRight, Loader2, RefreshCw, ArrowRight,
-  CheckCircle2, Clock, Filter
+  CheckCircle2, Clock, AlertTriangle, ShieldX, ShieldCheck
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -47,6 +47,24 @@ export default function PriceChangesPage() {
     return dt.toLocaleDateString("tr-TR") + " " + dt.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
   };
 
+  const getStatusBadge = (ch) => {
+    if (ch.applied) {
+      return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-100 text-emerald-700"><CheckCircle2 className="h-3 w-3" /> Uygulandı</span>;
+    }
+    if (ch.action === "floor_hit") {
+      return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-orange-100 text-orange-700"><ShieldCheck className="h-3 w-3" /> Dip Fiyat Koruması</span>;
+    }
+    if (ch.apply_error) {
+      return (
+        <div className="text-center">
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-red-100 text-red-700"><ShieldX className="h-3 w-3" /> Hata</span>
+          <div className="text-[10px] text-red-500 mt-0.5 max-w-[140px] truncate" title={ch.apply_error}>{ch.apply_error}</div>
+        </div>
+      );
+    }
+    return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-100 text-amber-700"><Clock className="h-3 w-3" /> Bekliyor</span>;
+  };
+
   return (
     <div className="space-y-4" data-testid="price-changes-page">
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -64,15 +82,12 @@ export default function PriceChangesPage() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
           <Input placeholder="Ürün ara..." value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} className="pl-9 h-9" data-testid="search-input" />
         </div>
-        <select
-          value={statusFilter}
-          onChange={e => { setStatusFilter(e.target.value); setPage(1); }}
-          className="border rounded-lg px-3 h-9 text-sm bg-white min-w-[140px] focus:ring-2 focus:ring-violet-200 focus:border-violet-400 outline-none"
-          data-testid="status-filter"
-        >
+        <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1); }} className="border rounded-lg px-3 h-9 text-sm bg-white min-w-[160px] focus:ring-2 focus:ring-violet-200 focus:border-violet-400 outline-none" data-testid="status-filter">
           <option value="">Tüm Durum</option>
           <option value="applied">Uygulanmış</option>
           <option value="pending">Bekliyor</option>
+          <option value="floor_hit">Dip Fiyat Koruması</option>
+          <option value="error">Hatalı</option>
         </select>
       </div>
 
@@ -86,45 +101,49 @@ export default function PriceChangesPage() {
                 <th className="text-center px-1 py-3"></th>
                 <th className="text-center px-3 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Yeni Fiyat</th>
                 <th className="text-center px-3 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">En Ucuz Rakip</th>
+                <th className="text-center px-3 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Dip Fiyat</th>
                 <th className="text-center px-3 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Durum</th>
                 <th className="text-center px-3 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Tarih</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {loading ? (
-                <tr><td colSpan={7} className="text-center py-16"><Loader2 className="h-6 w-6 animate-spin mx-auto text-slate-400" /></td></tr>
+                <tr><td colSpan={8} className="text-center py-16"><Loader2 className="h-6 w-6 animate-spin mx-auto text-slate-400" /></td></tr>
               ) : changes.length === 0 ? (
-                <tr><td colSpan={7} className="text-center py-16 text-slate-400">Fiyat değişikliği bulunamadı</td></tr>
+                <tr><td colSpan={8} className="text-center py-16 text-slate-400">Fiyat değişikliği bulunamadı</td></tr>
               ) : changes.map((ch, i) => (
-                <tr key={i} className="hover:bg-slate-50/70 transition-colors">
+                <tr key={i} className={`hover:bg-slate-50/70 transition-colors ${ch.action === "floor_hit" ? "bg-orange-50/30" : ch.apply_error ? "bg-red-50/30" : ""}`}>
                   <td className="px-4 py-3">
-                    <div className="font-medium text-slate-900 text-sm truncate max-w-[250px]">{ch.product_name}</div>
-                    {ch.reason && <div className="text-[11px] text-slate-400 mt-0.5 truncate max-w-[250px]">{ch.reason}</div>}
+                    <div className="font-medium text-slate-900 text-sm truncate max-w-[220px]">{ch.product_name}</div>
+                    {ch.reason && <div className="text-[11px] text-slate-400 mt-0.5 truncate max-w-[220px]">{ch.reason}</div>}
                   </td>
                   <td className="text-center px-3 py-3">
-                    <span className="text-slate-500 line-through">{formatPrice(ch.old_price)} ₺</span>
+                    <span className="text-slate-500">{formatPrice(ch.old_price)} ₺</span>
                   </td>
                   <td className="text-center px-1 py-3"><ArrowRight className="h-3.5 w-3.5 text-slate-300 mx-auto" /></td>
                   <td className="text-center px-3 py-3">
-                    <span className="font-bold text-blue-700">{formatPrice(ch.new_price)} ₺</span>
-                    <div className="text-[11px] text-emerald-600 font-medium">-{formatPrice((ch.old_price || 0) - (ch.new_price || 0))} ₺</div>
+                    {ch.new_price ? (
+                      <>
+                        <span className="font-bold text-blue-700">{formatPrice(ch.new_price)} ₺</span>
+                        {ch.old_price && ch.new_price && <div className="text-[11px] text-emerald-600 font-medium">-{formatPrice(ch.old_price - ch.new_price)} ₺</div>}
+                      </>
+                    ) : (
+                      <span className="text-xs text-slate-400">—</span>
+                    )}
                   </td>
                   <td className="text-center px-3 py-3">
                     <div className="text-sm">{formatPrice(ch.cheapest_price)} ₺</div>
                     <div className="text-[11px] text-slate-400">{ch.cheapest_competitor}</div>
                   </td>
                   <td className="text-center px-3 py-3">
-                    {ch.applied ? (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-100 text-emerald-700">
-                        <CheckCircle2 className="h-3 w-3" /> Uygulandı
-                      </span>
+                    {ch.floor_price ? (
+                      <span className="text-xs font-medium text-orange-700">{formatPrice(ch.floor_price)} ₺</span>
                     ) : (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-100 text-amber-700">
-                        <Clock className="h-3 w-3" /> Bekliyor
-                      </span>
+                      <span className="text-[11px] text-red-400 font-medium flex items-center justify-center gap-0.5"><AlertTriangle className="h-3 w-3" /> Yok</span>
                     )}
                   </td>
-                  <td className="text-center px-3 py-3 text-xs text-slate-500">{formatDate(ch.changed_at)}</td>
+                  <td className="text-center px-3 py-3">{getStatusBadge(ch)}</td>
+                  <td className="text-center px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{formatDate(ch.changed_at)}</td>
                 </tr>
               ))}
             </tbody>
