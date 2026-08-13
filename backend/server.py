@@ -4096,7 +4096,7 @@ async def root():
 # app.include_router(api_router)  # Moved below after competitor routes
 
 # Competitor pricing routes
-from competitor_routes import setup_competitor_routes, router as competitor_router, run_scheduled_competitor_scan
+from competitor_routes import setup_competitor_routes, router as competitor_router, run_scheduled_competitor_scan, _apply_price_to_ikas
 setup_competitor_routes(db, get_current_user, ikas_graphql)
 api_router.include_router(competitor_router)
 app.include_router(api_router)
@@ -4153,12 +4153,12 @@ async def startup():
         f.write(f"## Admin\n- Username: {admin_username}\n- Password: {admin_password}\n- Role: admin\n\n")
         f.write(f"## Auth Endpoints\n- POST /api/auth/login\n- GET /api/auth/me\n- POST /api/auth/logout\n")
     
-    # Start scheduler
-    scheduler.add_job(scheduled_feed_sync, CronTrigger(hour=1, minute=0), id="feed_sync", name="Feed Guncelleme (Her gece 01:00)", replace_existing=True)
-    scheduler.add_job(scheduled_price_check, CronTrigger(hour=21, minute=0), id="price_check_cron", name="Fiyat Kontrolu (Her gece 00:00 TR)", replace_existing=True)
-    scheduler.add_job(lambda: asyncio.ensure_future(run_scheduled_competitor_scan(db)), CronTrigger(hour=0, minute=0), id="competitor_scan_cron", name="Rakip Tarama (Her gece 03:00 TR)", replace_existing=True)
+    # Start scheduler — TR saatleri: 00:00 Feed, 01:00 Rakip Tarama+Oto Fiyat
+    scheduler.add_job(scheduled_feed_sync, CronTrigger(hour=21, minute=0), id="feed_sync", name="Feed Guncelleme (Her gece 00:00 TR)", replace_existing=True)
+    scheduler.add_job(scheduled_price_check, CronTrigger(hour=21, minute=30), id="price_check_cron", name="Akakce Fiyat (Her gece 00:30 TR)", replace_existing=True)
+    scheduler.add_job(lambda: asyncio.ensure_future(run_scheduled_competitor_scan(db, ikas_graphql)), CronTrigger(hour=22, minute=0), id="competitor_scan_cron", name="Rakip Tarama + Oto Fiyat (Her gece 01:00 TR)", replace_existing=True)
     scheduler.start()
-    logger.info("Scheduler basladi: Feed (01:00), Akakce Fiyat (00:00 TR), Rakip Tarama (03:00 TR)")
+    logger.info("Scheduler basladi: Feed (00:00 TR), Akakce (00:30 TR), Rakip Tarama+Fiyat (01:00 TR)")
 
 @app.on_event("shutdown")
 async def shutdown():

@@ -16,7 +16,7 @@ export default function CompetitorScanPage() {
   const [loading, setLoading] = useState(true);
   const [showRuleDialog, setShowRuleDialog] = useState(false);
   const [categories, setCategories] = useState([]);
-  const [newRule, setNewRule] = useState({ category_name: "", profit_margin_pct: 20, undercut_amount: 100, scan_hour: 3, enabled: true });
+  const [newRule, setNewRule] = useState({ category_name: "", profit_margin_pct: 20, undercut_amount: 100, enabled: true, auto_update_ikas: false });
 
   const fetchDashboard = useCallback(async () => {
     try {
@@ -89,7 +89,7 @@ export default function CompetitorScanPage() {
       await axios.post(`${API}/competitor/category-rules`, newRule, { headers: getAuthHeaders(), withCredentials: true });
       toast.success("Kategori kuralı kaydedildi");
       setShowRuleDialog(false);
-      setNewRule({ category_name: "", profit_margin_pct: 20, undercut_amount: 100, scan_hour: 3, enabled: true });
+      setNewRule({ category_name: "", profit_margin_pct: 20, undercut_amount: 100, enabled: true, auto_update_ikas: false });
       fetchDashboard();
     } catch { toast.error("Kaydetme başarısız"); }
   };
@@ -176,13 +176,17 @@ export default function CompetitorScanPage() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="font-medium text-sm text-slate-800">Otomatik Tarama Aktif</span>
+            <span className="font-medium text-sm text-slate-800">Gece Otomatik Akış</span>
           </div>
-          <span className="text-xs bg-violet-100 text-violet-700 px-2 py-1 rounded-lg font-medium">Her gece 03:00 (TR)</span>
+          <div className="flex gap-2 text-xs">
+            <span className="bg-slate-100 text-slate-600 px-2 py-1 rounded-lg font-medium">00:00 Feed</span>
+            <span className="bg-violet-100 text-violet-700 px-2 py-1 rounded-lg font-medium">01:00 Rakip Tarama</span>
+            <span className="bg-emerald-100 text-emerald-700 px-2 py-1 rounded-lg font-medium">+İkas Oto Güncelleme</span>
+          </div>
         </div>
-        <p className="text-xs text-slate-500 mt-2">Sistem her gece eşleşmiş tüm ürünlerin rakip fiyatlarını otomatik tarar. Kategori kurallarına göre fiyat önerileri oluşturur.</p>
+        <p className="text-xs text-slate-500 mt-2">Her gece 00:00'da feed güncellenir, 01:00'da eşleşmiş ürünlerin rakip fiyatları taranır. <strong>"İkas Oto"</strong> açık olan kategorilerdeki ürünlerin fiyatları otomatik güncellenir.</p>
         {dashboard?.scheduled_scan?.last_run && (
-          <p className="text-xs text-slate-400 mt-1">Son zamanlanmış tarama: {new Date(dashboard.scheduled_scan.last_run).toLocaleDateString("tr-TR")} {new Date(dashboard.scheduled_scan.last_run).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}</p>
+          <p className="text-xs text-slate-400 mt-1">Son zamanlanmış tarama: {new Date(dashboard.scheduled_scan.last_run).toLocaleDateString("tr-TR")} {new Date(dashboard.scheduled_scan.last_run).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })} — Güncellenen: {dashboard.scheduled_scan.auto_updated || 0} ürün</p>
         )}
       </div>
 
@@ -209,6 +213,7 @@ export default function CompetitorScanPage() {
                         <span className="flex items-center gap-0.5"><Percent className="h-3 w-3" /> Kâr: <strong className="text-emerald-600">%{rule.profit_margin_pct || 0}</strong></span>
                         <span>Kırma: <strong className="text-blue-600">{rule.undercut_amount || 100} ₺</strong></span>
                         <span className={`font-medium ${rule.enabled ? "text-emerald-600" : "text-red-500"}`}>{rule.enabled ? "Aktif" : "Pasif"}</span>
+                        {rule.auto_update_ikas && <span className="font-medium text-violet-600 bg-violet-50 px-1.5 py-0.5 rounded">İkas Oto</span>}
                       </div>
                     </div>
                     <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-red-400 hover:text-red-600 hover:bg-red-50" onClick={() => deleteRule(rule.category_name)}><Trash2 className="h-3.5 w-3.5" /></Button>
@@ -283,6 +288,17 @@ export default function CompetitorScanPage() {
                 <div className={`w-4 h-4 bg-white rounded-full shadow transition-transform ${newRule.enabled ? "translate-x-5" : "translate-x-0.5"}`} />
               </button>
             </div>
+            <div className="flex items-center gap-3">
+              <label className="text-sm font-medium text-slate-700">Otomatik İkas Güncelleme</label>
+              <button onClick={() => setNewRule(r => ({ ...r, auto_update_ikas: !r.auto_update_ikas }))} className={`w-10 h-5 rounded-full transition-colors ${newRule.auto_update_ikas ? "bg-emerald-600" : "bg-slate-300"}`} data-testid="rule-auto-update-toggle">
+                <div className={`w-4 h-4 bg-white rounded-full shadow transition-transform ${newRule.auto_update_ikas ? "translate-x-5" : "translate-x-0.5"}`} />
+              </button>
+            </div>
+            {newRule.auto_update_ikas && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-700">
+                <strong>Dikkat:</strong> Bu kategori için fiyatlar tarama sonrası otomatik olarak İkas'a gönderilir. Dip Fiyat koruması aktiftir.
+              </div>
+            )}
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs text-blue-700">
               <strong>Kural mantığı:</strong> Dip Fiyat = Alış Fiyatı x (1 + Kâr Marjı%). Sistem, en ucuz rakipten Kırma tutarı kadar düşük fiyat önerir ancak Dip Fiyat'ın altına inmez.
             </div>

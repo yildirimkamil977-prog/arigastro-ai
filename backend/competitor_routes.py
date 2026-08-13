@@ -261,8 +261,8 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         category_name: str
         enabled: bool = True
         undercut_amount: float = 100
-        profit_margin_pct: Optional[float] = None  # e.g. 15 for 15%
-        scan_hour: int = 3  # Default 03:00 Turkey time
+        profit_margin_pct: Optional[float] = None
+        auto_update_ikas: bool = False  # Otomatik İkas fiyat güncelleme
     
     @router.post("/category-rules")
     async def set_category_rule(req: CategoryRuleRequest, user: dict = Depends(get_current_user)):
@@ -273,7 +273,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                 "enabled": req.enabled,
                 "undercut_amount": req.undercut_amount,
                 "profit_margin_pct": req.profit_margin_pct,
-                "scan_hour": req.scan_hour,
+                "auto_update_ikas": req.auto_update_ikas,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }},
             upsert=True
@@ -354,20 +354,15 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         skip = (page - 1) * limit
         total = await db.products.count_documents(query)
 
-        # Get slugs that have competitor matches (for priority sorting)
+        # Get slugs that have competitor matches (ONLY new 4-site system)
         matched_slugs_list = await db.competitor_matches.distinct("product_slug")
-        matched_slugs_set = set(matched_slugs_list)
 
-        # Use aggregation for priority sorting: matched/priced products first
+        # Priority sort: products with new-system competitor matches first
         pipeline = [
             {"$match": query},
             {"$addFields": {
                 "_sort_priority": {"$cond": [
-                    {"$or": [
-                        {"$in": ["$slug", matched_slugs_list]},
-                        {"$gt": ["$cheapest_price", None]},
-                        {"$gt": ["$cheapest_competitor_price", None]},
-                    ]},
+                    {"$in": ["$slug", matched_slugs_list]},
                     0, 1
                 ]}
             }},
@@ -404,11 +399,6 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
             else:
                 p["category"] = ""
                 p["subcategory"] = ""
-
-            # Merge cheapest competitor data from both systems (new 4-site + old Akakçe)
-            if not p.get("cheapest_competitor_price") and p.get("cheapest_price"):
-                p["cheapest_competitor_price"] = p["cheapest_price"]
-                p["cheapest_competitor_name"] = p.get("cheapest_competitor", "Akakçe")
         
         # Filter by match status (post-filter)
         if match_status == "matched":
@@ -1035,17 +1025,18 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
     return router
 
 
-async def run_scheduled_competitor_scan(db):
-    """Called by APScheduler — scans all matched products respecting category rules."""
+async def run_scheduled_competitor_scan(db, ikas_graphql=None):
+    """Called by APScheduler — scans all matched products, then auto-updates İkas for enabled categories."""
     from competitor_pricing import (
         COMPETITORS, scrape_all_competitor_prices, calculate_optimal_price,
     )
     logger.info("CRON: Rakip fiyat taramasi basladi")
     try:
-        # Check active category rules
-        rules = await db.pricing_rules.find({"enabled": True}).to_list(100)
-        if not rules:
-            logger.info("CRON: Aktif kategori kurali yok, tum eslesmis urunler taranacak")
+        # Build rules map by category name
+        rules_list = await db.pricing_rules.find({"enabled": True}).to_list(100)
+        rules_map = {r["category_name"]: r for r in rules_list}
+        # Categories with auto İkas update
+        auto_update_cats = {r["category_name"] for r in rules_list if r.get("auto_update_ikas")}
 
         # Get all matched product slugs
         slugs_cursor = db.competitor_matches.aggregate([{"$group": {"_id": "$product_slug"}}])
@@ -1060,13 +1051,20 @@ async def run_scheduled_competitor_scan(db):
                 "running": True,
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "total": len(slugs), "scanned": 0, "success": 0, "failed": 0,
+                "auto_updated": 0,
                 "current_product": "", "triggered_by": "scheduler",
             }},
             upsert=True,
         )
 
         loop = asyncio.get_event_loop()
-        scanned = success = failed = 0
+        scanned = success = failed = auto_updated = 0
+
+        IKAS_PRICE_LISTS = {
+            "EUR": "db850a77-bfd6-43de-8892-78d16dc01e0e",
+            "USD": "28b86f15-34b5-4c49-8d96-678194f4a8ba",
+            "TRY": "35b38ca5-9f2d-4482-a9d8-3a6b0df33efd",
+        }
 
         for slug in slugs:
             try:
@@ -1084,6 +1082,16 @@ async def run_scheduled_competitor_scan(db):
                     {"$set": {"current_product": (product.get("name") or slug)[:50], "scanned": scanned}},
                 )
 
+                # Determine product's top category
+                cp = product.get("category_path", "")
+                top_cat = ""
+                if cp:
+                    first_seg = cp.split(",")[0].strip()
+                    if first_seg != "Tüm Ürünler":
+                        top_cat = first_seg.split(">")[0].strip()
+
+                rule = rules_map.get(top_cat, {})
+
                 matches = await db.competitor_matches.find({"product_slug": slug}).to_list(10)
                 match_dict = {m["competitor_key"]: m for m in matches}
                 prices = await loop.run_in_executor(None, scrape_all_competitor_prices, match_dict)
@@ -1096,38 +1104,29 @@ async def run_scheduled_competitor_scan(db):
                     })
 
                     cheapest = min(prices.values(), key=lambda x: x["price"])
+
+                    # Calculate floor price
                     floor_price = product.get("floor_price")
                     purchase_price = product.get("purchase_price")
+                    if not floor_price and purchase_price and rule.get("profit_margin_pct"):
+                        floor_price = purchase_price * (1 + rule["profit_margin_pct"] / 100)
 
-                    # Dynamic floor from category rule
-                    if not floor_price and purchase_price:
-                        cp = product.get("category_path", "")
-                        top_cat = cp.split(",")[0].strip().split(">")[0].strip() if cp else ""
-                        if top_cat:
-                            rule = await db.pricing_rules.find_one({"category_name": top_cat, "enabled": True})
-                            if rule and rule.get("profit_margin_pct"):
-                                floor_price = purchase_price * (1 + rule["profit_margin_pct"] / 100)
-
-                    undercut = 100
-                    cp = product.get("category_path", "")
-                    if cp:
-                        top_cat = cp.split(",")[0].strip().split(">")[0].strip()
-                        rule = await db.pricing_rules.find_one({"category_name": top_cat})
-                        if rule:
-                            undercut = rule.get("undercut_amount", 100)
-
+                    undercut = rule.get("undercut_amount", 100)
                     result = calculate_optimal_price(prices, product.get("our_price", 0), floor_price or 0, undercut)
 
-                    await db.products.update_one({"slug": slug}, {"$set": {
+                    update_fields = {
                         "competitor_prices": prices,
                         "cheapest_competitor_price": cheapest["price"],
                         "cheapest_competitor_name": cheapest["competitor_name"],
                         "competitor_prices_checked_at": datetime.now(timezone.utc).isoformat(),
                         "price_recommendation": result,
-                    }})
+                    }
+                    await db.products.update_one({"slug": slug}, {"$set": update_fields})
 
+                    # Log & auto-update İkas if category allows
                     if result.get("action") == "update":
-                        await db.price_changes.insert_one({
+                        should_auto = top_cat in auto_update_cats
+                        log_entry = {
                             "product_slug": slug,
                             "product_name": product.get("name", ""),
                             "action": "update",
@@ -1138,8 +1137,30 @@ async def run_scheduled_competitor_scan(db):
                             "floor_price": floor_price,
                             "reason": result.get("reason", ""),
                             "applied": False,
+                            "auto_update": should_auto,
                             "changed_at": datetime.now(timezone.utc).isoformat(),
-                        })
+                        }
+
+                        if should_auto and ikas_graphql:
+                            # Auto-update İkas
+                            try:
+                                ikas_id = product.get("ikas_id") or product.get("ikas_product_id")
+                                if ikas_id:
+                                    applied = await _apply_price_to_ikas(
+                                        loop, ikas_graphql, db, slug, ikas_id,
+                                        result["new_price"], product.get("our_price", 0),
+                                        IKAS_PRICE_LISTS
+                                    )
+                                    if applied:
+                                        log_entry["applied"] = True
+                                        log_entry["applied_at"] = datetime.now(timezone.utc).isoformat()
+                                        await db.products.update_one({"slug": slug}, {"$set": {"our_price": result["new_price"]}})
+                                        auto_updated += 1
+                            except Exception as e:
+                                logger.error(f"CRON auto-update error for {slug}: {e}")
+                                log_entry["apply_error"] = str(e)
+
+                        await db.price_changes.insert_one(log_entry)
 
                     success += 1
                 else:
@@ -1157,19 +1178,86 @@ async def run_scheduled_competitor_scan(db):
             {"$set": {
                 "running": False, "stop_requested": False,
                 "scanned": scanned, "success": success, "failed": failed,
+                "auto_updated": auto_updated,
                 "current_product": "",
                 "completed_at": datetime.now(timezone.utc).isoformat(),
             }},
         )
         await db.system_status.update_one(
             {"task": "scheduled_competitor_scan"},
-            {"$set": {"last_run": datetime.now(timezone.utc).isoformat(), "scanned": scanned, "success": success, "failed": failed}},
+            {"$set": {"last_run": datetime.now(timezone.utc).isoformat(), "scanned": scanned, "success": success, "failed": failed, "auto_updated": auto_updated}},
             upsert=True,
         )
-        logger.info(f"CRON: Rakip tarama tamamlandi. {scanned} urun, {success} basarili, {failed} basarisiz")
+        logger.info(f"CRON: Rakip tarama tamamlandi. {scanned} urun, {success} basarili, {failed} basarisiz, {auto_updated} ikas guncellendi")
     except Exception as e:
         logger.error(f"CRON: Rakip tarama hatasi: {e}")
         await db.system_status.update_one(
             {"task": "competitor_scan"},
             {"$set": {"running": False, "error": str(e)}},
         )
+
+
+async def _apply_price_to_ikas(loop, ikas_graphql, db, slug, ikas_id, new_price_tl, current_tl_price, price_lists):
+    """Helper: update a product's price in İkas original currency list."""
+    gql = f'''{{ listProduct(id: {{eq: "{ikas_id}"}}) {{ data {{
+        categories {{ categoryId }}
+        brand {{ brandId }}
+        variants {{ id prices {{ sellPrice discountPrice currency priceListId }} }}
+    }} }} }}'''
+    result = await loop.run_in_executor(None, ikas_graphql, gql, None)
+    pdata = (result.get("listProduct", {}).get("data", []) or [{}])[0]
+    variants = pdata.get("variants", [])
+    if not variants:
+        return False
+
+    variant = variants[0]
+    existing_prices = variant.get("prices", [])
+
+    # Find target price list (EUR > USD > TRY, skip Nihai)
+    target_plid = target_currency = original_sell = None
+    for p in existing_prices:
+        plid = p.get("priceListId", "")
+        if plid.startswith("b8f60257"):
+            continue
+        if plid == price_lists.get("EUR"):
+            target_plid, target_currency, original_sell = plid, "EUR", p.get("sellPrice", 0)
+            break
+        elif plid == price_lists.get("USD"):
+            target_plid, target_currency, original_sell = plid, "USD", p.get("sellPrice", 0)
+        elif plid == price_lists.get("TRY") and not target_plid:
+            target_plid, target_currency, original_sell = plid, "TRY", p.get("sellPrice", 0)
+
+    if not target_plid:
+        return False
+
+    # Convert to original currency
+    if target_currency == "TRY":
+        new_price = new_price_tl
+    else:
+        if current_tl_price and original_sell and current_tl_price > 0:
+            new_price = round(new_price_tl * (original_sell / current_tl_price), 2)
+        else:
+            return False
+
+    # Build updated prices
+    updated_prices = []
+    for p in existing_prices:
+        entry = {"priceListId": p["priceListId"], "sellPrice": p.get("sellPrice", 0), "currency": p.get("currency", "TRY")}
+        if p.get("discountPrice"):
+            entry["discountPrice"] = p["discountPrice"]
+        if p["priceListId"] == target_plid:
+            entry["sellPrice"] = new_price
+        updated_prices.append(entry)
+
+    # Preserve categories & brand
+    existing_cats = [c["categoryId"] for c in (pdata.get("categories") or [])]
+    existing_brand = (pdata.get("brand") or {}).get("brandId")
+    update_input = {"id": ikas_id, "variants": [{"id": variant["id"], "prices": updated_prices}]}
+    if existing_cats:
+        update_input["categoryIds"] = existing_cats
+    if existing_brand:
+        update_input["brandId"] = existing_brand
+
+    mutation = "mutation UpdateProduct($input: UpdateProductInput!) { updateProduct(input: $input) { id } }"
+    await loop.run_in_executor(None, ikas_graphql, mutation, {"input": update_input})
+    return True
