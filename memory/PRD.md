@@ -17,18 +17,24 @@ React + Recharts + FastAPI + MongoDB + ScraperAPI + OpenAI GPT-4o + APScheduler 
     - İkas fiyat listeleri: EUR/USD/TL (Nihai'ye dokunmaz)
     - 1 aylık fiyat değişiklik geçmişi
 
+## IMPORTANT: Two Independent Systems
+1. **Akakçe Sistemi** (/price-tracking) — Eski Akakçe bazlı fiyat takip. `cheapest_price`, `cheapest_competitor` alanları.
+2. **Rakip Tarama Sistemi** (/competitor-scan + /products) — Yeni 4 site bazlı sistem. `cheapest_competitor_price`, `cheapest_competitor_name` alanları.
+- Bu iki sistem birbirinden BAĞIMSIZ çalışır. Akakçe sayfasına dokunulmaz.
+- "En Ucuz Rakip" sütunu: önce yeni sistem verisini, yoksa Akakçe verisini gösterir.
+
 ## Key Files
 - /app/backend/competitor_pricing.py — Core matching & price scraping logic
-- /app/backend/competitor_routes.py — API endpoints for competitor system (products, matching, scanning, rules, dashboard)
-- /app/frontend/src/pages/CompetitorProductsPage.js — Products page with competitor tracking, filters, inline editing
-- /app/frontend/src/pages/PriceTrackingPage.js — Price tracking dashboard with stats, scan control, category rules
+- /app/backend/competitor_routes.py — API endpoints for competitor system
+- /app/frontend/src/pages/CompetitorProductsPage.js — Products page (yeni sistem + Akakçe verisi birleşik)
+- /app/frontend/src/pages/PriceTrackingPage.js — Akakçe fiyat takip sayfası (ESKİ - DOKUNMA)
+- /app/frontend/src/pages/CompetitorScanPage.js — Rakip tarama dashboard (YENİ)
 
 ## İkas Price Lists
 - EUR: db850a77-bfd6-43de-8892-78d16dc01e0e
 - USD: 28b86f15-34b5-4c49-8d96-678194f4a8ba
 - TL: 35b38ca5-9f2d-4482-a9d8-3a6b0df33efd
 - Nihai Fiyat Listesi: b8f60257-5b81-44c9-8238-99b18b49e63 (DOKUNULMAYACAK)
-- Variant prices field: variants.prices[].{sellPrice, currency, priceListId}
 
 ## Completed Modules
 - [x] Modül 1: Ürünler sayfası yeniden tasarım (kategori/marka filtreleri, alış fiyatı, dip fiyat, rakip ikonları)
@@ -37,24 +43,7 @@ React + Recharts + FastAPI + MongoDB + ScraperAPI + OpenAI GPT-4o + APScheduler 
 - [ ] Modül 4: Otomatik fiyat güncelleme (İkas API — orijinal para birimi)
 - [ ] Modül 5: Raporlama & geçmiş dashboard (1 aylık log)
 
-## Module 3 Details (Just Completed)
-### Backend Endpoints Added:
-- POST /api/competitor/scan-all — Toplu fiyat taraması başlatır
-- GET /api/competitor/scan-status — Tarama durumu
-- POST /api/competitor/scan-stop — Taramayı durdurur
-- GET /api/competitor/dashboard — Dashboard istatistikleri
-- POST/GET/DELETE /api/competitor/category-rules — Kategori fiyatlama kuralları CRUD
-
-### Price Logic:
-- Dip Fiyat = Manuel giriş VEYA (Alış Fiyatı × (1 + Kâr Marjı %))
-- Hedef Fiyat = En Ucuz Rakip - Kırma Tutarı (varsayılan 100₺)
-- Hedef < Dip Fiyat ise fiyat değiştirilmez
-
-### Frontend Features:
-- CompetitorProductsPage: Kategori (9 ana + 79 alt) ve marka (55) filtreleri, eşleşme durumu filtresi, arama, alış fiyatı ve dip fiyat inline edit, rakip ikonları, en ucuz rakip gösterimi, detay modal
-- PriceTrackingPage: 4 istatistik kartı, toplu tarama başlat/durdur, kategori kuralları yönetimi, son fiyat önerileri listesi
-
-## Upcoming
-- Modül 4: İkas'a otomatik fiyat güncelleme (orijinal para birimi fiyat listesi)
-- Modül 5: Raporlama dashboard (fiyat değişiklik logları, 1 aylık geçmiş)
-- server.py refactoring (4100+ satır)
+## Routes
+- /products — Ürünler & Rakip Fiyat Takibi (CompetitorProductsPage)
+- /price-tracking — Fiyat Takip / Akakçe (PriceTrackingPage - ESKİ)
+- /competitor-scan — Rakip Tarama Dashboard (CompetitorScanPage - YENİ)

@@ -350,6 +350,11 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
             else:
                 p["category"] = ""
                 p["subcategory"] = ""
+
+            # Merge cheapest competitor data from both systems (new 4-site + old Akakçe)
+            if not p.get("cheapest_competitor_price") and p.get("cheapest_price"):
+                p["cheapest_competitor_price"] = p["cheapest_price"]
+                p["cheapest_competitor_name"] = p.get("cheapest_competitor", "Akakçe")
         
         # Filter by match status (post-filter)
         if match_status == "matched":
