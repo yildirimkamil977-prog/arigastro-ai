@@ -48,6 +48,7 @@ export default function CompetitorProductsPage() {
   const [editingSlug, setEditingSlug] = useState(null);
   const [editFloor, setEditFloor] = useState("");
   const [editPurchase, setEditPurchase] = useState("");
+  const [editingMatchKey, setEditingMatchKey] = useState(null);
   const searchTimer = useRef(null);
 
   const fetchProducts = useCallback(async () => {
@@ -117,13 +118,26 @@ export default function CompetitorProductsPage() {
     setCheckingSlug(slug);
     try {
       const { data } = await axios.post(`${API}/competitor/check-price/${slug}`, {}, { headers: getAuthHeaders(), withCredentials: true });
-      const count = Object.keys(data.prices || {}).length;
-      toast.success(`${count} rakipten fiyat alındı`);
-      fetchProducts();
+      toast.info("Fiyat taraması başlatıldı...");
+      if (data.task_key) {
+        const poll = setInterval(async () => {
+          try {
+            const { data: st } = await axios.get(`${API}/competitor/check-price-status/${data.task_key}`, { headers: getAuthHeaders(), withCredentials: true });
+            if (!st.running) {
+              clearInterval(poll);
+              setCheckingSlug(null);
+              const priceCount = Object.keys(st.prices || {}).length;
+              if (st.error) toast.error(`Tarama hatası: ${st.error.substring(0, 80)}`);
+              else toast.success(`${priceCount} rakipten fiyat alındı`);
+              fetchProducts();
+            }
+          } catch { clearInterval(poll); setCheckingSlug(null); }
+        }, 3000);
+      } else { setCheckingSlug(null); }
     } catch (err) {
       toast.error("Fiyat kontrolü başarısız");
+      setCheckingSlug(null);
     }
-    setCheckingSlug(null);
   };
 
   const autoMatchCategory = async () => {
@@ -367,7 +381,7 @@ export default function CompetitorProductsPage() {
 
       {/* Product Detail Modal */}
       <Dialog open={!!detailProduct} onOpenChange={() => { setDetailProduct(null); setMatchDetail(null); setPriceHistory([]); setIkasPrice([]); }}>
-        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto p-0">
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto p-0">
           <DialogHeader className="px-6 pt-6 pb-4 border-b bg-slate-50 sticky top-0 z-10">
             <DialogTitle className="text-lg font-bold text-slate-900 pr-8" data-testid="detail-modal-title">{detailProduct?.name}</DialogTitle>
           </DialogHeader>
@@ -452,33 +466,39 @@ export default function CompetitorProductsPage() {
                   {Object.entries(COMPETITOR_ICONS).map(([key, comp]) => {
                     const match = matchDetail?.find(m => m.competitor_key === key);
                     const price = detailProduct.competitor_prices?.[key];
-                    if (match) {
+                    const isEditing = editingMatchKey === key;
+                    if (match && !isEditing) {
                       return (
-                        <div key={key} className="flex items-center gap-3 p-3 bg-white border border-emerald-200 rounded-lg">
-                          <div className="w-9 h-9 rounded-full flex items-center justify-center text-[11px] font-bold text-white shrink-0" style={{ backgroundColor: comp.color }}>
+                        <div key={key} className="flex items-center gap-2 p-2.5 bg-white border border-emerald-200 rounded-lg">
+                          <div className="w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0" style={{ backgroundColor: comp.color }}>
                             {comp.name}
                           </div>
                           <div className="flex-1 min-w-0">
-                            <div className="font-medium text-sm truncate">{match.title || match.url}</div>
-                            <a href={match.url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-500 hover:underline truncate block">{match.url}</a>
+                            <div className="font-medium text-xs truncate">{match.title || "Eşleşmiş"}</div>
+                            <a href={match.url} target="_blank" rel="noopener noreferrer" className="text-[11px] text-blue-500 hover:underline truncate block">{match.url}</a>
                           </div>
-                          <div className="text-right shrink-0">
-                            {price ? <div className="font-bold text-sm">{formatPrice(price.price)} ₺</div> : <span className="text-xs text-slate-400">Fiyat yok</span>}
+                          {price && <div className="font-bold text-xs shrink-0">{formatPrice(price.price)} ₺</div>}
+                          <div className="flex gap-0.5 shrink-0">
+                            <button onClick={() => setEditingMatchKey(key)} className="text-slate-400 hover:text-blue-600 p-1 rounded hover:bg-blue-50" title="Düzenle"><Eye className="h-3 w-3" /></button>
+                            <button onClick={async () => {
+                              try {
+                                await axios.delete(`${API}/competitor/match/${detailProduct.slug}/${key}`, { headers: getAuthHeaders(), withCredentials: true });
+                                toast.success(`${comp.name} eşleşmesi kaldırıldı`);
+                                openDetail(detailProduct); fetchProducts();
+                              } catch { toast.error("Silme başarısız"); }
+                            }} className="text-slate-400 hover:text-red-600 p-1 rounded hover:bg-red-50" title="Sil"><X className="h-3 w-3" /></button>
                           </div>
-                          <span className={`text-[10px] px-2 py-0.5 rounded shrink-0 ${match.manual ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}>
-                            {match.manual ? "Manuel" : "Oto"}
-                          </span>
                         </div>
                       );
                     }
-                    // Unmatched competitor — show manual match input
+                    // Unmatched or editing — show URL input
                     return (
-                      <div key={key} className="flex items-center gap-3 p-3 bg-slate-50 border border-dashed border-slate-300 rounded-lg">
-                        <div className="w-9 h-9 rounded-full flex items-center justify-center text-[11px] font-bold text-white shrink-0 opacity-40" style={{ backgroundColor: comp.color }}>
+                      <div key={key} className={`flex items-center gap-2 p-2.5 border rounded-lg ${match ? "bg-blue-50 border-blue-200" : "bg-slate-50 border-dashed border-slate-300"}`}>
+                        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0 ${match ? "" : "opacity-40"}`} style={{ backgroundColor: comp.color }}>
                           {comp.name}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <div className="text-xs text-slate-400 mb-1">{comp.domain} — Eşleşme yok</div>
+                          <div className="text-[11px] text-slate-400 mb-1">{comp.domain} {match ? "— Link düzenle" : "— Eşleşme yok"}</div>
                           <form className="flex gap-1" onSubmit={async (e) => {
                             e.preventDefault();
                             const url = e.target.url.value.trim();
@@ -488,12 +508,13 @@ export default function CompetitorProductsPage() {
                                 competitor_key: key, url, title: ""
                               }, { headers: getAuthHeaders(), withCredentials: true });
                               toast.success(`${comp.name} eşleştirildi`);
-                              openDetail(detailProduct);
-                              fetchProducts();
+                              setEditingMatchKey(null);
+                              openDetail(detailProduct); fetchProducts();
                             } catch { toast.error("Eşleştirme başarısız"); }
                           }}>
-                            <input name="url" placeholder={`${comp.domain} ürün URL'si`} className="flex-1 text-xs border rounded px-2 py-1 focus:ring-1 focus:ring-violet-300 outline-none" />
-                            <Button type="submit" size="sm" variant="outline" className="h-7 text-xs px-2">Eşleştir</Button>
+                            <input name="url" defaultValue={match?.url || ""} placeholder={`${comp.domain} ürün URL'si`} className="flex-1 text-xs border rounded px-2 py-1 focus:ring-1 focus:ring-violet-300 outline-none" />
+                            <Button type="submit" size="sm" variant="outline" className="h-7 text-xs px-2">Kaydet</Button>
+                            {match && <Button type="button" size="sm" variant="ghost" className="h-7 text-xs px-1" onClick={() => setEditingMatchKey(null)}>İptal</Button>}
                           </form>
                         </div>
                       </div>

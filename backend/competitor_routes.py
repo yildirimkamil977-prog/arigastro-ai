@@ -209,35 +209,58 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         await db.system_status.update_one({"task": task_key}, {"$set": {"stop_requested": True}})
         return {"success": True}
     
-    # --- Price checking ---
+    # --- Price checking (background) ---
     @router.post("/check-price/{slug}")
     async def check_product_prices(slug: str, user: dict = Depends(get_current_user)):
-        """Check competitor prices for a single product."""
+        """Check competitor prices for a single product. Runs in background."""
         matches = await db.competitor_matches.find({"product_slug": slug}).to_list(10)
         if not matches:
             raise HTTPException(status_code=404, detail="Eşleştirme bulunamadı")
         
+        task_key = f"check_price_{slug}"
+        await db.system_status.update_one(
+            {"task": task_key},
+            {"$set": {"running": True, "slug": slug, "started_at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True
+        )
+        
+        asyncio.create_task(_run_price_check(db, slug, matches, scrape_all_competitor_prices, task_key))
+        return {"success": True, "task_key": task_key, "message": "Fiyat taraması başlatıldı"}
+    
+    async def _run_price_check(db, slug, matches, scrape_fn, task_key):
         loop = asyncio.get_event_loop()
-        match_dict = {m["competitor_key"]: m for m in matches}
-        prices = await loop.run_in_executor(None, scrape_all_competitor_prices, match_dict)
-        
-        # Save price history
-        if prices:
-            await db.price_history.insert_one({
-                "product_slug": slug,
-                "prices": prices,
-                "checked_at": datetime.now(timezone.utc).isoformat(),
-            })
-            # Update product with latest prices
-            cheapest = min(prices.values(), key=lambda x: x["price"]) if prices else None
-            await db.products.update_one({"slug": slug}, {"$set": {
-                "competitor_prices": prices,
-                "cheapest_competitor_price": cheapest["price"] if cheapest else None,
-                "cheapest_competitor_name": cheapest["competitor_name"] if cheapest else None,
-                "competitor_prices_checked_at": datetime.now(timezone.utc).isoformat(),
-            }})
-        
-        return {"success": True, "prices": prices}
+        try:
+            match_dict = {m["competitor_key"]: m for m in matches}
+            prices = await loop.run_in_executor(None, scrape_fn, match_dict)
+            
+            if prices:
+                await db.price_history.insert_one({
+                    "product_slug": slug,
+                    "prices": prices,
+                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                })
+                cheapest = min(prices.values(), key=lambda x: x["price"])
+                await db.products.update_one({"slug": slug}, {"$set": {
+                    "competitor_prices": prices,
+                    "cheapest_competitor_price": cheapest["price"],
+                    "cheapest_competitor_name": cheapest["competitor_name"],
+                    "competitor_prices_checked_at": datetime.now(timezone.utc).isoformat(),
+                }})
+            
+            await db.system_status.update_one(
+                {"task": task_key},
+                {"$set": {"running": False, "prices": prices or {}, "completed_at": datetime.now(timezone.utc).isoformat()}}
+            )
+        except Exception as e:
+            await db.system_status.update_one(
+                {"task": task_key},
+                {"$set": {"running": False, "error": str(e)}}
+            )
+    
+    @router.get("/check-price-status/{task_key}")
+    async def get_price_check_status(task_key: str, user: dict = Depends(get_current_user)):
+        status = await db.system_status.find_one({"task": task_key}, {"_id": 0})
+        return status or {"running": False}
     
     # --- Product floor price & purchase price ---
     class PriceSettingsRequest(BaseModel):

@@ -97,9 +97,8 @@ def scrape_competitor_price(url: str, competitor_key: str) -> dict:
 
 def _extract_price(soup: BeautifulSoup, competitor_key: str) -> float:
     """Extract price from competitor page HTML."""
-    price = None
     
-    # Strategy 1: Schema.org / JSON-LD
+    # Strategy 1: Schema.org / JSON-LD (returns price as number or string)
     for script in soup.find_all("script", type="application/ld+json"):
         try:
             data = json.loads(script.string)
@@ -110,7 +109,7 @@ def _extract_price(soup: BeautifulSoup, competitor_key: str) -> float:
                 offers = offers[0]
             p = offers.get("price") or offers.get("lowPrice")
             if p:
-                return float(str(p).replace(".", "").replace(",", "."))
+                return _parse_price_smart(str(p))
         except:
             pass
     
@@ -119,7 +118,7 @@ def _extract_price(soup: BeautifulSoup, competitor_key: str) -> float:
         prop = meta.get("property", "") or meta.get("name", "")
         if "price" in prop.lower() and "amount" in prop.lower():
             try:
-                return float(meta.get("content", "0").replace(".", "").replace(",", "."))
+                return _parse_price_smart(meta.get("content", "0"))
             except:
                 pass
     
@@ -127,7 +126,7 @@ def _extract_price(soup: BeautifulSoup, competitor_key: str) -> float:
     for el in soup.find_all(attrs={"itemprop": "price"}):
         try:
             val = el.get("content") or el.get_text(strip=True)
-            return _parse_turkish_price(val)
+            return _parse_price_smart(val)
         except:
             pass
     
@@ -149,16 +148,57 @@ def _extract_price(soup: BeautifulSoup, competitor_key: str) -> float:
     patterns = [
         r'([\d.]+[.,]\d{2})\s*(?:TL|₺)',
         r'(?:TL|₺)\s*([\d.]+[.,]\d{2})',
-        r'class="[^"]*price[^"]*"[^>]*>([\d.,]+)',
     ]
     for pattern in patterns:
         matches = re.findall(pattern, text)
         for m in matches:
             p = _parse_turkish_price(m)
-            if p and p > 100:  # Minimum reasonable price for industrial equipment
+            if p and p > 10:
                 return p
     
     return None
+
+
+def _parse_price_smart(text: str) -> float:
+    """Smart price parser: handles both '970.74' (English) and '1.234,56' (Turkish) formats."""
+    if not text:
+        return None
+    try:
+        clean = re.sub(r'[^\d.,]', '', text.strip())
+        if not clean:
+            return None
+        
+        # Case 1: Only digits (e.g. "97074") → treat as integer
+        if "." not in clean and "," not in clean:
+            return float(clean)
+        
+        # Case 2: Has comma AND dot → Turkish format "1.234,56"
+        if "," in clean and "." in clean:
+            # Turkish: dots are thousands, comma is decimal
+            return float(clean.replace(".", "").replace(",", "."))
+        
+        # Case 3: Only dot, no comma
+        if "." in clean and "," not in clean:
+            # Check if dot is decimal or thousands separator
+            parts = clean.split(".")
+            if len(parts) == 2 and len(parts[1]) <= 2:
+                # "970.74" → English decimal (2 or fewer decimal digits)
+                return float(clean)
+            elif len(parts) == 2 and len(parts[1]) == 3:
+                # "970.740" or "1.234" → could be thousands separator
+                # If first part <= 3 digits, likely thousands: "1.234" → 1234
+                return float(clean.replace(".", ""))
+            else:
+                # Multiple dots: "1.234.567" → thousands separators
+                return float(clean.replace(".", ""))
+        
+        # Case 4: Only comma, no dot → "970,74" Turkish decimal
+        if "," in clean:
+            return float(clean.replace(",", "."))
+        
+        return float(clean)
+    except:
+        return None
 
 
 def _parse_turkish_price(text: str) -> float:
