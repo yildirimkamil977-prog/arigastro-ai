@@ -75,13 +75,13 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
             upsert=True
         )
         
-        asyncio.create_task(_run_single_product_match(db, slug, product["name"], task_key, COMPETITORS, match_all_competitors_for_product, scrape_all_competitor_prices))
+        asyncio.create_task(_run_single_product_match(db, slug, product["name"], product.get("brand", ""), task_key, COMPETITORS, match_all_competitors_for_product, scrape_all_competitor_prices))
         return {"success": True, "task_key": task_key, "message": f"Eşleştirme başlatıldı: {product['name'][:50]}"}
     
-    async def _run_single_product_match(db, slug, product_name, task_key, competitors, match_fn, scrape_fn):
+    async def _run_single_product_match(db, slug, product_name, brand, task_key, competitors, match_fn, scrape_fn):
         loop = asyncio.get_event_loop()
         try:
-            results = await loop.run_in_executor(None, match_fn, product_name)
+            results = await loop.run_in_executor(None, match_fn, product_name, brand)
             
             saved = 0
             for comp_key, result in results.items():
@@ -145,7 +145,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         """Auto-match all products in a category. Runs in background."""
         products = await db.products.find(
             {"category_path": {"$regex": category_name, "$options": "i"}, "inactive": {"$ne": True}},
-            {"slug": 1, "name": 1}
+            {"slug": 1, "name": 1, "brand": 1}
         ).to_list(5000)
         
         if not products:
@@ -179,7 +179,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                     await db.system_status.update_one({"task": task_key}, {"$set": {"progress": i + 1, "products_matched": products_matched, "total_matches": total_matches}})
                     continue
                 
-                results = await loop.run_in_executor(None, match_all_competitors_for_product, prod["name"])
+                results = await loop.run_in_executor(None, match_all_competitors_for_product, prod["name"], prod.get("brand", ""))
                 prod_found = False
                 for comp_key, result in results.items():
                     if result.get("matched"):
