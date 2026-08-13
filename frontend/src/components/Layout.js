@@ -10,7 +10,7 @@ import {
 const navItems = [
   { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { path: "/categories", label: "Kategoriler", icon: Tags },
-  { path: "/products", label: "Urunler", icon: Package },
+  { path: "/products", label: "Urunler & Fiyat Takibi", icon: Package },
   { path: "/price-tracking", label: "Fiyat Takip", icon: TrendingDown },
   { path: "/seo", label: "SEO Uretici", icon: FileText },
   { path: "/seo-logs", label: "Toplu SEO", icon: Send },

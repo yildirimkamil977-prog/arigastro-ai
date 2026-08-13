@@ -6,6 +6,7 @@ import LoginPage from "./pages/LoginPage";
 import DashboardPage from "./pages/DashboardPage";
 import CategoriesPage from "./pages/CategoriesPage";
 import ProductsPage from "./pages/ProductsPage";
+import CompetitorProductsPage from "./pages/CompetitorProductsPage";
 import PriceTrackingPage from "./pages/PriceTrackingPage";
 import SeoGeneratorPage from "./pages/SeoGeneratorPage";
 import SeoLogsPage from "./pages/SeoLogsPage";
@@ -49,7 +50,7 @@ function App() {
           <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
           <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
           <Route path="/categories" element={<ProtectedRoute><CategoriesPage /></ProtectedRoute>} />
-          <Route path="/products" element={<ProtectedRoute><ProductsPage /></ProtectedRoute>} />
+          <Route path="/products" element={<ProtectedRoute><CompetitorProductsPage /></ProtectedRoute>} />
           <Route path="/price-tracking" element={<ProtectedRoute><PriceTrackingPage /></ProtectedRoute>} />
           <Route path="/seo" element={<ProtectedRoute><SeoGeneratorPage /></ProtectedRoute>} />
           <Route path="/seo-logs" element={<ProtectedRoute><SeoLogsPage /></ProtectedRoute>} />

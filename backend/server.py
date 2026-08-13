@@ -4092,8 +4092,15 @@ async def bc_seo_bulk_status(entity_type: str, user: dict = Depends(get_current_
 async def root():
     return {"message": "ARI AI API is running", "version": "1.0"}
 
-# Include router
+# Include router (base)
+# app.include_router(api_router)  # Moved below after competitor routes
+
+# Competitor pricing routes
+from competitor_routes import setup_competitor_routes, router as competitor_router
+setup_competitor_routes(db, get_current_user, ikas_graphql)
+api_router.include_router(competitor_router)
 app.include_router(api_router)
+
 
 # CORS
 app.add_middleware(
