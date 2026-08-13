@@ -144,7 +144,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
     async def auto_match_category(category_name: str, user: dict = Depends(get_current_user)):
         """Auto-match all products in a category. Runs in background."""
         products = await db.products.find(
-            {"category": {"$regex": category_name, "$options": "i"}},
+            {"category_path": {"$regex": category_name, "$options": "i"}, "inactive": {"$ne": True}},
             {"slug": 1, "name": 1}
         ).to_list(5000)
         
@@ -711,6 +711,10 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         if not product:
             raise HTTPException(status_code=404, detail="Ürün bulunamadı")
 
+        # SAFETY CHECK: floor_price or purchase_price must exist
+        if not product.get("floor_price") and not product.get("purchase_price"):
+            return {"success": False, "error": "Bu ürünün dip fiyatı veya alış fiyatı girilmemiş. Fiyat güncellenmeden önce bu bilgilerin girilmesi zorunludur."}
+
         ikas_id = product.get("ikas_id") or product.get("ikas_product_id")
         if not ikas_id:
             return {"success": False, "error": "Bu üründe İkas ID bulunamadı. VPS'de İkas senkronizasyonu yapılmalı."}
@@ -1111,6 +1115,9 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
                     if not floor_price and purchase_price and rule.get("profit_margin_pct"):
                         floor_price = purchase_price * (1 + rule["profit_margin_pct"] / 100)
 
+                    # SAFETY: Check if floor/purchase price exists for price update eligibility
+                    has_price_protection = bool(floor_price or purchase_price)
+
                     undercut = rule.get("undercut_amount", 100)
                     result = calculate_optimal_price(prices, product.get("our_price", 0), floor_price or 0, undercut)
 
@@ -1141,8 +1148,8 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
                             "changed_at": datetime.now(timezone.utc).isoformat(),
                         }
 
-                        if should_auto and ikas_graphql:
-                            # Auto-update İkas
+                        # CRITICAL SAFETY: Only auto-update if product has floor_price or purchase_price
+                        if should_auto and ikas_graphql and has_price_protection:
                             try:
                                 ikas_id = product.get("ikas_id") or product.get("ikas_product_id")
                                 if ikas_id:
@@ -1159,6 +1166,9 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
                             except Exception as e:
                                 logger.error(f"CRON auto-update error for {slug}: {e}")
                                 log_entry["apply_error"] = str(e)
+                        elif should_auto and not has_price_protection:
+                            log_entry["apply_error"] = "Dip fiyat veya alış fiyatı girilmemiş — fiyat güncellenmedi"
+                            logger.warning(f"CRON: {slug} icin fiyat korumasi yok, guncelleme atlanıyor")
 
                         await db.price_changes.insert_one(log_entry)
 
