@@ -225,8 +225,8 @@ def _search_on_google(query: str, competitor_key: str) -> list:
         return []
 
 
-def search_competitor_product(product_name: str, competitor_key: str, brand: str = "", gtin: str = "") -> dict:
-    """Multi-strategy matching: site search → Google fallback → GTIN verification."""
+def search_competitor_product(product_name: str, competitor_key: str, brand: str = "", gtin: str = "", sku: str = "") -> dict:
+    """Multi-strategy matching: SKU search → site search → Google fallback → GTIN verification."""
     if not SCRAPERAPI_KEY:
         return {"matched": False, "error": "ScraperAPI key missing"}
     comp = COMPETITORS.get(competitor_key)
@@ -246,9 +246,19 @@ def search_competitor_product(product_name: str, competitor_key: str, brand: str
     # Collect candidates from strategies
     candidates_raw = []
     
+    # Strategy 0: SKU/product code search (highest priority)
+    if sku and len(sku) >= 3:
+        sku_results = _search_on_site(sku, competitor_key, use_render=False)
+        if not sku_results and comp.get("search_needs_render"):
+            sku_results = _search_on_site(sku, competitor_key, use_render=True)
+        candidates_raw.extend(sku_results)
+        logger.info(f"SKU search '{sku}' on {competitor_key}: {len(sku_results)} results")
+    
     # Strategy 1: Site search with short query (fast, no render)
-    site_results = _search_on_site(ascii_short, competitor_key, use_render=False)
-    candidates_raw.extend(site_results)
+    if len(candidates_raw) < 2:
+        site_results = _search_on_site(ascii_short, competitor_key, use_render=False)
+        seen = {c["url"].split("?")[0].rstrip("/") for c in candidates_raw}
+        candidates_raw += [e for e in site_results if e["url"].split("?")[0].rstrip("/") not in seen]
     
     # Strategy 1b: Model-number focused query
     model_parts = re.findall(r'[A-Z0-9]{2,}[A-Za-z]*\d+[A-Za-z]*|[A-Za-z]+\d+[A-Za-z]*', product_name)
@@ -550,13 +560,13 @@ def _parse_turkish_price(text: str) -> float:
         return None
 
 
-def match_all_competitors_for_product(product_name: str, brand: str = "", gtin: str = "") -> dict:
+def match_all_competitors_for_product(product_name: str, brand: str = "", gtin: str = "", sku: str = "") -> dict:
     """Match a product across all competitor sites IN PARALLEL."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
     results = {}
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {
-            executor.submit(search_competitor_product, product_name, key, brand, gtin): key
+            executor.submit(search_competitor_product, product_name, key, brand, gtin, sku): key
             for key in COMPETITORS
         }
         for future in as_completed(futures):

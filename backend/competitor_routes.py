@@ -76,10 +76,10 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
             upsert=True
         )
         
-        asyncio.create_task(_run_single_product_match(db, slug, product["name"], product.get("brand", ""), product.get("gtin", ""), task_key, COMPETITORS, match_all_competitors_for_product, scrape_all_competitor_prices))
+        asyncio.create_task(_run_single_product_match(db, slug, product["name"], product.get("brand", ""), product.get("gtin", ""), product.get("sku", ""), task_key, COMPETITORS, match_all_competitors_for_product, scrape_all_competitor_prices))
         return {"success": True, "task_key": task_key, "message": f"Eşleştirme başlatıldı: {product['name'][:50]}"}
     
-    async def _run_single_product_match(db, slug, product_name, brand, gtin, task_key, competitors, match_fn, scrape_fn):
+    async def _run_single_product_match(db, slug, product_name, brand, gtin, sku, task_key, competitors, match_fn, scrape_fn):
         loop = asyncio.get_event_loop()
         try:
             # Get existing manual matches to protect them
@@ -89,7 +89,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
             ).to_list(10)
             manual_keys = {m["competitor_key"] for m in existing_matches if m.get("manual")}
             
-            results = await loop.run_in_executor(None, match_fn, product_name, brand, gtin)
+            results = await loop.run_in_executor(None, match_fn, product_name, brand, gtin, sku)
             
             saved = 0
             for comp_key, result in results.items():
@@ -199,7 +199,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                 ).to_list(10)
                 manual_keys = {m["competitor_key"] for m in existing_matches if m.get("manual")}
                 
-                results = await loop.run_in_executor(None, match_all_competitors_for_product, prod["name"], prod.get("brand", ""), prod.get("gtin", ""))
+                results = await loop.run_in_executor(None, match_all_competitors_for_product, prod["name"], prod.get("brand", ""), prod.get("gtin", ""), prod.get("sku", ""))
                 prod_found = False
                 for comp_key, result in results.items():
                     # NEVER overwrite manual matches
@@ -610,6 +610,19 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                             ikas_id = product.get("ikas_id") or product.get("ikas_product_id")
                             new_tl = result["new_price_tl"]
 
+                            # 23-hour protection: skip if already updated recently
+                            last_update = product.get("price_updated_at")
+                            if last_update:
+                                try:
+                                    last_dt = datetime.fromisoformat(last_update.replace("Z", "+00:00")) if isinstance(last_update, str) else last_update
+                                    hours_since = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
+                                    if hours_since < 23:
+                                        skipped += 1
+                                        scanned += 1
+                                        continue
+                                except Exception:
+                                    pass
+
                             log_entry = {
                                 "product_slug": slug,
                                 "product_name": product.get("name", ""),
@@ -640,6 +653,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                                         new_base = convert_from_tl(new_tl, base_currency)
                                         await db.products.update_one({"slug": slug}, {"$set": {
                                             "our_price": new_tl, "base_price": new_base,
+                                            "price_updated_at": datetime.now(timezone.utc).isoformat(),
                                         }})
                                         updated_count += 1
                                 except Exception as e:
@@ -697,7 +711,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
             await db.system_status.update_one({"task": task_key}, {"$set": {"running": False, "error": str(e)}})
 
     async def _apply_price_to_ikas_inline(loop, ikas_fn, ikas_id, new_price_tl, floor_price, base_currency, price_lists):
-        """Apply price to İkas using saveVariantPrices — safe, no category/brand risk."""
+        """Apply price to İkas — updates BOTH price list AND variant sellPrice."""
         gql = f'''{{ listProduct(id: {{eq: "{ikas_id}"}}) {{ data {{
             variants {{ id prices {{ sellPrice currency priceListId }} }}
         }} }} }}'''
@@ -728,10 +742,11 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         if floor_price and new_price < floor_price:
             return False
 
-        mutation = """mutation UpdateVariantPrices($input: UpdateVariantPricesInput!) {
+        # 1. Update price list (EUR/USD/TL)
+        mutation1 = """mutation UpdateVariantPrices($input: UpdateVariantPricesInput!) {
             updateVariantPrices(input: $input) { __typename }
         }"""
-        variables = {"input": {
+        variables1 = {"input": {
             "priceListId": target_plid,
             "variantPriceInputs": [{
                 "productId": ikas_id,
@@ -739,7 +754,21 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                 "price": {"sellPrice": new_price}
             }]
         }}
-        await loop.run_in_executor(None, ikas_fn, mutation, variables)
+        await loop.run_in_executor(None, ikas_fn, mutation1, variables1)
+
+        # 2. Update variant sellPrice (top "Satış Fiyatı" in İkas panel)
+        mutation2 = """mutation UpdateProduct($input: UpdateProductInput!) {
+            updateProduct(input: $input) { id }
+        }"""
+        variables2 = {"input": {
+            "id": ikas_id,
+            "variants": [{"id": variant["id"], "prices": [{"sellPrice": new_price, "currency": target_currency}]}]
+        }}
+        try:
+            await loop.run_in_executor(None, ikas_fn, mutation2, variables2)
+        except Exception as e:
+            logger.warning(f"Variant sellPrice update failed for {ikas_id}: {e}")
+
         return True
     
     # --- Get matches for a product ---
@@ -793,184 +822,154 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         return {"started": True, "total": total}
 
     async def _run_ikas_currency_sync_bulk(db, ikas_fn, task_key):
-        """Background: Bulk fetch ALL İkas products with prices, then match to local products."""
+        """Background: Bulk fetch ALL İkas products with prices+SKU, match to local, add new products."""
         loop = asyncio.get_event_loop()
         updated = 0
-
-        # Force refresh TCMB rates before sync
         force_refresh_rates()
         logger.info("İkas currency sync: TCMB rates refreshed")
+
         PRICE_LISTS = {
             "db850a77-bfd6-43de-8892-78d16dc01e0e": "EUR",
             "28b86f15-34b5-4c49-8d96-678194f4a8ba": "USD",
             "35b38ca5-9f2d-4482-a9d8-3a6b0df33efd": "TRY",
         }
         NIHAI_PREFIX = "b8f60257"
-        
+
         try:
-            # Phase 1: Fetch ALL products from İkas with prices (paginated)
-            ikas_page = 1
-            ikas_products_map = {}  # name_normalized -> {ikas_id, base_currency, base_price, price_list_id}
-            total_fetched = 0
-            
             import re
             def normalize_name(name):
-                """Normalize product name for matching."""
-                if not name:
-                    return ""
+                if not name: return ""
                 n = name.lower().strip()
                 n = re.sub(r'[^a-z0-9çğıöşü\s]', ' ', n)
                 return ' '.join(n.split())
-            
-            logger.info("İkas currency sync: fetching all products from İkas...")
-            
+
+            ikas_page = 1
+            ikas_products_map = {}
+            ikas_products_by_id = {}
+            total_fetched = 0
+            logger.info("İkas currency sync: fetching all products...")
+
             while True:
-                query = """
-                query ListProducts($pagination: PaginationInput) {
+                query = """query ListProducts($pagination: PaginationInput) {
                     listProduct(pagination: $pagination) {
-                        data { 
-                            id 
-                            name 
-                            variants { 
-                                prices { sellPrice currency priceListId } 
-                            } 
-                        }
+                        data { id name variants { id sku prices { sellPrice currency priceListId } } }
                         count
                     }
-                }
-                """
+                }"""
                 try:
-                    result = await loop.run_in_executor(
-                        None, ikas_fn, query, {"pagination": {"page": ikas_page, "limit": 100}}
-                    )
+                    result = await loop.run_in_executor(None, ikas_fn, query, {"pagination": {"page": ikas_page, "limit": 100}})
                 except Exception as e:
                     logger.error(f"İkas fetch page {ikas_page} error: {e}")
                     break
-                
                 products_data = result.get("listProduct", {}).get("data", [])
-                if not products_data:
-                    break
-                
+                if not products_data: break
+
                 for ip in products_data:
                     ikas_id = ip.get("id", "")
                     name = ip.get("name", "")
                     variants = ip.get("variants", [])
-                    
-                    if not ikas_id or not name or not variants:
-                        continue
-                    
-                    prices = variants[0].get("prices", [])
-                    base_currency = None
-                    base_price = None
-                    price_list_id = None
-                    
+                    if not ikas_id or not name: continue
+                    sku = variants[0].get("sku") or "" if variants else ""
+                    prices = variants[0].get("prices", []) if variants else []
+                    base_currency = base_price = price_list_id = None
                     for p in prices:
                         plid = p.get("priceListId") or ""
-                        if plid.startswith(NIHAI_PREFIX):
-                            continue
+                        if plid.startswith(NIHAI_PREFIX): continue
                         sell = p.get("sellPrice", 0)
-                        if not sell or sell <= 0:
-                            continue
+                        if not sell or sell <= 0: continue
                         cur = PRICE_LISTS.get(plid, p.get("currency") or "TRY")
-                        
                         if cur == "EUR":
-                            base_currency, base_price, price_list_id = "EUR", sell, plid
-                            break
+                            base_currency, base_price, price_list_id = "EUR", sell, plid; break
                         elif cur == "USD" and base_currency != "EUR":
                             base_currency, base_price, price_list_id = "USD", sell, plid
                         elif cur == "TRY" and not base_currency:
                             base_currency, base_price, price_list_id = "TRY", sell, plid
-                    
-                    if base_currency and base_price:
-                        norm_name = normalize_name(name)
-                        ikas_products_map[norm_name] = {
-                            "ikas_id": ikas_id,
-                            "ikas_name": name,
-                            "base_currency": base_currency,
-                            "base_price": base_price,
-                            "price_list_id": price_list_id,
-                        }
+                    info = {"ikas_id": ikas_id, "ikas_name": name, "sku": sku, "base_currency": base_currency, "base_price": base_price, "price_list_id": price_list_id}
+                    ikas_products_map[normalize_name(name)] = info
+                    ikas_products_by_id[ikas_id] = info
                     total_fetched += 1
-                
-                await db.system_status.update_one(
-                    {"task": task_key},
-                    {"$set": {"phase": "fetching", "ikas_fetched": total_fetched}}
-                )
-                
+
+                await db.system_status.update_one({"task": task_key}, {"$set": {"phase": "fetching", "ikas_fetched": total_fetched}})
                 ikas_page += 1
                 await asyncio.sleep(0.2)
-            
-            logger.info(f"İkas currency sync: fetched {total_fetched} products, {len(ikas_products_map)} with prices")
-            
-            # Phase 2: Match İkas products to local products by name
-            await db.system_status.update_one(
-                {"task": task_key},
-                {"$set": {"phase": "matching", "ikas_total": len(ikas_products_map)}}
-            )
-            
-            local_products = await db.products.find(
-                {"inactive": {"$ne": True}},
-                {"_id": 0, "slug": 1, "name": 1, "our_price": 1, "base_currency": 1}
-            ).to_list(10000)
-            
+
+            logger.info(f"İkas sync: fetched {total_fetched} products")
+            await db.system_status.update_one({"task": task_key}, {"$set": {"phase": "matching", "ikas_total": len(ikas_products_map)}})
+
+            local_products = await db.products.find({}, {"_id": 0, "slug": 1, "name": 1, "our_price": 1, "ikas_product_id": 1}).to_list(10000)
+            local_by_ikas_id = {p["ikas_product_id"]: p for p in local_products if p.get("ikas_product_id")}
+            local_slugs = {p["slug"] for p in local_products}
+            matched_ikas_ids = set()
             progress = 0
+            new_products_added = 0
+
             for lp in local_products:
                 slug = lp["slug"]
-                name = lp.get("name", "")
-                norm_name = normalize_name(name)
-                
-                # Try exact match first
-                match = ikas_products_map.get(norm_name)
-                
-                # If no exact match, try partial matching (first N words)
-                if not match and name:
-                    words = norm_name.split()
-                    for length in range(len(words), max(2, len(words) - 3), -1):
-                        prefix = ' '.join(words[:length])
-                        for ik_name, ik_data in ikas_products_map.items():
-                            if ik_name.startswith(prefix) or prefix in ik_name:
-                                match = ik_data
-                                break
-                        if match:
-                            break
-                
+                ikas_id = lp.get("ikas_product_id")
+                match = ikas_products_by_id.get(ikas_id) if ikas_id else None
+                if not match:
+                    norm_name = normalize_name(lp.get("name", ""))
+                    match = ikas_products_map.get(norm_name)
+                    if not match and norm_name:
+                        words = norm_name.split()
+                        for length in range(len(words), max(2, len(words) - 3), -1):
+                            prefix = ' '.join(words[:length])
+                            for ik_name, ik_data in ikas_products_map.items():
+                                if ik_name.startswith(prefix) or prefix in ik_name:
+                                    match = ik_data; break
+                            if match: break
                 if match:
-                    update_fields = {
-                        "ikas_product_id": match["ikas_id"],
-                        "base_currency": match["base_currency"],
-                        "base_price": match["base_price"],
-                        "price_list_id": match["price_list_id"],
-                    }
-                    # Update TL price for non-TRY products
-                    if match["base_currency"] != "TRY":
-                        update_fields["our_price"] = convert_to_tl(match["base_price"], match["base_currency"])
-                    
-                    await db.products.update_one({"slug": slug}, {"$set": update_fields})
+                    matched_ikas_ids.add(match["ikas_id"])
+                    uf = {"ikas_product_id": match["ikas_id"], "sku": match.get("sku", ""), "inactive": False, "feed_active": True}
+                    if match.get("base_currency") and match.get("base_price"):
+                        uf["base_currency"] = match["base_currency"]
+                        uf["base_price"] = match["base_price"]
+                        uf["price_list_id"] = match["price_list_id"]
+                        if match["base_currency"] != "TRY":
+                            uf["our_price"] = convert_to_tl(match["base_price"], match["base_currency"])
+                    await db.products.update_one({"slug": slug}, {"$set": uf})
                     updated += 1
-                
                 progress += 1
                 if progress % 100 == 0:
-                    await db.system_status.update_one(
-                        {"task": task_key},
-                        {"$set": {"progress": progress, "updated": updated}}
-                    )
-            
-            await db.system_status.update_one(
-                {"task": task_key},
-                {"$set": {
-                    "running": False, "phase": "done",
-                    "progress": progress, "updated": updated,
-                    "ikas_total": len(ikas_products_map),
-                    "completed_at": datetime.now(timezone.utc).isoformat()
-                }}
-            )
-            logger.info(f"İkas currency sync done: {updated}/{progress} matched, {len(ikas_products_map)} İkas products")
+                    await db.system_status.update_one({"task": task_key}, {"$set": {"progress": progress, "updated": updated}})
+
+            # Add NEW İkas products not in local DB
+            for ikas_id, info in ikas_products_by_id.items():
+                if ikas_id in matched_ikas_ids: continue
+                name = info["ikas_name"]
+                slug_candidate = re.sub(r'[^a-z0-9]', '-', name.lower().strip())
+                slug_candidate = re.sub(r'-+', '-', slug_candidate).strip('-')
+                if slug_candidate in local_slugs:
+                    slug_candidate = f"{slug_candidate}-{ikas_id[:8]}"
+                new_doc = {
+                    "slug": slug_candidate, "name": name, "ikas_product_id": ikas_id,
+                    "sku": info.get("sku", ""),
+                    "base_currency": info.get("base_currency"), "base_price": info.get("base_price"),
+                    "price_list_id": info.get("price_list_id"),
+                    "our_price": convert_to_tl(info["base_price"], info["base_currency"]) if info.get("base_price") and info.get("base_currency") and info["base_currency"] != "TRY" else info.get("base_price"),
+                    "feed_active": True, "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+                try:
+                    await db.products.insert_one(new_doc); local_slugs.add(slug_candidate); new_products_added += 1
+                except Exception: pass
+
+            # Mark products NOT in İkas as inactive
+            active_ikas_ids = set(ikas_products_by_id.keys())
+            for lp in local_products:
+                lid = lp.get("ikas_product_id")
+                if lid and lid not in active_ikas_ids:
+                    await db.products.update_one({"slug": lp["slug"]}, {"$set": {"inactive": True, "feed_active": False}})
+
+            await db.system_status.update_one({"task": task_key}, {"$set": {
+                "running": False, "phase": "done", "progress": progress, "updated": updated,
+                "new_products": new_products_added, "ikas_total": len(ikas_products_map),
+                "completed_at": datetime.now(timezone.utc).isoformat()
+            }})
+            logger.info(f"İkas sync done: {updated} matched, {new_products_added} new, {total_fetched} İkas total")
         except Exception as e:
             logger.error(f"İkas currency sync error: {e}")
-            await db.system_status.update_one(
-                {"task": task_key},
-                {"$set": {"running": False, "error": str(e), "completed_at": datetime.now(timezone.utc).isoformat()}}
-            )
+            await db.system_status.update_one({"task": task_key}, {"$set": {"running": False, "error": str(e), "completed_at": datetime.now(timezone.utc).isoformat()}})
+
 
     @router.get("/sync-ikas-currencies-status")
     async def get_currency_sync_status(user: dict = Depends(get_current_user)):
@@ -1774,24 +1773,38 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
                         }
 
                         if should_auto and ikas_graphql and can_update_price:
-                            try:
-                                ikas_id = product.get("ikas_id") or product.get("ikas_product_id")
-                                if ikas_id:
-                                    new_tl = result["new_price_tl"]
-                                    applied_ok = await _apply_price_to_ikas(
-                                        loop, ikas_graphql, db, slug, ikas_id,
-                                        new_tl, floor_price, base_currency,
-                                        IKAS_PRICE_LISTS
-                                    )
-                                    if applied_ok:
-                                        log_entry["applied"] = True
-                                        log_entry["applied_at"] = datetime.now(timezone.utc).isoformat()
-                                        new_base = convert_from_tl(new_tl, base_currency)
-                                        await db.products.update_one({"slug": slug}, {"$set": {"our_price": new_tl, "base_price": new_base}})
-                                        auto_updated += 1
-                            except Exception as e:
-                                logger.error(f"CRON auto-update error for {slug}: {e}")
-                                log_entry["apply_error"] = str(e)
+                            # 23-hour protection
+                            last_update = product.get("price_updated_at")
+                            skip_23h = False
+                            if last_update:
+                                try:
+                                    last_dt = datetime.fromisoformat(last_update.replace("Z", "+00:00")) if isinstance(last_update, str) else last_update
+                                    hours_since = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
+                                    if hours_since < 23:
+                                        skip_23h = True
+                                        log_entry["apply_error"] = f"Son güncelleme {hours_since:.0f} saat önce — 23 saat koruması"
+                                except Exception:
+                                    pass
+                            
+                            if not skip_23h:
+                                try:
+                                    ikas_id = product.get("ikas_id") or product.get("ikas_product_id")
+                                    if ikas_id:
+                                        new_tl = result["new_price_tl"]
+                                        applied_ok = await _apply_price_to_ikas(
+                                            loop, ikas_graphql, db, slug, ikas_id,
+                                            new_tl, floor_price, base_currency,
+                                            IKAS_PRICE_LISTS
+                                        )
+                                        if applied_ok:
+                                            log_entry["applied"] = True
+                                            log_entry["applied_at"] = datetime.now(timezone.utc).isoformat()
+                                            new_base = convert_from_tl(new_tl, base_currency)
+                                            await db.products.update_one({"slug": slug}, {"$set": {"our_price": new_tl, "base_price": new_base}})
+                                            auto_updated += 1
+                                except Exception as e:
+                                    logger.error(f"CRON auto-update error for {slug}: {e}")
+                                    log_entry["apply_error"] = str(e)
                         elif should_auto and not can_update_price:
                             log_entry["apply_error"] = "Dip fiyat girilmemiş — güncelleme atlandı"
 
@@ -1883,10 +1896,11 @@ async def _apply_price_to_ikas(loop, ikas_graphql, db, slug, ikas_id, new_price_
     if floor_price and new_price < floor_price:
         return False
 
-    mutation = """mutation UpdateVariantPrices($input: UpdateVariantPricesInput!) {
+    # 1. Update price list
+    mutation1 = """mutation UpdateVariantPrices($input: UpdateVariantPricesInput!) {
         updateVariantPrices(input: $input) { __typename }
     }"""
-    variables = {"input": {
+    variables1 = {"input": {
         "priceListId": target_plid,
         "variantPriceInputs": [{
             "productId": ikas_id,
@@ -1894,5 +1908,21 @@ async def _apply_price_to_ikas(loop, ikas_graphql, db, slug, ikas_id, new_price_
             "price": {"sellPrice": new_price}
         }]
     }}
-    await loop.run_in_executor(None, ikas_graphql, mutation, variables)
+    await loop.run_in_executor(None, ikas_graphql, mutation1, variables1)
+
+    # 2. Update variant sellPrice (top "Satış Fiyatı")
+    try:
+        mutation2 = """mutation UpdateProduct($input: UpdateProductInput!) {
+            updateProduct(input: $input) { id }
+        }"""
+        variables2 = {"input": {
+            "id": ikas_id,
+            "variants": [{"id": variant["id"], "prices": [{"sellPrice": new_price, "currency": target_currency}]}]
+        }}
+        await loop.run_in_executor(None, ikas_graphql, mutation2, variables2)
+    except Exception as e:
+        logger.warning(f"Variant sellPrice update failed for {ikas_id}: {e}")
+
+    # Update price_updated_at for 23-hour protection
+    await db.products.update_one({"ikas_product_id": ikas_id}, {"$set": {"price_updated_at": datetime.now(timezone.utc).isoformat()}})
     return True

@@ -742,6 +742,7 @@ function ProductRow({
       <td className="px-4 py-2.5">
         <div className="font-medium text-slate-900 text-sm leading-snug max-w-[300px] truncate" title={p.name}>{p.name}</div>
         <div className="flex gap-1.5 mt-1 items-center flex-wrap">
+          {p.sku && <span className="text-[11px] text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded font-mono" data-testid={`sku-${p.slug}`}>{p.sku}</span>}
           {p.brand && <span className="text-[11px] text-slate-500 font-medium">{p.brand}</span>}
           {p.brand && p.category && <span className="text-slate-300">·</span>}
           {p.category && (
