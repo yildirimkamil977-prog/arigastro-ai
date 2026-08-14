@@ -93,8 +93,38 @@ def _is_valid_product_url(url: str, competitor_key: str) -> bool:
     return True
 
 
-def search_competitor_product(product_name: str, competitor_key: str, brand: str = "") -> dict:
-    """Search for a product on a competitor site using Google with quality filtering."""
+def _extract_gtin_from_page(html_text: str, soup: BeautifulSoup) -> str:
+    """Extract GTIN/barcode from a competitor product page."""
+    # 1. JSON-LD
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string)
+            if isinstance(data, list):
+                data = data[0]
+            for field in ["gtin13", "gtin12", "gtin8", "gtin", "ean", "isbn"]:
+                val = data.get(field)
+                if val and re.match(r'^\d{8,14}$', str(val).strip()):
+                    return str(val).strip()
+        except:
+            pass
+    # 2. Meta tags
+    for meta in soup.find_all("meta"):
+        prop = (meta.get("property", "") + meta.get("name", "")).lower()
+        if any(k in prop for k in ["gtin", "barcode", "ean"]):
+            val = meta.get("content", "").strip()
+            if re.match(r'^\d{8,14}$', val):
+                return val
+    # 3. itemprop
+    for el in soup.find_all(attrs={"itemprop": True}):
+        if any(k in el["itemprop"].lower() for k in ["gtin", "barcode", "ean"]):
+            val = (el.get("content") or el.get_text(strip=True)).strip()
+            if re.match(r'^\d{8,14}$', val):
+                return val
+    return None
+
+
+def search_competitor_product(product_name: str, competitor_key: str, brand: str = "", gtin: str = "") -> dict:
+    """Multi-signal product matching: GTIN verification + text similarity."""
     if not SCRAPERAPI_KEY:
         return {"matched": False, "error": "ScraperAPI key missing"}
 
@@ -125,8 +155,7 @@ def search_competitor_product(product_name: str, competitor_key: str, brand: str
             return {"matched": False, "error": "No results"}
 
         # Score and filter results
-        best_match = None
-        best_score = 0
+        candidates = []
 
         # Extract "core" product words (exclude brand-like first word and pure numbers/units)
         product_norm = _normalize_text(product_name)
@@ -173,22 +202,49 @@ def search_competitor_product(product_name: str, competitor_key: str, brand: str
                 core_ratio = len(core_overlap) / len(core_words)
                 score = score * (0.5 + 0.5 * core_ratio)
 
-            if score > best_score:
-                best_score = score
-                best_match = {"url": url, "title": title, "score": score}
+            if score >= 0.20:
+                candidates.append({"url": url, "title": title, "score": score})
 
-        # Minimum quality threshold
-        if best_match and best_score >= 0.30:
+        if not candidates:
+            return {"matched": False, "error": "No quality match found"}
+
+        # Sort candidates by score
+        candidates.sort(key=lambda x: x["score"], reverse=True)
+
+        # GTIN VERIFICATION: scrape top candidates to verify via barcode
+        if gtin and len(gtin) >= 8:
+            for cand in candidates[:3]:
+                try:
+                    page_resp = req_sync.get("http://api.scraperapi.com", params={
+                        "api_key": SCRAPERAPI_KEY, "url": cand["url"],
+                    }, timeout=20)
+                    if page_resp.status_code == 200:
+                        page_soup = BeautifulSoup(page_resp.text, "html.parser")
+                        page_gtin = _extract_gtin_from_page(page_resp.text, page_soup)
+                        if page_gtin and page_gtin == gtin:
+                            return {
+                                "matched": True, "url": cand["url"], "title": cand["title"],
+                                "score": 1.0, "match_method": "gtin",
+                                "competitor_key": competitor_key, "competitor_name": comp["name"],
+                            }
+                        elif page_gtin and page_gtin != gtin:
+                            cand["score"] = 0  # Wrong product
+                            continue
+                except:
+                    pass
+                import time; time.sleep(0.5)
+
+        # Return best text-match (exclude disqualified)
+        valid = [c for c in candidates if c["score"] >= 0.30]
+        if valid:
+            best = valid[0]
             return {
-                "matched": True,
-                "url": best_match["url"],
-                "title": best_match["title"],
-                "score": round(best_score, 3),
-                "competitor_key": competitor_key,
-                "competitor_name": comp["name"],
+                "matched": True, "url": best["url"], "title": best["title"],
+                "score": round(best["score"], 3), "match_method": "text",
+                "competitor_key": competitor_key, "competitor_name": comp["name"],
             }
 
-        return {"matched": False, "error": f"No quality match found (best score: {best_score:.2f})"}
+        return {"matched": False, "error": f"No quality match (best: {candidates[0]['score']:.2f} after GTIN check)"}
     except Exception as e:
         return {"matched": False, "error": str(e)}
 
@@ -405,11 +461,11 @@ def _parse_turkish_price(text: str) -> float:
         return None
 
 
-def match_all_competitors_for_product(product_name: str, brand: str = "") -> dict:
-    """Match a product across all competitor sites."""
+def match_all_competitors_for_product(product_name: str, brand: str = "", gtin: str = "") -> dict:
+    """Match a product across all competitor sites with GTIN verification."""
     results = {}
     for key in COMPETITORS:
-        result = search_competitor_product(product_name, key, brand=brand)
+        result = search_competitor_product(product_name, key, brand=brand, gtin=gtin)
         results[key] = result
         import time
         time.sleep(0.5)

@@ -534,6 +534,15 @@ export default function CompetitorProductsPage() {
                                 ) : (
                                   <span className="text-[11px] text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded font-medium">Fiyat çekilmedi</span>
                                 )}
+                                <div className="flex items-center gap-1">
+                                  {match.match_method === "gtin" ? (
+                                    <span className="text-[9px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded font-bold">GTIN ✓</span>
+                                  ) : match.match_score ? (
+                                    <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium ${match.match_score >= 0.6 ? "bg-emerald-50 text-emerald-600" : match.match_score >= 0.4 ? "bg-amber-50 text-amber-600" : "bg-red-50 text-red-600"}`}>
+                                      %{Math.round(match.match_score * 100)}
+                                    </span>
+                                  ) : null}
+                                </div>
                                 <div className="flex gap-0.5">
                                   <button onClick={() => setEditingMatchKey(key)} className="text-slate-400 hover:text-blue-600 p-0.5 rounded hover:bg-blue-50 text-[10px]" title="Linki Düzenle">Düzenle</button>
                                   <span className="text-slate-200">|</span>
