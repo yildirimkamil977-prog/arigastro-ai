@@ -407,9 +407,8 @@ def _extract_price(soup: BeautifulSoup, competitor_key: str) -> float:
             ".ty-price-num", "span.price", ".product_price",
         ],
         "oguzmutfak": [
-            ".peer-[.line-through\\:not\\(.\\!hidden\\)]\\/price\\:text-body",
-            ".price-control", ".product-price", ".current-price",
-            "span.price", ".discountedPrice", ".currentPrice",
+            ".product-price", ".current-price", ".discountedPrice",
+            ".currentPrice", "span.price",
         ],
     }
     
