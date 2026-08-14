@@ -57,6 +57,16 @@ def get_exchange_rates() -> dict:
     return _cache["rates"] or {"TRY": 1.0, "EUR": 38.0, "USD": 36.0}
 
 
+def force_refresh_rates() -> dict:
+    """Force refresh exchange rates from TCMB, ignoring cache."""
+    rates = _fetch_rates_sync()
+    if rates:
+        _cache["rates"] = rates
+        _cache["fetched_at"] = time.time()
+        logger.info(f"TCMB rates force refreshed: EUR={rates.get('EUR')}, USD={rates.get('USD')}")
+    return _cache["rates"] or {"TRY": 1.0, "EUR": 38.0, "USD": 36.0}
+
+
 def convert_to_tl(amount: float, currency: str) -> float:
     """Convert amount in given currency to TRY."""
     if not amount:

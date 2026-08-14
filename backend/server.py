@@ -4178,7 +4178,11 @@ async def scheduled_ikas_currency_sync():
             logger.info("CRON: İkas kur senk zaten çalışıyor, atlaniyor")
             return
         
-        from tcmb_exchange import convert_to_tl
+        from tcmb_exchange import convert_to_tl, force_refresh_rates
+        
+        # Force refresh TCMB rates before sync
+        force_refresh_rates()
+        logger.info("CRON: TCMB kurları yenilendi")
         
         total = await db.products.count_documents({"inactive": {"$ne": True}})
         await db.system_status.update_one(

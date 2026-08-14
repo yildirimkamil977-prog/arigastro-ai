@@ -20,7 +20,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         match_all_competitors_for_product, scrape_all_competitor_prices,
         calculate_optimal_price,
     )
-    from tcmb_exchange import get_exchange_rates, convert_to_tl, convert_from_tl, get_rate
+    from tcmb_exchange import get_exchange_rates, convert_to_tl, convert_from_tl, get_rate, force_refresh_rates
     
     # --- Competitor info ---
     @router.get("/list")
@@ -805,6 +805,10 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         """Background: Bulk fetch ALL İkas products with prices, then match to local products."""
         loop = asyncio.get_event_loop()
         updated = 0
+
+        # Force refresh TCMB rates before sync
+        force_refresh_rates()
+        logger.info("İkas currency sync: TCMB rates refreshed")
         PRICE_LISTS = {
             "db850a77-bfd6-43de-8892-78d16dc01e0e": "EUR",
             "28b86f15-34b5-4c49-8d96-678194f4a8ba": "USD",
