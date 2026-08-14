@@ -327,9 +327,10 @@ def scrape_competitor_price(url: str, competitor_key: str, retries: int = 2) -> 
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, "html.parser")
             price = _extract_price(soup, competitor_key)
-            if price and price > 0:
+            if price and price > 100:
+                logger.info(f"Scraped {competitor_key} price: {price} TL (no-render) from {url[:60]}")
                 return {"success": True, "price": price, "currency": "TRY", "scraped_at": datetime.now(timezone.utc).isoformat()}
-    except:
+    except Exception:
         pass
     
     # Phase 2: Retry with JS render (for sites that need it)
@@ -344,32 +345,38 @@ def scrape_competitor_price(url: str, competitor_key: str, retries: int = 2) -> 
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, "html.parser")
             price = _extract_price(soup, competitor_key)
-            if price and price > 0:
+            if price and price > 100:
+                logger.info(f"Scraped {competitor_key} price: {price} TL (rendered) from {url[:60]}")
                 return {"success": True, "price": price, "currency": "TRY", "scraped_at": datetime.now(timezone.utc).isoformat()}
-            return {"success": False, "error": "Price not found on page"}
+            return {"success": False, "error": "Price not found on page (or below minimum threshold)"}
         return {"success": False, "error": f"HTTP {resp.status_code}"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
 
 def _extract_price(soup: BeautifulSoup, competitor_key: str) -> float:
-    """Extract price from competitor page HTML with site-specific strategies."""
+    """Extract price from competitor page HTML with site-specific strategies.
+    Returns the HIGHEST reasonable price found to avoid picking up accessory/shipping prices."""
     
-    # Strategy 1: Schema.org / JSON-LD
+    candidates = []  # Collect all found prices, pick the best one
+    
+    # Strategy 1: Schema.org / JSON-LD (most reliable)
     for script in soup.find_all("script", type="application/ld+json"):
         try:
             data = json.loads(script.string)
             if isinstance(data, list):
                 data = data[0]
+            if data.get("@type") not in ("Product", "IndividualProduct", None):
+                continue
             offers = data.get("offers", data.get("Offers", {}))
             if isinstance(offers, list):
                 offers = offers[0]
             p = offers.get("price") or offers.get("lowPrice")
             if p:
                 parsed = _parse_price_smart(str(p))
-                if parsed and parsed > 5:
-                    return parsed
-        except:
+                if parsed and parsed > 100:
+                    candidates.append(("jsonld", parsed))
+        except Exception:
             pass
     
     # Strategy 2: Site-specific selectors
@@ -399,14 +406,13 @@ def _extract_price(soup: BeautifulSoup, competitor_key: str) -> float:
         for el in soup.select(selector):
             text = el.get_text(strip=True)
             p = _parse_turkish_price(text)
-            if p and p > 5:
-                return p
-            # Also check content attribute
+            if p and p > 100:
+                candidates.append(("css", p))
             content = el.get("content")
             if content:
                 p = _parse_price_smart(content)
-                if p and p > 5:
-                    return p
+                if p and p > 100:
+                    candidates.append(("css_content", p))
     
     # Strategy 3: Meta tags
     for meta in soup.find_all("meta"):
@@ -415,53 +421,51 @@ def _extract_price(soup: BeautifulSoup, competitor_key: str) -> float:
             content = meta.get("content", "")
             if content:
                 p = _parse_price_smart(content)
-                if p and p > 5:
-                    return p
+                if p and p > 100:
+                    candidates.append(("meta", p))
     
     # Strategy 4: itemprop="price"
     for el in soup.find_all(attrs={"itemprop": "price"}):
         val = el.get("content") or el.get_text(strip=True)
         if val:
             p = _parse_price_smart(val)
-            if p and p > 5:
-                return p
+            if p and p > 100:
+                candidates.append(("itemprop", p))
     
-    # Strategy 5: Generic price CSS classes
-    generic_selectors = [
-        ".product-price", ".current-price", ".sales-price",
-        ".price-new", "[data-price]", ".price--sale",
-        ".price-box__price", ".price_color", "span.price",
-        ".product_price", ".discounted-price", ".woocommerce-Price-amount",
-        "ins .amount", ".summary .price",
-    ]
-    for selector in generic_selectors:
-        for el in soup.select(selector):
-            text = el.get_text(strip=True)
-            p = _parse_turkish_price(text)
-            if p and p > 5:
-                return p
-    
-    # Strategy 6: data-price attributes
+    # Strategy 5: data-price attributes
     for el in soup.find_all(attrs={"data-price": True}):
         p = _parse_price_smart(el["data-price"])
-        if p and p > 5:
-            return p
+        if p and p > 100:
+            candidates.append(("data_attr", p))
     
-    # Strategy 7: Broad regex on page text for TL prices
-    text = soup.get_text()
-    patterns = [
-        r'([\d.]+[.,]\d{2})\s*(?:TL|₺|tl)',
-        r'(?:TL|₺|tl)\s*([\d.]+[.,]\d{2})',
-        r'(?:fiyat|price|tutar)[^\d]{0,20}([\d.]+[.,]\d{2})',
-    ]
-    for pattern in patterns:
-        matches = re.findall(pattern, text, re.IGNORECASE)
-        for m in matches:
-            p = _parse_turkish_price(m)
-            if p and p > 5:
-                return p
+    if not candidates:
+        # Strategy 6: Broad regex (last resort)
+        text = soup.get_text()
+        patterns = [
+            r'([\d.]+[.,]\d{2,3})\s*(?:TL|₺|tl)',
+            r'(?:TL|₺|tl)\s*([\d.]+[.,]\d{2,3})',
+        ]
+        for pattern in patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for m in matches:
+                p = _parse_turkish_price(m)
+                if p and p > 100:
+                    candidates.append(("regex", p))
     
-    return None
+    if not candidates:
+        return None
+    
+    # Pick the best price: prefer JSON-LD/meta > CSS > regex
+    # Among same source, prefer higher price (main product price is typically the largest)
+    priority = {"jsonld": 0, "itemprop": 1, "meta": 2, "css_content": 3, "css": 4, "data_attr": 5, "regex": 6}
+    
+    # Group by source priority, take the max price from the highest priority group
+    candidates.sort(key=lambda x: (priority.get(x[0], 99), -x[1]))
+    
+    best_source = candidates[0][0]
+    best_candidates = [c for c in candidates if c[0] == best_source]
+    # Return the highest price from the best source (product price > accessory price)
+    return max(c[1] for c in best_candidates)
 
 
 def _parse_price_smart(text: str) -> float:
@@ -507,20 +511,31 @@ def _parse_price_smart(text: str) -> float:
 
 
 def _parse_turkish_price(text: str) -> float:
-    """Parse Turkish formatted price: '1.234,56 TL' -> 1234.56"""
+    """Parse Turkish formatted price: '1.234,56 TL' -> 1234.56, '94.464 TL' -> 94464"""
     if not text:
         return None
     try:
         clean = re.sub(r'[^\d.,]', '', text.strip())
         if not clean:
             return None
-        # Turkish format: 1.234,56
+        # Turkish format with both: 1.234,56 or 94.464,00
         if "," in clean and "." in clean:
             clean = clean.replace(".", "").replace(",", ".")
         elif "," in clean:
+            # Only comma: "475,00" -> 475.00
             clean = clean.replace(",", ".")
+        elif "." in clean:
+            # Only dot: could be thousands (94.464) or decimal (970.74)
+            parts = clean.split(".")
+            if len(parts) == 2 and len(parts[1]) == 3:
+                # "94.464" -> 3 digits after dot = thousands separator
+                clean = clean.replace(".", "")
+            elif len(parts) > 2:
+                # Multiple dots: "1.234.567" -> thousands
+                clean = clean.replace(".", "")
+            # else: "970.74" with 2 digits = decimal, keep as-is
         return float(clean)
-    except:
+    except Exception:
         return None
 
 
@@ -596,6 +611,23 @@ def calculate_optimal_price(
 
     if not competitor_prices:
         return {"action": "no_change", "reason": "Rakip fiyatı bulunamadı"}
+
+    # SANITY CHECK: Filter out unreliable prices (< 10% of our price = likely scrape error)
+    if our_price_tl and our_price_tl > 0:
+        min_threshold = our_price_tl * 0.10
+        reliable_prices = {}
+        rejected = []
+        for k, v in competitor_prices.items():
+            if v["price"] >= min_threshold:
+                reliable_prices[k] = v
+            else:
+                rejected.append(f"{v['competitor_name']}: {v['price']:.0f} TL (< %10 eşik: {min_threshold:.0f} TL)")
+        if rejected:
+            logger.warning(f"Güvenilmez fiyatlar filtrelendi: {', '.join(rejected)}")
+        competitor_prices = reliable_prices
+
+    if not competitor_prices:
+        return {"action": "no_change", "reason": "Güvenilir rakip fiyatı bulunamadı (tümü eşik altı)"}
 
     cheapest_comp = min(competitor_prices.items(), key=lambda x: x[1]["price"])
     cheapest_price_tl = cheapest_comp[1]["price"]
