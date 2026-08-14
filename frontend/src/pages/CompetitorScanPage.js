@@ -17,6 +17,8 @@ export default function CompetitorScanPage() {
   const [showRuleDialog, setShowRuleDialog] = useState(false);
   const [categories, setCategories] = useState([]);
   const [newRule, setNewRule] = useState({ category_name: "", undercut_amount: 100, enabled: true, auto_update_ikas: false });
+  const [runningCategory, setRunningCategory] = useState(null);
+  const [categoryProgress, setCategoryProgress] = useState(null);
 
   const fetchDashboard = useCallback(async () => {
     try {
@@ -100,6 +102,35 @@ export default function CompetitorScanPage() {
       toast.success("Kural silindi");
       fetchDashboard();
     } catch { toast.error("Silme başarısız"); }
+  };
+
+  const runCategoryPricing = async (catName) => {
+    setRunningCategory(catName);
+    setCategoryProgress(null);
+    try {
+      const { data } = await axios.post(`${API}/competitor/run-category-pricing/${encodeURIComponent(catName)}`, {}, { headers: getAuthHeaders(), withCredentials: true });
+      if (data.started) {
+        toast.success(`${catName}: ${data.total} ürün için tam tarama başlatıldı`);
+        const poll = setInterval(async () => {
+          try {
+            const { data: st } = await axios.get(`${API}/competitor/category-pricing-status/${data.task_key}`, { headers: getAuthHeaders(), withCredentials: true });
+            setCategoryProgress(st);
+            if (!st.running) {
+              clearInterval(poll);
+              setRunningCategory(null);
+              toast.success(`${catName}: ${st.updated || 0} ürün güncellendi, ${st.scanned || 0} tarandı`);
+              fetchDashboard();
+            }
+          } catch { clearInterval(poll); setRunningCategory(null); }
+        }, 3000);
+      } else {
+        toast.info(data.message);
+        setRunningCategory(null);
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Tarama başlatılamadı");
+      setRunningCategory(null);
+    }
   };
 
   const formatPrice = (price) => {
@@ -205,19 +236,67 @@ export default function CompetitorScanPage() {
               </div>
             ) : (
               <div className="space-y-2">
-                {(dashboard?.category_rules || []).map(rule => (
-                  <div key={rule.category_name} className={`flex items-center justify-between p-3 rounded-lg border ${rule.enabled ? "bg-white border-slate-200" : "bg-slate-50 border-slate-100 opacity-60"}`} data-testid={`rule-${rule.category_name}`}>
-                    <div>
-                      <div className="font-medium text-sm text-slate-800">{rule.category_name}</div>
-                      <div className="flex gap-3 text-xs text-slate-500 mt-1">
-                        <span>Kırma: <strong className="text-blue-600">{rule.undercut_amount || 100} ₺</strong></span>
-                        <span className={`font-medium ${rule.enabled ? "text-emerald-600" : "text-red-500"}`}>{rule.enabled ? "Aktif" : "Pasif"}</span>
-                        {rule.auto_update_ikas && <span className="font-medium text-violet-600 bg-violet-50 px-1.5 py-0.5 rounded">İkas Oto</span>}
+                {(dashboard?.category_rules || []).map(rule => {
+                  const isRunning = runningCategory === rule.category_name;
+                  const progress = isRunning ? categoryProgress : null;
+                  return (
+                  <div key={rule.category_name} className={`p-3 rounded-lg border ${rule.enabled ? "bg-white border-slate-200" : "bg-slate-50 border-slate-100 opacity-60"}`} data-testid={`rule-${rule.category_name}`}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1">
+                        <div className="font-medium text-sm text-slate-800">{rule.category_name}</div>
+                        <div className="flex gap-3 text-xs text-slate-500 mt-1">
+                          <span>Kırma: <strong className="text-blue-600">{rule.undercut_amount || 100} ₺</strong></span>
+                          <span className={`font-medium ${rule.enabled ? "text-emerald-600" : "text-red-500"}`}>{rule.enabled ? "Aktif" : "Pasif"}</span>
+                          {rule.auto_update_ikas && <span className="font-medium text-violet-600 bg-violet-50 px-1.5 py-0.5 rounded">İkas Oto</span>}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className={`h-7 text-xs ${isRunning ? "text-violet-600 border-violet-300" : "text-emerald-700 border-emerald-300 hover:bg-emerald-50"}`}
+                          disabled={isRunning || !!runningCategory}
+                          onClick={() => runCategoryPricing(rule.category_name)}
+                          data-testid={`run-category-${rule.category_name}`}
+                        >
+                          {isRunning ? (
+                            <><Loader2 className="h-3 w-3 mr-1 animate-spin" />Çalışıyor</>
+                          ) : (
+                            <><Play className="h-3 w-3 mr-1" />Çalıştır</>
+                          )}
+                        </Button>
+                        <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-red-400 hover:text-red-600 hover:bg-red-50" onClick={() => deleteRule(rule.category_name)} disabled={isRunning}><Trash2 className="h-3.5 w-3.5" /></Button>
                       </div>
                     </div>
-                    <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-red-400 hover:text-red-600 hover:bg-red-50" onClick={() => deleteRule(rule.category_name)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                    {/* Progress bar */}
+                    {isRunning && progress && (
+                      <div className="mt-2 pt-2 border-t border-slate-100">
+                        <div className="flex items-center justify-between text-xs mb-1">
+                          <span className="text-slate-500">
+                            {progress.phase === "ikas_refresh" ? "İkas fiyatları güncelleniyor..." :
+                             progress.phase === "competitor_scan" ? "Rakip fiyatlar taranıyor & güncelleniyor..." :
+                             "İşlem devam ediyor..."}
+                          </span>
+                          <span className="text-slate-600 font-mono">
+                            {progress.phase === "ikas_refresh" ? `${progress.ikas_refreshed || 0}/${progress.total}` :
+                             `${progress.scanned || 0}/${progress.matched_total || progress.total}`}
+                          </span>
+                        </div>
+                        <div className="w-full bg-slate-200 rounded-full h-1.5">
+                          <div className={`h-1.5 rounded-full transition-all duration-500 ${progress.phase === "ikas_refresh" ? "bg-blue-500" : "bg-emerald-500"}`}
+                            style={{ width: `${progress.total ? ((progress.phase === "ikas_refresh" ? (progress.progress || 0) : (progress.scanned || 0)) / progress.total * 100) : 0}%` }} />
+                        </div>
+                        {progress.phase === "competitor_scan" && (
+                          <div className="flex gap-3 text-[11px] text-slate-400 mt-1">
+                            <span>Güncellenen: <strong className="text-emerald-600">{progress.updated || 0}</strong></span>
+                            <span>Atlanan: <strong className="text-amber-600">{progress.skipped || 0}</strong></span>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
