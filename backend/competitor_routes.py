@@ -82,10 +82,20 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
     async def _run_single_product_match(db, slug, product_name, brand, gtin, task_key, competitors, match_fn, scrape_fn):
         loop = asyncio.get_event_loop()
         try:
+            # Get existing manual matches to protect them
+            existing_matches = await db.competitor_matches.find(
+                {"product_slug": slug},
+                {"_id": 0, "competitor_key": 1, "manual": 1}
+            ).to_list(10)
+            manual_keys = {m["competitor_key"] for m in existing_matches if m.get("manual")}
+            
             results = await loop.run_in_executor(None, match_fn, product_name, brand, gtin)
             
             saved = 0
             for comp_key, result in results.items():
+                # NEVER overwrite manual matches
+                if comp_key in manual_keys:
+                    continue
                 if result.get("matched"):
                     await db.competitor_matches.update_one(
                         {"product_slug": slug, "competitor_key": comp_key},
@@ -182,9 +192,19 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                     await db.system_status.update_one({"task": task_key}, {"$set": {"progress": i + 1, "products_matched": products_matched, "total_matches": total_matches}})
                     continue
                 
+                # Get existing manual matches to protect them
+                existing_matches = await db.competitor_matches.find(
+                    {"product_slug": prod["slug"]},
+                    {"_id": 0, "competitor_key": 1, "manual": 1}
+                ).to_list(10)
+                manual_keys = {m["competitor_key"] for m in existing_matches if m.get("manual")}
+                
                 results = await loop.run_in_executor(None, match_all_competitors_for_product, prod["name"], prod.get("brand", ""), prod.get("gtin", ""))
                 prod_found = False
                 for comp_key, result in results.items():
+                    # NEVER overwrite manual matches
+                    if comp_key in manual_keys:
+                        continue
                     if result.get("matched"):
                         await db.competitor_matches.update_one(
                             {"product_slug": prod["slug"], "competitor_key": comp_key},
