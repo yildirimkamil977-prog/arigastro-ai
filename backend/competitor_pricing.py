@@ -229,27 +229,33 @@ def search_competitor_product(product_name: str, competitor_key: str, brand: str
     search_terms = product_name
     if brand and brand.lower() not in product_name.lower():
         search_terms = f"{brand} {product_name}"
-    ascii_terms = search_terms.translate(TR_TO_ASCII)
+    ascii_full = search_terms.translate(TR_TO_ASCII)
+    # Short query for site search (works better with fewer words)
+    short_words = product_name.split()[:5]
+    if brand and brand.lower() not in " ".join(short_words).lower():
+        short_words = [brand] + short_words[:4]
+    ascii_short = " ".join(short_words).translate(TR_TO_ASCII)
 
-    # Collect candidates from ALL strategies, then score together
+    # Collect candidates from strategies
     candidates_raw = []
     
-    # Strategy 1a: Site search without render (fast)
-    site_results = _search_on_site(ascii_terms, competitor_key, use_render=False)
+    # Strategy 1: Site search with short query (fast, no render)
+    site_results = _search_on_site(ascii_short, competitor_key, use_render=False)
     candidates_raw.extend(site_results)
     
-    # Strategy 1b: Shorter model-focused query
+    # Strategy 1b: Model-number focused query
     model_parts = re.findall(r'[A-Z0-9]{2,}[A-Za-z]*\d+[A-Za-z]*|[A-Za-z]+\d+[A-Za-z]*', product_name)
-    if model_parts:
+    if model_parts and len(candidates_raw) < 3:
         short_q = f"{brand} {' '.join(model_parts)}".translate(TR_TO_ASCII) if brand else " ".join(model_parts)
         extra = _search_on_site(short_q, competitor_key, use_render=False)
         seen = {c["url"].split("?")[0].rstrip("/") for c in candidates_raw}
         candidates_raw += [e for e in extra if e["url"].split("?")[0].rstrip("/") not in seen]
     
-    # Strategy 2: Google fallback (always try for more coverage)
-    google_results = _search_on_google(ascii_terms, competitor_key)
-    seen = {c["url"].split("?")[0].rstrip("/") for c in candidates_raw}
-    candidates_raw += [e for e in google_results if e["url"].split("?")[0].rstrip("/") not in seen]
+    # Strategy 2: Google fallback — only if site search found < 2 candidates
+    if len(candidates_raw) < 2:
+        google_results = _search_on_google(ascii_full, competitor_key)
+        seen = {c["url"].split("?")[0].rstrip("/") for c in candidates_raw}
+        candidates_raw += [e for e in google_results if e["url"].split("?")[0].rstrip("/") not in seen]
 
     if not candidates_raw:
         return {"matched": False, "error": "No results from site or Google"}
@@ -283,8 +289,8 @@ def search_competitor_product(product_name: str, competitor_key: str, brand: str
         return {"matched": False, "error": "No quality match in search results"}
     candidates.sort(key=lambda x: x["score"], reverse=True)
 
-    # GTIN verification on top candidates
-    if gtin and len(gtin) >= 8:
+    # GTIN verification — only for medium-confidence matches (high score = already certain)
+    if gtin and len(gtin) >= 8 and candidates[0]["score"] < 0.75:
         for cand in candidates[:3]:
             try:
                 pr = req_sync.get("http://api.scraperapi.com", params={"api_key": SCRAPERAPI_KEY, "url": cand["url"]}, timeout=20)
@@ -519,69 +525,124 @@ def _parse_turkish_price(text: str) -> float:
 
 
 def match_all_competitors_for_product(product_name: str, brand: str = "", gtin: str = "") -> dict:
-    """Match a product across all competitor sites with GTIN verification."""
+    """Match a product across all competitor sites IN PARALLEL."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     results = {}
-    for key in COMPETITORS:
-        result = search_competitor_product(product_name, key, brand=brand, gtin=gtin)
-        results[key] = result
-        import time
-        time.sleep(0.5)
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {
+            executor.submit(search_competitor_product, product_name, key, brand, gtin): key
+            for key in COMPETITORS
+        }
+        for future in as_completed(futures):
+            key = futures[future]
+            try:
+                results[key] = future.result()
+            except Exception as e:
+                results[key] = {"matched": False, "error": str(e)}
     return results
 
 
 def scrape_all_competitor_prices(matches: dict) -> dict:
-    """Scrape prices from all matched competitor URLs."""
+    """Scrape prices from all matched competitor URLs IN PARALLEL."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     prices = {}
-    for comp_key, match in matches.items():
-        if match.get("url"):
-            result = scrape_competitor_price(match["url"], comp_key)
-            if result.get("success"):
-                prices[comp_key] = {
-                    "price": result["price"],
-                    "url": match["url"],
-                    "competitor_name": COMPETITORS[comp_key]["name"],
-                    "scraped_at": result["scraped_at"],
-                }
-            import time
-            time.sleep(0.5)
+    jobs = {k: m for k, m in matches.items() if m.get("url")}
+    if not jobs:
+        return prices
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {
+            executor.submit(scrape_competitor_price, m["url"], k): k
+            for k, m in jobs.items()
+        }
+        for future in as_completed(futures):
+            key = futures[future]
+            try:
+                result = future.result()
+                if result.get("success"):
+                    prices[key] = {
+                        "price": result["price"],
+                        "url": jobs[key]["url"],
+                        "competitor_name": COMPETITORS[key]["name"],
+                        "scraped_at": result["scraped_at"],
+                    }
+            except:
+                pass
     return prices
 
 
-def calculate_optimal_price(competitor_prices: dict, current_price: float, floor_price: float, undercut_amount: float = 100) -> dict:
-    """Calculate the optimal price based on competitor prices and floor price."""
+def calculate_optimal_price(
+    competitor_prices: dict,
+    our_price_tl: float,
+    floor_price: float,
+    base_currency: str = "TRY",
+    undercut_amount: float = 100,
+) -> dict:
+    """Calculate the optimal price based on competitor prices and floor price.
+    
+    - competitor_prices: dict of competitor TL prices
+    - our_price_tl: our current price in TL
+    - floor_price: floor price in the product's BASE CURRENCY (EUR/USD/TL)
+    - base_currency: the product's original İkas currency
+    - undercut_amount: TL amount to undercut the cheapest competitor (default 100 TL)
+    
+    Logic:
+    1. Find cheapest competitor (TL)
+    2. Convert cheapest competitor TL to base_currency using TCMB
+    3. Compare with floor_price (in base_currency)
+    4. If viable: new_price_tl = cheapest_tl - undercut_amount
+    5. Convert new_price_tl to base_currency for İkas update
+    """
+    from tcmb_exchange import convert_from_tl, convert_to_tl, get_rate
+
     if not competitor_prices:
         return {"action": "no_change", "reason": "Rakip fiyatı bulunamadı"}
-    
+
     cheapest_comp = min(competitor_prices.items(), key=lambda x: x[1]["price"])
-    cheapest_price = cheapest_comp[1]["price"]
+    cheapest_price_tl = cheapest_comp[1]["price"]
     cheapest_name = cheapest_comp[1]["competitor_name"]
-    
-    if current_price <= cheapest_price:
+
+    cur_label = "TL" if base_currency in ("TRY", "TL") else base_currency
+
+    # Convert our TL price to base currency for display
+    floor_price_tl = convert_to_tl(floor_price, base_currency) if floor_price else 0
+
+    # Are we already cheaper than the cheapest competitor?
+    if our_price_tl <= cheapest_price_tl:
         return {
             "action": "no_change",
-            "reason": f"Zaten en ucuz (bizim: {current_price:.2f} TL, en ucuz rakip: {cheapest_name} {cheapest_price:.2f} TL)",
+            "reason": f"Zaten en ucuz (bizim: {our_price_tl:,.2f} TL, rakip: {cheapest_name} {cheapest_price_tl:,.2f} TL)",
             "cheapest_competitor": cheapest_name,
-            "cheapest_price": cheapest_price,
+            "cheapest_price": cheapest_price_tl,
         }
-    
-    target_price = cheapest_price - undercut_amount
-    
-    if target_price < floor_price:
+
+    # Target price in TL: undercut by 100 TL
+    target_price_tl = cheapest_price_tl - undercut_amount
+
+    # Convert target price to base currency
+    target_price_base = convert_from_tl(target_price_tl, base_currency)
+
+    # Floor check: compare in base currency
+    if floor_price and target_price_base < floor_price:
         return {
             "action": "floor_hit",
-            "reason": f"Hedef fiyat ({target_price:.2f} TL) dip fiyatın ({floor_price:.2f} TL) altında. Fiyat değiştirilmedi.",
-            "target_price": target_price,
+            "reason": f"Hedef fiyat ({target_price_base:,.2f} {cur_label}) dip fiyatın ({floor_price:,.2f} {cur_label}) altında.",
+            "target_price_tl": target_price_tl,
+            "target_price_base": target_price_base,
             "floor_price": floor_price,
+            "floor_price_tl": floor_price_tl,
+            "base_currency": base_currency,
             "cheapest_competitor": cheapest_name,
-            "cheapest_price": cheapest_price,
+            "cheapest_price": cheapest_price_tl,
         }
-    
+
     return {
         "action": "update",
-        "new_price": target_price,
-        "old_price": current_price,
-        "savings": current_price - target_price,
-        "reason": f"En ucuz rakip: {cheapest_name} ({cheapest_price:.2f} TL). Yeni fiyat: {target_price:.2f} TL",
+        "new_price_tl": target_price_tl,
+        "new_price_base": target_price_base,
+        "old_price_tl": our_price_tl,
+        "base_currency": base_currency,
+        "savings_tl": our_price_tl - target_price_tl,
+        "reason": f"Rakip: {cheapest_name} ({cheapest_price_tl:,.2f} TL). Yeni: {target_price_base:,.2f} {cur_label} ({target_price_tl:,.2f} TL)",
         "cheapest_competitor": cheapest_name,
-        "cheapest_price": cheapest_price,
+        "cheapest_price": cheapest_price_tl,
     }

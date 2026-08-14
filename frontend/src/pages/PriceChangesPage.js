@@ -111,21 +111,28 @@ export default function PriceChangesPage() {
                 <tr><td colSpan={8} className="text-center py-16"><Loader2 className="h-6 w-6 animate-spin mx-auto text-slate-400" /></td></tr>
               ) : changes.length === 0 ? (
                 <tr><td colSpan={8} className="text-center py-16 text-slate-400">Fiyat değişikliği bulunamadı</td></tr>
-              ) : changes.map((ch, i) => (
+              ) : changes.map((ch, i) => {
+                const oldTl = ch.old_price_tl || ch.old_price || 0;
+                const newTl = ch.new_price_tl || ch.new_price || 0;
+                const curLabel = ch.base_currency && ch.base_currency !== "TRY" ? ch.base_currency : "TL";
+                return (
                 <tr key={i} className={`hover:bg-slate-50/70 transition-colors ${ch.action === "floor_hit" ? "bg-orange-50/30" : ch.apply_error ? "bg-red-50/30" : ""}`}>
                   <td className="px-4 py-3">
                     <div className="font-medium text-slate-900 text-sm truncate max-w-[220px]">{ch.product_name}</div>
                     {ch.reason && <div className="text-[11px] text-slate-400 mt-0.5 truncate max-w-[220px]">{ch.reason}</div>}
                   </td>
                   <td className="text-center px-3 py-3">
-                    <span className="text-slate-500">{formatPrice(ch.old_price)} ₺</span>
+                    <span className="text-slate-500">{formatPrice(oldTl)} ₺</span>
                   </td>
                   <td className="text-center px-1 py-3"><ArrowRight className="h-3.5 w-3.5 text-slate-300 mx-auto" /></td>
                   <td className="text-center px-3 py-3">
-                    {ch.new_price ? (
+                    {newTl ? (
                       <>
-                        <span className="font-bold text-blue-700">{formatPrice(ch.new_price)} ₺</span>
-                        {ch.old_price && ch.new_price && <div className="text-[11px] text-emerald-600 font-medium">-{formatPrice(ch.old_price - ch.new_price)} ₺</div>}
+                        <span className="font-bold text-blue-700">{formatPrice(newTl)} ₺</span>
+                        {ch.new_price_base && curLabel !== "TL" && (
+                          <div className="text-[11px] text-violet-600 font-medium">{formatPrice(ch.new_price_base)} {curLabel}</div>
+                        )}
+                        {oldTl && newTl && <div className="text-[11px] text-emerald-600 font-medium">-{formatPrice(oldTl - newTl)} ₺</div>}
                       </>
                     ) : (
                       <span className="text-xs text-slate-400">—</span>
@@ -137,7 +144,7 @@ export default function PriceChangesPage() {
                   </td>
                   <td className="text-center px-3 py-3">
                     {ch.floor_price ? (
-                      <span className="text-xs font-medium text-orange-700">{formatPrice(ch.floor_price)} ₺</span>
+                      <span className="text-xs font-medium text-orange-700">{formatPrice(ch.floor_price)} {curLabel}</span>
                     ) : (
                       <span className="text-[11px] text-red-400 font-medium flex items-center justify-center gap-0.5"><AlertTriangle className="h-3 w-3" /> Yok</span>
                     )}
@@ -145,7 +152,8 @@ export default function PriceChangesPage() {
                   <td className="text-center px-3 py-3">{getStatusBadge(ch)}</td>
                   <td className="text-center px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{formatDate(ch.changed_at)}</td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>

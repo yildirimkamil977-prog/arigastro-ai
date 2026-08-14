@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import {
   Search, ExternalLink, RefreshCw, Link2, Unlink, TrendingDown,
   ChevronLeft, ChevronRight, Loader2, Eye, Tag, ShoppingCart,
-  ArrowUpDown, X, Check, AlertTriangle
+  ArrowUpDown, X, Check, AlertTriangle, DollarSign, Download
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -16,6 +16,13 @@ const COMPETITOR_ICONS = {
   cafemarkt: { name: "CM", color: "#3b82f6", domain: "cafemarkt.com" },
   mutbex: { name: "MX", color: "#22c55e", domain: "mutbex.com" },
   hakbilenler: { name: "HB", color: "#a855f7", domain: "hakbilenler.com.tr" },
+};
+
+const CURRENCY_SYMBOLS = {
+  EUR: "€",
+  USD: "$",
+  TRY: "₺",
+  TL: "₺",
 };
 
 const CURRENCY_STYLES = {
@@ -47,8 +54,9 @@ export default function CompetitorProductsPage() {
   const [categoryMatchStatus, setCategoryMatchStatus] = useState(null);
   const [editingSlug, setEditingSlug] = useState(null);
   const [editFloor, setEditFloor] = useState("");
-  const [editPurchase, setEditPurchase] = useState("");
   const [editingMatchKey, setEditingMatchKey] = useState(null);
+  const [exchangeRates, setExchangeRates] = useState({});
+  const [syncingCurrencies, setSyncingCurrencies] = useState(false);
   const searchTimer = useRef(null);
 
   const fetchProducts = useCallback(async () => {
@@ -74,6 +82,16 @@ export default function CompetitorProductsPage() {
 
   useEffect(() => { fetchProducts(); }, [fetchProducts]);
 
+  // Fetch exchange rates on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await axios.get(`${API}/competitor/exchange-rates`, { headers: getAuthHeaders(), withCredentials: true });
+        setExchangeRates(data.rates || {});
+      } catch {}
+    })();
+  }, []);
+
   const handleSearch = (val) => {
     if (searchTimer.current) clearTimeout(searchTimer.current);
     searchTimer.current = setTimeout(() => { setSearch(val); setPage(1); }, 400);
@@ -84,8 +102,6 @@ export default function CompetitorProductsPage() {
     try {
       const { data } = await axios.post(`${API}/competitor/auto-match/${slug}`, {}, { headers: getAuthHeaders(), withCredentials: true });
       toast.info(data.message || "Eşleştirme başlatıldı...");
-      
-      // Poll for completion
       if (data.task_key) {
         const pollInterval = setInterval(async () => {
           try {
@@ -93,21 +109,13 @@ export default function CompetitorProductsPage() {
             if (!status.running) {
               clearInterval(pollInterval);
               setMatchingSlug(null);
-              if (status.error) {
-                toast.error(`Eşleştirme hatası: ${status.error.substring(0, 100)}`);
-              } else {
-                toast.success(`${status.matched}/${Object.keys(status.results || {}).length} rakipte eşleşme bulundu`);
-              }
+              if (status.error) toast.error(`Eşleştirme hatası: ${status.error.substring(0, 100)}`);
+              else toast.success(`${status.matched}/${Object.keys(status.results || {}).length} rakipte eşleşme bulundu`);
               fetchProducts();
             }
-          } catch {
-            clearInterval(pollInterval);
-            setMatchingSlug(null);
-          }
+          } catch { clearInterval(pollInterval); setMatchingSlug(null); }
         }, 2000);
-      } else {
-        setMatchingSlug(null);
-      }
+      } else { setMatchingSlug(null); }
     } catch (err) {
       toast.error(err.response?.data?.detail || "Eşleştirme başlatılamadı");
       setMatchingSlug(null);
@@ -166,19 +174,45 @@ export default function CompetitorProductsPage() {
   const startEditing = (p) => {
     setEditingSlug(p.slug);
     setEditFloor(p.floor_price || "");
-    setEditPurchase(p.purchase_price || "");
   };
 
   const savePriceSettings = async (slug) => {
     try {
       await axios.put(`${API}/competitor/price-settings/${slug}`, {
         floor_price: editFloor ? parseFloat(editFloor) : null,
-        purchase_price: editPurchase ? parseFloat(editPurchase) : null,
       }, { headers: getAuthHeaders(), withCredentials: true });
-      toast.success("Fiyat ayarları kaydedildi");
+      toast.success("Dip fiyat kaydedildi");
       setEditingSlug(null);
       fetchProducts();
     } catch { toast.error("Kaydetme başarısız"); }
+  };
+
+  const syncIkasCurrencies = async () => {
+    setSyncingCurrencies(true);
+    try {
+      const { data } = await axios.post(`${API}/competitor/sync-ikas-currencies`, {}, { headers: getAuthHeaders(), withCredentials: true });
+      if (data.started) {
+        toast.success(`${data.total} ürün için kur senkronizasyonu başlatıldı`);
+        // Poll status
+        const poll = setInterval(async () => {
+          try {
+            const { data: st } = await axios.get(`${API}/competitor/sync-ikas-currencies-status`, { headers: getAuthHeaders(), withCredentials: true });
+            if (!st.running) {
+              clearInterval(poll);
+              setSyncingCurrencies(false);
+              toast.success(`Kur senkronizasyonu tamamlandı: ${st.updated || 0} ürün güncellendi`);
+              fetchProducts();
+            }
+          } catch { clearInterval(poll); setSyncingCurrencies(false); }
+        }, 5000);
+      } else {
+        toast.info(data.message);
+        setSyncingCurrencies(false);
+      }
+    } catch {
+      toast.error("Kur senkronizasyonu başlatılamadı");
+      setSyncingCurrencies(false);
+    }
   };
 
   const openDetail = async (product) => {
@@ -201,6 +235,11 @@ export default function CompetitorProductsPage() {
     return new Intl.NumberFormat("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(price);
   };
 
+  const getCurrencyLabel = (currency) => {
+    if (!currency || currency === "TRY" || currency === "TL") return "TL";
+    return currency;
+  };
+
   const clearFilters = () => {
     setCategory("");
     setBrand("");
@@ -217,9 +256,16 @@ export default function CompetitorProductsPage() {
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h1 className="text-xl font-bold text-slate-900" data-testid="page-title">Rakip Fiyat Takibi</h1>
-          <p className="text-sm text-slate-500">{total} ürün listeleniyor</p>
+          <p className="text-sm text-slate-500">{total} ürün listeleniyor
+            {exchangeRates.EUR && <span className="ml-2 text-xs text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">€1 = {formatPrice(exchangeRates.EUR)} ₺</span>}
+            {exchangeRates.USD && <span className="ml-1 text-xs text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">$1 = {formatPrice(exchangeRates.USD)} ₺</span>}
+          </p>
         </div>
         <div className="flex gap-2">
+          <Button size="sm" variant="outline" onClick={syncIkasCurrencies} disabled={syncingCurrencies} data-testid="sync-currencies-btn">
+            {syncingCurrencies ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Download className="h-3.5 w-3.5 mr-1.5" />}
+            İkas Kur Senkronize
+          </Button>
           <Button size="sm" variant="outline" onClick={async () => {
             try {
               const { data } = await axios.post(`${API}/competitor/retry-failed-prices`, {}, { headers: getAuthHeaders(), withCredentials: true });
@@ -278,7 +324,6 @@ export default function CompetitorProductsPage() {
       {/* Filters */}
       <div className="bg-white rounded-xl border p-3 shadow-sm" data-testid="filters">
         <div className="flex gap-2 flex-wrap items-center">
-          {/* Search */}
           <div className="relative flex-1 min-w-[200px]">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
             <Input
@@ -289,7 +334,6 @@ export default function CompetitorProductsPage() {
               data-testid="search-input"
             />
           </div>
-          {/* Category */}
           <select
             value={category}
             onChange={e => { setCategory(e.target.value); setPage(1); }}
@@ -305,7 +349,6 @@ export default function CompetitorProductsPage() {
               </>
             )}
           </select>
-          {/* Brand */}
           <select
             value={brand}
             onChange={e => { setBrand(e.target.value); setPage(1); }}
@@ -315,7 +358,6 @@ export default function CompetitorProductsPage() {
             <option value="">{`Tüm Markalar (${brands.length})`}</option>
             {brands.map(b => <option key={b} value={b}>{b}</option>)}
           </select>
-          {/* Match Status */}
           <select
             value={matchStatus}
             onChange={e => { setMatchStatus(e.target.value); setPage(1); }}
@@ -326,7 +368,6 @@ export default function CompetitorProductsPage() {
             <option value="matched">Eşleşmiş</option>
             <option value="unmatched">Eşleşmemiş</option>
           </select>
-          {/* Clear Filters */}
           {hasFilters && (
             <Button size="sm" variant="ghost" onClick={clearFilters} className="h-9 px-2 text-slate-500" data-testid="clear-filters-btn">
               <X className="h-4 w-4" />
@@ -342,8 +383,7 @@ export default function CompetitorProductsPage() {
             <thead className="bg-slate-50 border-b">
               <tr>
                 <th className="text-left px-4 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Ürün</th>
-                <th className="text-center px-3 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Fiyat (TL)</th>
-                <th className="text-center px-3 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Alış Fiyatı</th>
+                <th className="text-center px-3 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Fiyat</th>
                 <th className="text-center px-3 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Dip Fiyat</th>
                 <th className="text-center px-3 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Rakipler</th>
                 <th className="text-center px-3 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">En Ucuz Rakip</th>
@@ -352,18 +392,16 @@ export default function CompetitorProductsPage() {
             </thead>
             <tbody className="divide-y divide-slate-100">
               {loading ? (
-                <tr><td colSpan={7} className="text-center py-16"><Loader2 className="h-6 w-6 animate-spin mx-auto text-slate-400" /></td></tr>
+                <tr><td colSpan={6} className="text-center py-16"><Loader2 className="h-6 w-6 animate-spin mx-auto text-slate-400" /></td></tr>
               ) : products.length === 0 ? (
-                <tr><td colSpan={7} className="text-center py-16 text-slate-400">Ürün bulunamadı</td></tr>
+                <tr><td colSpan={6} className="text-center py-16 text-slate-400">Ürün bulunamadı</td></tr>
               ) : products.map(p => (
                 <ProductRow
                   key={p.slug}
                   p={p}
                   editingSlug={editingSlug}
                   editFloor={editFloor}
-                  editPurchase={editPurchase}
                   setEditFloor={setEditFloor}
-                  setEditPurchase={setEditPurchase}
                   startEditing={startEditing}
                   savePriceSettings={savePriceSettings}
                   setEditingSlug={setEditingSlug}
@@ -373,6 +411,7 @@ export default function CompetitorProductsPage() {
                   checkPrices={checkPrices}
                   openDetail={openDetail}
                   formatPrice={formatPrice}
+                  getCurrencyLabel={getCurrencyLabel}
                 />
               ))}
             </tbody>
@@ -416,10 +455,8 @@ export default function CompetitorProductsPage() {
               {/* Quick Actions */}
               <div className="flex gap-2 pt-4 flex-wrap" data-testid="detail-actions">
                 <Button size="sm" variant="outline" onClick={async () => {
-                  try {
-                    toast.info("Rakip fiyatları taranıyor...");
-                    checkPrices(detailProduct.slug);
-                  } catch { toast.error("Tarama başarısız"); }
+                  toast.info("Rakip fiyatları taranıyor...");
+                  checkPrices(detailProduct.slug);
                 }} disabled={!detailProduct.match_count} data-testid="detail-scan-btn">
                   <TrendingDown className="h-3.5 w-3.5 mr-1.5" /> Rakip Fiyat Tara
                 </Button>
@@ -437,17 +474,37 @@ export default function CompetitorProductsPage() {
                 <div className="space-y-4">
                   {/* Price Cards */}
                   <div className="grid grid-cols-2 gap-3">
-                    <PriceCard label="Satış Fiyatı" value={formatPrice(detailProduct.our_price)} suffix="₺" color="text-slate-900" />
+                    <div className="bg-white border rounded-lg p-3 text-center">
+                      <div className="text-[11px] text-slate-500 uppercase tracking-wide mb-1">Satış Fiyatı</div>
+                      {detailProduct.base_currency && detailProduct.base_currency !== "TRY" ? (
+                        <>
+                          <div className="font-bold text-lg text-slate-900">{formatPrice(detailProduct.base_price)} <span className="text-xs font-normal">{getCurrencyLabel(detailProduct.base_currency)}</span></div>
+                          <div className="text-xs text-slate-400 mt-0.5">≈ {formatPrice(detailProduct.our_price)} ₺</div>
+                        </>
+                      ) : (
+                        <div className="font-bold text-lg text-slate-900">{formatPrice(detailProduct.our_price)} <span className="text-xs font-normal">₺</span></div>
+                      )}
+                    </div>
                     <PriceCard label="En Ucuz Rakip" value={detailProduct.cheapest_competitor_price ? formatPrice(detailProduct.cheapest_competitor_price) : "-"} suffix={detailProduct.cheapest_competitor_price ? "₺" : ""} sub={detailProduct.cheapest_competitor_name || ""} color={detailProduct.cheapest_competitor_price && detailProduct.cheapest_competitor_price < detailProduct.our_price ? "text-red-600" : "text-emerald-700"} />
-                    <PriceCard label="Alış Fiyatı" value={detailProduct.purchase_price ? formatPrice(detailProduct.purchase_price) : "-"} suffix={detailProduct.purchase_price ? "₺" : ""} color="text-blue-700" />
-                    <PriceCard label="Dip Fiyat" value={detailProduct.floor_price ? formatPrice(detailProduct.floor_price) : "-"} suffix={detailProduct.floor_price ? "₺" : ""} color="text-orange-700" />
+                    <div className="bg-white border rounded-lg p-3 text-center">
+                      <div className="text-[11px] text-slate-500 uppercase tracking-wide mb-1">Dip Fiyat</div>
+                      {detailProduct.floor_price ? (
+                        <div className="font-bold text-lg text-orange-700">{formatPrice(detailProduct.floor_price)} <span className="text-xs font-normal">{getCurrencyLabel(detailProduct.base_currency || "TRY")}</span></div>
+                      ) : (
+                        <div className="font-bold text-lg text-slate-300">-</div>
+                      )}
+                    </div>
+                    <div className="bg-white border rounded-lg p-3 text-center">
+                      <div className="text-[11px] text-slate-500 uppercase tracking-wide mb-1">Para Birimi</div>
+                      <div className="font-bold text-lg text-violet-700">{getCurrencyLabel(detailProduct.base_currency || "TRY")}</div>
+                    </div>
                   </div>
 
                   {/* Safety warning */}
-                  {!detailProduct.floor_price && !detailProduct.purchase_price && (
+                  {!detailProduct.floor_price && (
                     <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-700 flex items-center gap-2">
                       <AlertTriangle className="h-4 w-4 shrink-0" />
-                      <span><strong>Dip fiyat ve alış fiyatı girilmemiş.</strong> Bu ürünün fiyatı otomatik güncellenmez.</span>
+                      <span><strong>Dip fiyat girilmemiş.</strong> Bu ürünün fiyatı otomatik güncellenmez.</span>
                     </div>
                   )}
 
@@ -472,10 +529,14 @@ export default function CompetitorProductsPage() {
                       <div className="grid grid-cols-3 gap-2">
                         {ikasPrice.map((ip, i) => {
                           const cs = CURRENCY_STYLES[ip.currency] || CURRENCY_STYLES.TRY;
+                          const isTL = ip.currency === "TRY" || ip.currency === "TL";
                           return (
                             <div key={i} className={`rounded-lg border px-3 py-2 ${cs.bg}`}>
                               <div className="text-xs opacity-70">{cs.label}</div>
                               <div className="font-bold">{formatPrice(ip.sell_price)} {cs.label}</div>
+                              {!isTL && ip.tl_equivalent && (
+                                <div className="text-[10px] opacity-60 mt-0.5">≈ {formatPrice(ip.tl_equivalent)} ₺</div>
+                              )}
                             </div>
                           );
                         })}
@@ -536,7 +597,7 @@ export default function CompetitorProductsPage() {
                                 )}
                                 <div className="flex items-center gap-1">
                                   {match.match_method === "gtin" ? (
-                                    <span className="text-[9px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded font-bold">GTIN ✓</span>
+                                    <span className="text-[9px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded font-bold">GTIN</span>
                                   ) : match.match_score ? (
                                     <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium ${match.match_score >= 0.6 ? "bg-emerald-50 text-emerald-600" : match.match_score >= 0.4 ? "bg-amber-50 text-amber-600" : "bg-red-50 text-red-600"}`}>
                                       %{Math.round(match.match_score * 100)}
@@ -559,7 +620,6 @@ export default function CompetitorProductsPage() {
                           </div>
                         );
                       }
-                      // Unmatched or editing
                       return (
                         <div key={key} className={`p-3 border rounded-lg ${match ? "bg-blue-50 border-blue-200" : "bg-slate-50 border-dashed border-slate-300"}`}>
                           <div className="flex items-center gap-2.5 mb-2">
@@ -612,11 +672,14 @@ function PriceCard({ label, value, suffix, color, sub }) {
 }
 
 function ProductRow({
-  p, editingSlug, editFloor, editPurchase, setEditFloor, setEditPurchase,
+  p, editingSlug, editFloor, setEditFloor,
   startEditing, savePriceSettings, setEditingSlug,
-  matchingSlug, checkingSlug, autoMatchProduct, checkPrices, openDetail, formatPrice
+  matchingSlug, checkingSlug, autoMatchProduct, checkPrices, openDetail, formatPrice, getCurrencyLabel
 }) {
   const isEditing = editingSlug === p.slug;
+  const baseCur = p.base_currency || "TRY";
+  const curLabel = getCurrencyLabel(baseCur);
+  const isForeign = baseCur !== "TRY" && baseCur !== "TL";
 
   return (
     <tr className="hover:bg-slate-50/70 transition-colors" data-testid={`product-row-${p.slug}`}>
@@ -634,56 +697,34 @@ function ProductRow({
         </div>
       </td>
 
-      {/* Our TL Price + Base Currency */}
+      {/* Price: Original + TL */}
       <td className="text-center px-3 py-2.5">
-        <div className="font-semibold text-slate-900">{formatPrice(p.our_price)} ₺</div>
-        {p.base_price && p.base_currency && p.base_currency !== "TRY" && (
-          <div className="mt-0.5">
-            <span className={`text-[11px] px-1.5 py-0.5 rounded border font-medium ${(CURRENCY_STYLES[p.base_currency] || CURRENCY_STYLES.TRY).bg}`}>
-              {formatPrice(p.base_price)} {p.base_currency}
-            </span>
-          </div>
-        )}
-      </td>
-
-      {/* Purchase Price (Alış Fiyatı) */}
-      <td className="text-center px-3 py-2.5">
-        {isEditing ? (
-          <input
-            type="number"
-            value={editPurchase}
-            onChange={e => setEditPurchase(e.target.value)}
-            className="w-24 border rounded px-2 py-1 text-xs text-center focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none"
-            placeholder="Alış ₺"
-            data-testid={`purchase-price-input-${p.slug}`}
-          />
+        {isForeign && p.base_price ? (
+          <>
+            <div className="font-semibold text-slate-900">{formatPrice(p.base_price)} <span className="text-xs text-slate-500">{curLabel}</span></div>
+            <div className="text-[11px] text-slate-400 mt-0.5">≈ {formatPrice(p.our_price)} ₺</div>
+          </>
         ) : (
-          <button
-            onClick={() => startEditing(p)}
-            className="text-xs hover:bg-blue-50 px-2 py-1 rounded transition-colors"
-            data-testid={`purchase-price-${p.slug}`}
-          >
-            {p.purchase_price ? (
-              <span className="text-blue-700 font-medium">{formatPrice(p.purchase_price)} ₺</span>
-            ) : (
-              <span className="text-slate-300 italic">Gir</span>
-            )}
-          </button>
+          <div className="font-semibold text-slate-900">{formatPrice(p.our_price)} ₺</div>
         )}
       </td>
 
-      {/* Floor Price (Dip Fiyat) */}
+      {/* Floor Price (Dip Fiyat) in base currency */}
       <td className="text-center px-3 py-2.5">
         {isEditing ? (
           <div className="flex flex-col gap-1 items-center">
-            <input
-              type="number"
-              value={editFloor}
-              onChange={e => setEditFloor(e.target.value)}
-              className="w-24 border rounded px-2 py-1 text-xs text-center focus:ring-2 focus:ring-orange-200 focus:border-orange-400 outline-none"
-              placeholder="Dip ₺"
-              data-testid={`floor-price-input-${p.slug}`}
-            />
+            <div className="relative">
+              <input
+                type="number"
+                step="0.01"
+                value={editFloor}
+                onChange={e => setEditFloor(e.target.value)}
+                className="w-28 border rounded px-2 py-1 text-xs text-center focus:ring-2 focus:ring-orange-200 focus:border-orange-400 outline-none pr-8"
+                placeholder={`Dip ${curLabel}`}
+                data-testid={`floor-price-input-${p.slug}`}
+              />
+              <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 font-medium">{curLabel}</span>
+            </div>
             <div className="flex gap-1">
               <button onClick={() => savePriceSettings(p.slug)} className="text-emerald-600 hover:bg-emerald-50 rounded p-0.5" data-testid={`save-prices-${p.slug}`}><Check className="h-3.5 w-3.5" /></button>
               <button onClick={() => setEditingSlug(null)} className="text-slate-400 hover:bg-slate-100 rounded p-0.5"><X className="h-3.5 w-3.5" /></button>
@@ -696,7 +737,7 @@ function ProductRow({
             data-testid={`floor-price-${p.slug}`}
           >
             {p.floor_price ? (
-              <span className="text-orange-700 font-medium">{formatPrice(p.floor_price)} ₺</span>
+              <span className="text-orange-700 font-medium">{formatPrice(p.floor_price)} {curLabel}</span>
             ) : (
               <span className="text-slate-300 italic">Ayarla</span>
             )}

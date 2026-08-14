@@ -4,7 +4,7 @@ import axios from "axios";
 import { toast } from "sonner";
 import {
   Play, Square, Loader2, RefreshCw, TrendingDown, AlertTriangle,
-  CheckCircle2, BarChart3, Settings2, Percent, Save, Trash2, Plus
+  CheckCircle2, BarChart3, Settings2, Save, Trash2, Plus
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -16,7 +16,7 @@ export default function CompetitorScanPage() {
   const [loading, setLoading] = useState(true);
   const [showRuleDialog, setShowRuleDialog] = useState(false);
   const [categories, setCategories] = useState([]);
-  const [newRule, setNewRule] = useState({ category_name: "", profit_margin_pct: 20, undercut_amount: 100, enabled: true, auto_update_ikas: false });
+  const [newRule, setNewRule] = useState({ category_name: "", undercut_amount: 100, enabled: true, auto_update_ikas: false });
 
   const fetchDashboard = useCallback(async () => {
     try {
@@ -89,7 +89,7 @@ export default function CompetitorScanPage() {
       await axios.post(`${API}/competitor/category-rules`, newRule, { headers: getAuthHeaders(), withCredentials: true });
       toast.success("Kategori kuralı kaydedildi");
       setShowRuleDialog(false);
-      setNewRule({ category_name: "", profit_margin_pct: 20, undercut_amount: 100, enabled: true, auto_update_ikas: false });
+      setNewRule({ category_name: "", undercut_amount: 100, enabled: true, auto_update_ikas: false });
       fetchDashboard();
     } catch { toast.error("Kaydetme başarısız"); }
   };
@@ -184,7 +184,7 @@ export default function CompetitorScanPage() {
             <span className="bg-emerald-100 text-emerald-700 px-2 py-1 rounded-lg font-medium">+İkas Oto Güncelleme</span>
           </div>
         </div>
-        <p className="text-xs text-slate-500 mt-2">Her gece 00:00'da feed güncellenir, 01:00'da eşleşmiş ürünlerin rakip fiyatları taranır. <strong>"İkas Oto"</strong> açık olan kategorilerdeki ürünlerin fiyatları otomatik güncellenir.</p>
+        <p className="text-xs text-slate-500 mt-2">Her gece 00:00&apos;da feed güncellenir, 01:00&apos;da eşleşmiş ürünlerin rakip fiyatları taranır ve TCMB kurları ile karşılaştırılır. <strong>&ldquo;İkas Oto&rdquo;</strong> açık olan kategorilerdeki ürünlerin fiyatları dip fiyat koruması altında otomatik güncellenir.</p>
         {dashboard?.scheduled_scan?.last_run && (
           <p className="text-xs text-slate-400 mt-1">Son zamanlanmış tarama: {new Date(dashboard.scheduled_scan.last_run).toLocaleDateString("tr-TR")} {new Date(dashboard.scheduled_scan.last_run).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })} — Güncellenen: {dashboard.scheduled_scan.auto_updated || 0} ürün</p>
         )}
@@ -210,7 +210,6 @@ export default function CompetitorScanPage() {
                     <div>
                       <div className="font-medium text-sm text-slate-800">{rule.category_name}</div>
                       <div className="flex gap-3 text-xs text-slate-500 mt-1">
-                        <span className="flex items-center gap-0.5"><Percent className="h-3 w-3" /> Kâr: <strong className="text-emerald-600">%{rule.profit_margin_pct || 0}</strong></span>
                         <span>Kırma: <strong className="text-blue-600">{rule.undercut_amount || 100} ₺</strong></span>
                         <span className={`font-medium ${rule.enabled ? "text-emerald-600" : "text-red-500"}`}>{rule.enabled ? "Aktif" : "Pasif"}</span>
                         {rule.auto_update_ikas && <span className="font-medium text-violet-600 bg-violet-50 px-1.5 py-0.5 rounded">İkas Oto</span>}
@@ -237,19 +236,25 @@ export default function CompetitorScanPage() {
               </div>
             ) : (
               <div className="space-y-2 max-h-[360px] overflow-y-auto">
-                {(dashboard?.recent_changes || []).map((ch, i) => (
-                  <div key={i} className="p-3 bg-slate-50 rounded-lg text-sm border">
-                    <div className="font-medium text-slate-800 truncate">{ch.product_name}</div>
-                    <div className="flex items-center gap-2 mt-1.5 text-xs">
-                      <span className="text-slate-500 line-through">{formatPrice(ch.old_price)} ₺</span>
-                      <span className="text-slate-400">&rarr;</span>
-                      <span className="font-bold text-blue-700">{formatPrice(ch.new_price)} ₺</span>
-                      <span className="text-emerald-600 font-medium">(-{formatPrice((ch.old_price || 0) - (ch.new_price || 0))} ₺)</span>
-                      <span className={`ml-auto px-1.5 py-0.5 rounded text-[10px] font-medium ${ch.applied ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>{ch.applied ? "Uygulandı" : "Bekliyor"}</span>
+                {(dashboard?.recent_changes || []).map((ch, i) => {
+                  const oldTl = ch.old_price_tl || ch.old_price || 0;
+                  const newTl = ch.new_price_tl || ch.new_price || 0;
+                  return (
+                    <div key={i} className="p-3 bg-slate-50 rounded-lg text-sm border">
+                      <div className="font-medium text-slate-800 truncate">{ch.product_name}</div>
+                      <div className="flex items-center gap-2 mt-1.5 text-xs">
+                        <span className="text-slate-500 line-through">{formatPrice(oldTl)} ₺</span>
+                        <span className="text-slate-400">&rarr;</span>
+                        <span className="font-bold text-blue-700">{formatPrice(newTl)} ₺</span>
+                        {ch.base_currency && ch.base_currency !== "TRY" && ch.new_price_base && (
+                          <span className="text-violet-600 font-medium">({formatPrice(ch.new_price_base)} {ch.base_currency})</span>
+                        )}
+                        <span className={`ml-auto px-1.5 py-0.5 rounded text-[10px] font-medium ${ch.applied ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>{ch.applied ? "Uygulandı" : "Bekliyor"}</span>
+                      </div>
+                      <div className="text-[11px] text-slate-400 mt-1">{ch.reason}</div>
                     </div>
-                    <div className="text-[11px] text-slate-400 mt-1">{ch.reason}</div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -267,20 +272,10 @@ export default function CompetitorScanPage() {
                 {categories.map(c => <option key={c} value={c}>{c}</option>)}
               </select>
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-sm font-medium text-slate-700 mb-1 block">Kâr Marjı (%)</label>
-                <p className="text-[11px] text-slate-400 mb-1">Alış fiyatına eklenecek kâr oranı</p>
-                <div className="relative">
-                  <Input type="number" value={newRule.profit_margin_pct} onChange={e => setNewRule(r => ({ ...r, profit_margin_pct: parseFloat(e.target.value) || 0 }))} className="pr-8" data-testid="rule-margin-input" />
-                  <Percent className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
-                </div>
-              </div>
-              <div>
-                <label className="text-sm font-medium text-slate-700 mb-1 block">Fiyat Kırma (₺)</label>
-                <p className="text-[11px] text-slate-400 mb-1">En ucuz rakibin altına düşülecek tutar</p>
-                <Input type="number" value={newRule.undercut_amount} onChange={e => setNewRule(r => ({ ...r, undercut_amount: parseFloat(e.target.value) || 0 }))} data-testid="rule-undercut-input" />
-              </div>
+            <div>
+              <label className="text-sm font-medium text-slate-700 mb-1 block">Fiyat Kırma (₺)</label>
+              <p className="text-[11px] text-slate-400 mb-1">En ucuz rakibin altına düşülecek TL tutar</p>
+              <Input type="number" value={newRule.undercut_amount} onChange={e => setNewRule(r => ({ ...r, undercut_amount: parseFloat(e.target.value) || 0 }))} data-testid="rule-undercut-input" />
             </div>
             <div className="flex items-center gap-3">
               <label className="text-sm font-medium text-slate-700">Aktif</label>
@@ -300,7 +295,7 @@ export default function CompetitorScanPage() {
               </div>
             )}
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs text-blue-700">
-              <strong>Kural mantığı:</strong> Dip Fiyat = Alış Fiyatı x (1 + Kâr Marjı%). Sistem, en ucuz rakipten Kırma tutarı kadar düşük fiyat önerir ancak Dip Fiyat'ın altına inmez.
+              <strong>Kural mantığı:</strong> Sistem rakip fiyatlarını TCMB kuru ile ürünün orijinal para birimine çevirir. En ucuz rakipten Kırma tutarı (TL) kadar düşük fiyat hesaplar, ancak ürünün Dip Fiyatının altına inmez.
             </div>
             <div className="flex gap-2 justify-end pt-2">
               <Button variant="outline" onClick={() => setShowRuleDialog(false)}>İptal</Button>

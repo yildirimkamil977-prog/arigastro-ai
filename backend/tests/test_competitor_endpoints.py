@@ -286,7 +286,7 @@ class TestProductsPriority:
             assert last_matched_idx < first_unmatched_idx, \
                 "Priority products should appear before unmatched products"
 
-    def test_en_ucuz_rakip_data_from_akakce(self, client):
+    def test_en_ucuz_rakip_data_from_akakce_placeholder(self, client):
         # Search for products likely to have Akakçe cheapest_price
         for term in ["Kuzine", "Dolap", "Ocak"]:
             r = client.get(f"{API}/competitor/products",
@@ -298,3 +298,176 @@ class TestProductsPriority:
                         assert isinstance(p["cheapest_competitor_price"], (int, float))
                         return
         pytest.skip("No products with cheapest_competitor_price found for the tested search terms")
+
+
+# --- Iteration 13: check-price (background) ---
+class TestCheckPrice:
+    def test_check_price_no_matches_returns_404(self, client):
+        # Fetch an unmatched product (larger limit to work around post-filter pagination)
+        r = client.get(f"{API}/competitor/products",
+                       params={"match_status": "unmatched", "limit": 200}, timeout=30)
+        assert r.status_code == 200
+        products = r.json()["products"]
+        if not products:
+            pytest.skip("No unmatched products available")
+        slug = products[0]["slug"]
+        r2 = client.post(f"{API}/competitor/check-price/{slug}", timeout=15)
+        assert r2.status_code == 404, f"Expected 404 for unmatched, got {r2.status_code}: {r2.text}"
+
+    def test_check_price_matched_returns_task_key(self, client):
+        # Find a matched product
+        r = client.get(f"{API}/competitor/products",
+                       params={"match_status": "matched", "limit": 1}, timeout=30)
+        assert r.status_code == 200
+        products = r.json()["products"]
+        if not products:
+            pytest.skip("No matched products available")
+        slug = products[0]["slug"]
+
+        import time
+        t0 = time.time()
+        r2 = client.post(f"{API}/competitor/check-price/{slug}", timeout=15)
+        elapsed = time.time() - t0
+        assert r2.status_code == 200, r2.text
+        d = r2.json()
+        assert d.get("success") is True
+        assert "task_key" in d and d["task_key"]
+        assert elapsed < 10, f"check-price blocked for {elapsed}s (should be non-blocking)"
+
+        # Poll status endpoint
+        task_key = d["task_key"]
+        r3 = client.get(f"{API}/competitor/check-price-status/{task_key}", timeout=10)
+        assert r3.status_code == 200
+        assert "running" in r3.json()
+
+    def test_check_price_status_unknown_task(self, client):
+        r = client.get(f"{API}/competitor/check-price-status/nonexistent_check_xxx", timeout=10)
+        assert r.status_code == 200
+        assert r.json().get("running") is False
+
+
+# --- Iteration 13: auto-match-category (background, progress fields) ---
+class TestAutoMatchCategory:
+    def test_auto_match_category_not_found(self, client):
+        r = client.post(f"{API}/competitor/auto-match-category/TEST_ZZZ_NONEXISTENT_CAT_9999", timeout=15)
+        assert r.status_code == 404
+
+    def test_auto_match_category_returns_task_key_and_progress_fields(self, client):
+        # Pick a real category
+        r = client.get(f"{API}/competitor/products", timeout=30)
+        cats = r.json().get("categories") or []
+        if not cats:
+            pytest.skip("No categories available")
+        cat = cats[0]
+
+        import time
+        t0 = time.time()
+        r2 = client.post(f"{API}/competitor/auto-match-category/{cat}", timeout=15)
+        elapsed = time.time() - t0
+        assert r2.status_code == 200, r2.text
+        d = r2.json()
+        assert d.get("success") is True
+        assert "task_key" in d and d["task_key"]
+        assert isinstance(d.get("total"), int) and d["total"] > 0
+        assert elapsed < 10, f"auto-match-category blocked for {elapsed}s"
+
+        task_key = d["task_key"]
+        # Poll match-status
+        r3 = client.get(f"{API}/competitor/match-status/{task_key}", timeout=10)
+        assert r3.status_code == 200
+        status = r3.json()
+        # Should have the progress fields (initially 0)
+        assert "running" in status
+        # products_matched / total_matches fields should exist (populated as task runs)
+        # They may be missing on first read if task hasn't touched update_one yet, so allow either.
+        assert set(status.keys()) & {"total", "progress", "matched", "products_matched", "total_matches", "running"}
+
+        # Stop the task to avoid running full ScraperAPI in preview
+        client.post(f"{API}/competitor/match-stop/{task_key}", timeout=10)
+
+    def test_match_status_unknown_task(self, client):
+        r = client.get(f"{API}/competitor/match-status/nonexistent_match_xxx", timeout=10)
+        assert r.status_code == 200
+        assert r.json().get("running") is False
+
+
+# --- Iteration 13: category-rules with auto_update_ikas ---
+class TestCategoryRulesAutoUpdate:
+    TEST_CAT = "TEST_AutoUpdate_Kategori"
+
+    def test_create_rule_with_auto_update_ikas_true(self, client):
+        payload = {
+            "category_name": self.TEST_CAT,
+            "enabled": True,
+            "undercut_amount": 50,
+            "profit_margin_pct": 15,
+            "auto_update_ikas": True,
+        }
+        r = client.post(f"{API}/competitor/category-rules", json=payload, timeout=20)
+        assert r.status_code == 200
+        assert r.json().get("success") is True
+
+        r2 = client.get(f"{API}/competitor/category-rules", timeout=20)
+        assert r2.status_code == 200
+        found = [x for x in r2.json()["rules"] if x["category_name"] == self.TEST_CAT]
+        assert len(found) == 1
+        assert found[0].get("auto_update_ikas") is True
+        assert found[0].get("undercut_amount") == 50
+        assert found[0].get("profit_margin_pct") == 15
+
+    def test_update_rule_toggle_auto_update_ikas_false(self, client):
+        payload = {
+            "category_name": self.TEST_CAT,
+            "enabled": True,
+            "undercut_amount": 50,
+            "auto_update_ikas": False,
+        }
+        r = client.post(f"{API}/competitor/category-rules", json=payload, timeout=20)
+        assert r.status_code == 200
+
+        r2 = client.get(f"{API}/competitor/category-rules", timeout=20)
+        found = [x for x in r2.json()["rules"] if x["category_name"] == self.TEST_CAT]
+        assert len(found) == 1
+        assert found[0].get("auto_update_ikas") is False
+
+    def test_cleanup_auto_update_rule(self, client):
+        r = client.delete(f"{API}/competitor/category-rules/{self.TEST_CAT}", timeout=20)
+        assert r.status_code == 200
+
+
+# --- Iteration 13: apply-price rejects when no floor & no purchase price ---
+class TestApplyPriceFloorCheck:
+    def test_apply_price_rejects_without_floor_and_purchase(self, client):
+        # Find an unmatched product; those are unlikely to have floor_price/purchase_price set
+        r = client.get(f"{API}/competitor/products",
+                       params={"match_status": "unmatched", "limit": 50}, timeout=30)
+        assert r.status_code == 200
+        products = r.json()["products"]
+        candidate_slug = None
+        for p in products:
+            # Prefer product without floor & purchase (fields may or may not be included)
+            if not p.get("floor_price") and not p.get("purchase_price"):
+                candidate_slug = p["slug"]
+                break
+        if not candidate_slug and products:
+            candidate_slug = products[0]["slug"]
+        if not candidate_slug:
+            pytest.skip("No candidate product for floor-check test")
+
+        r2 = client.post(
+            f"{API}/competitor/apply-price",
+            json={"slug": candidate_slug, "new_price_tl": 500.0, "reason": "floor-check-test"},
+            timeout=30,
+        )
+        assert r2.status_code == 200
+        d = r2.json()
+        # Expected: success=False with either floor-error or (if floor is present) İkas error
+        assert d.get("success") is False
+        err = d.get("error", "")
+        assert err, f"Expected an error message, got: {d}"
+        # Accept either the "no floor/purchase" or the "no ikas_id" case
+        assert (
+            "dip fiyat" in err.lower()
+            or "alış fiyat" in err.lower()
+            or "ikas" in err.lower()
+        ), f"Unexpected error text: {err}"

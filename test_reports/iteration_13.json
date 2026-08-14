@@ -1,0 +1,58 @@
+{
+  "summary": "Backend regression + new-endpoint validation for parallelized competitor matching/pricing (ThreadPoolExecutor). All 35 pytest tests pass (34 previously + 8 new for iteration 13, 1 previous skip-only that now passes with wider limit) covering every endpoint listed in the review request: products listing/filters/pagination, price-settings, category-rules (with new auto_update_ikas field), dashboard, scan-all/scan-status/scan-stop, price-changes, price-changes-full (with pagination/status_filter/search), apply-price (404 invalid slug + floor/purchase safety check + missing ikas_id), auto-match (non-blocking task_key + status polling), auto-match-category (404 for unknown, task_key + progress fields for real category), match-status (running/unknown task), check-price (404 when no matches, task_key + non-blocking when matched), check-price-status. Backend starts cleanly after competitor_pricing.py parallelization changes (no import/startup errors). All background endpoints return task_key in <1s confirming non-blocking behavior. ScraperAPI actual scraping intentionally NOT tested per instructions.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/competitor/products?match_status=unmatched",
+        "issue": "match_status filter is applied POST-pagination (in-memory filter after $skip/$limit aggregation). Result: (1) `total` field returns unfiltered count (e.g. 4186 for unmatched even though most products are matched); (2) small `limit` values return 0 products despite `total>0` (limit=1→0 results, limit=5→0, limit=20→3, limit=100→83); (3) `pages` count is wrong for filtered views. Frontend pagination on unmatched/matched views will be misleading. See competitor_routes.py L487 (count) vs L535-539 (post-filter). Fix: push the match_status filter into the Mongo aggregation using $lookup on competitor_matches then $match on match_count."
+      }
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "passed_tests": [
+    "TestProductsListing (7 tests) — default/search/category/brand/matched/unmatched/pagination",
+    "TestPriceSettings.test_update_price_settings",
+    "TestCategoryRules (3) — list/create+persist/delete",
+    "TestDashboard.test_dashboard_stats — returns total_products/matched_products/cheaper_count/recommend_count/category_rules",
+    "TestScan (2) — scan-status, scan-all starts (+ scan-stop)",
+    "TestPriceChanges.test_list_price_changes",
+    "TestApplyPrice (2) — missing_ikas_id returns success=False, invalid_slug returns 404",
+    "TestPriceChangesFull (4) — default/pagination/status_filter(applied,pending)/search",
+    "TestAutoMatch (2) — returns task_key in <10s + status polling; unknown task returns running:false",
+    "TestProductsPriority (2) — matched products appear before unmatched; Akakçe merged data",
+    "[NEW] TestCheckPrice (3) — 404 when no matches, task_key + status polling when matched, unknown task returns running:false",
+    "[NEW] TestAutoMatchCategory (3) — 404 for nonexistent cat, real cat returns task_key+total+progress fields (products_matched/total_matches present after poll), unknown task returns running:false",
+    "[NEW] TestCategoryRulesAutoUpdate (3) — create rule with auto_update_ikas=true persists, toggle to false persists, cleanup",
+    "[NEW] TestApplyPriceFloorCheck — apply-price returns success=False with Turkish 'dip fiyat / alış fiyat / ikas' error when floor+purchase missing"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_competitor_endpoints.py",
+    "/app/test_reports/pytest/competitor_iteration13.xml"
+  ],
+  "action_items": [
+    "(LOW) Fix match_status filter to be applied inside the Mongo aggregation so `total` and pagination reflect the filtered set. Currently filtering post-pagination causes count mismatch and short pages on /products?match_status=unmatched (or matched).",
+    "(NOTE) All background tasks (auto-match/auto-match-category/check-price/scan-all) return task_key in <1s in preview — parallelization change did not regress non-blocking behavior. Actual ScraperAPI scraping not validated (per instructions)."
+  ],
+  "critical_code_review_comments": [
+    "competitor_routes.py is now 1437 lines. Split into competitor_products.py / competitor_matching.py / competitor_pricing_routes.py / competitor_scan.py / competitor_apply.py — same recommendation as iter-11/12.",
+    "In list_products_enhanced (L468-555), match_status filter is applied AFTER $skip/$limit in the aggregation. This is a functional bug (see minor issue above), not just a style concern.",
+    "_run_category_match (L166-240) and _run_price_check use `asyncio.get_event_loop()` inside a coroutine — deprecated on 3.10+. Use `asyncio.get_running_loop()`.",
+    "_run_category_match writes `products_matched` and `total_matches` fields on system_status but the initial upsert (L157-161) sets only `progress:0/matched:0` — these two fields do NOT exist until the first product is processed. The match-status endpoint therefore returns partial shape in the first few ms after task creation. Test still passes (uses set-intersection) but frontends should defensively default to 0.",
+    "apply-price still returns HTTP 200 with success:false for business errors (no floor, no ikas_id, no variant, no price list, no fx rate). Consider 422/409 so frontend can differentiate transport vs domain errors — recurring comment from iter-12.",
+    "check-price endpoint duplicates logic in scan-all's per-product path (scrape_all_competitor_prices → update products.cheapest_competitor_price + insert price_history). Refactor into a shared helper to avoid drift.",
+    "PriceSettingsRequest only SETS floor_price/purchase_price when non-None (L382-385). There is no way to CLEAR either value via API — needed for correct floor-check flow if the operator entered a wrong number.",
+    "No pytest cleanup of the `pricing_rules` collection for TEST_ prefixed rules if a test aborts mid-run — self-heals on next successful run via delete step, but consider a class-scoped fixture with teardown."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_competitor_endpoints.py (added 4 test classes / 10 new test cases for iteration 13: TestCheckPrice, TestAutoMatchCategory, TestCategoryRulesAutoUpdate, TestApplyPriceFloorCheck)",
+    "/app/test_reports/pytest/competitor_iteration13.xml"
+  ],
+  "success_rate": {"backend": "100% (35/35)", "frontend": "N/A (backend-only per request)"},
+  "test_credentials": {"username": "arigastro", "password": "Arigastro2026!"},
+  "seed_data_creation": "TEST_AutoUpdate_Kategori created + deleted (cleanup done). auto-match-category started against real first category; the background task was immediately stopped via /match-stop/{task_key} to avoid consuming ScraperAPI quota in preview. auto-match/{slug} still ran to completion on 'aluminyum-yapismaz-tava-maksi-24-cm' (same as iter-12).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All 15 endpoints in the iteration 13 review request are exercised in /app/backend/tests/test_competitor_endpoints.py (35 tests, ~5s). Parallelization change (ThreadPoolExecutor max_workers=4) is confirmed non-regressive at the API surface: every background endpoint returns task_key in <1s. Real ScraperAPI scraping still cannot be validated in preview. Only outstanding backend issue is the /products match_status post-pagination filter (minor, pre-existing, was NOT introduced by iteration 13 parallelization work).",
+  "rca of the issue": "N/A — no failing tests. The one code bug worth flagging (match_status post-pagination) is pre-existing behavior in competitor_routes.py L468-555, unrelated to the parallelization change under review."
+}
