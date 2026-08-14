@@ -4153,12 +4153,140 @@ async def startup():
         f.write(f"## Admin\n- Username: {admin_username}\n- Password: {admin_password}\n- Role: admin\n\n")
         f.write(f"## Auth Endpoints\n- POST /api/auth/login\n- GET /api/auth/me\n- POST /api/auth/logout\n")
     
-    # Start scheduler — TR saatleri: 00:00 Feed, 01:00 Rakip Tarama+Oto Fiyat
+    # Start scheduler — TR saatleri: 00:00 Feed, 00:15 İkas Kur, 01:00 Rakip Tarama+Oto Fiyat
     scheduler.add_job(scheduled_feed_sync, CronTrigger(hour=21, minute=0), id="feed_sync", name="Feed Guncelleme (Her gece 00:00 TR)", replace_existing=True)
     scheduler.add_job(scheduled_price_check, CronTrigger(hour=21, minute=30), id="price_check_cron", name="Akakce Fiyat (Her gece 00:30 TR)", replace_existing=True)
+    scheduler.add_job(lambda: asyncio.ensure_future(scheduled_ikas_currency_sync()), CronTrigger(hour=21, minute=15), id="ikas_currency_sync_cron", name="Ikas Kur Senk (Her gece 00:15 TR)", replace_existing=True)
     scheduler.add_job(lambda: asyncio.ensure_future(run_scheduled_competitor_scan(db, ikas_graphql)), CronTrigger(hour=22, minute=0), id="competitor_scan_cron", name="Rakip Tarama + Oto Fiyat (Her gece 01:00 TR)", replace_existing=True)
     scheduler.start()
-    logger.info("Scheduler basladi: Feed (00:00 TR), Akakce (00:30 TR), Rakip Tarama+Fiyat (01:00 TR)")
+    logger.info("Scheduler basladi: Feed (00:00 TR), Ikas Kur (00:15 TR), Akakce (00:30 TR), Rakip Tarama+Fiyat (01:00 TR)")
+
+async def scheduled_ikas_currency_sync():
+    """Scheduled task: sync İkas original currency prices for all products."""
+    logger.info("CRON: İkas kur senkronizasyonu başladı")
+    try:
+        from competitor_routes import setup_competitor_routes
+        import httpx as _hx
+        # Trigger the sync endpoint internally
+        task_key = "sync_ikas_currencies"
+        status = await db.system_status.find_one({"task": task_key})
+        if status and status.get("running"):
+            logger.info("CRON: İkas kur senk zaten çalışıyor, atlaniyor")
+            return
+        
+        from tcmb_exchange import convert_to_tl
+        
+        total = await db.products.count_documents({"inactive": {"$ne": True}})
+        await db.system_status.update_one(
+            {"task": task_key},
+            {"$set": {"running": True, "total": total, "progress": 0, "updated": 0, "started_at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True
+        )
+        
+        # Run the bulk sync inline
+        import re as _re
+        PRICE_LISTS = {
+            "db850a77-bfd6-43de-8892-78d16dc01e0e": "EUR",
+            "28b86f15-34b5-4c49-8d96-678194f4a8ba": "USD",
+            "35b38ca5-9f2d-4482-a9d8-3a6b0df33efd": "TRY",
+        }
+        NIHAI_PREFIX = "b8f60257"
+        
+        def normalize_name(name):
+            if not name:
+                return ""
+            n = name.lower().strip()
+            n = _re.sub(r'[^a-z0-9çğıöşü\s]', ' ', n)
+            return ' '.join(n.split())
+        
+        loop = asyncio.get_event_loop()
+        ikas_page = 1
+        ikas_products_map = {}
+        total_fetched = 0
+        
+        while True:
+            query = """query ListProducts($pagination: PaginationInput) {
+                listProduct(pagination: $pagination) {
+                    data { id name variants { prices { sellPrice currency priceListId } } }
+                    count
+                }
+            }"""
+            try:
+                result = await loop.run_in_executor(None, ikas_graphql, query, {"pagination": {"page": ikas_page, "limit": 100}})
+            except Exception as e:
+                logger.error(f"CRON İkas fetch page {ikas_page} error: {e}")
+                break
+            products_data = result.get("listProduct", {}).get("data", [])
+            if not products_data:
+                break
+            for ip in products_data:
+                ikas_id = ip.get("id", "")
+                name = ip.get("name", "")
+                variants = ip.get("variants", [])
+                if not ikas_id or not name or not variants:
+                    continue
+                prices = variants[0].get("prices", [])
+                base_currency = base_price = price_list_id = None
+                for p in prices:
+                    plid = p.get("priceListId") or ""
+                    if plid.startswith(NIHAI_PREFIX):
+                        continue
+                    sell = p.get("sellPrice", 0)
+                    if not sell or sell <= 0:
+                        continue
+                    cur = PRICE_LISTS.get(plid, p.get("currency") or "TRY")
+                    if cur == "EUR":
+                        base_currency, base_price, price_list_id = "EUR", sell, plid
+                        break
+                    elif cur == "USD" and base_currency != "EUR":
+                        base_currency, base_price, price_list_id = "USD", sell, plid
+                    elif cur == "TRY" and not base_currency:
+                        base_currency, base_price, price_list_id = "TRY", sell, plid
+                if base_currency and base_price:
+                    ikas_products_map[normalize_name(name)] = {
+                        "ikas_id": ikas_id, "base_currency": base_currency,
+                        "base_price": base_price, "price_list_id": price_list_id,
+                    }
+                total_fetched += 1
+            ikas_page += 1
+            await asyncio.sleep(0.2)
+        
+        local_products = await db.products.find(
+            {"inactive": {"$ne": True}}, {"_id": 0, "slug": 1, "name": 1}
+        ).to_list(10000)
+        
+        updated = 0
+        for lp in local_products:
+            norm_name = normalize_name(lp.get("name", ""))
+            match = ikas_products_map.get(norm_name)
+            if not match and norm_name:
+                words = norm_name.split()
+                for length in range(len(words), max(2, len(words) - 3), -1):
+                    prefix = ' '.join(words[:length])
+                    for ik_name, ik_data in ikas_products_map.items():
+                        if ik_name.startswith(prefix) or prefix in ik_name:
+                            match = ik_data
+                            break
+                    if match:
+                        break
+            if match:
+                uf = {"ikas_product_id": match["ikas_id"], "base_currency": match["base_currency"], "base_price": match["base_price"], "price_list_id": match["price_list_id"]}
+                if match["base_currency"] != "TRY":
+                    uf["our_price"] = convert_to_tl(match["base_price"], match["base_currency"])
+                await db.products.update_one({"slug": lp["slug"]}, {"$set": uf})
+                updated += 1
+        
+        await db.system_status.update_one(
+            {"task": task_key},
+            {"$set": {"running": False, "phase": "done", "progress": len(local_products), "updated": updated, "completed_at": datetime.now(timezone.utc).isoformat()}}
+        )
+        logger.info(f"CRON: İkas kur senk tamamlandı. {updated}/{len(local_products)} eşleşti")
+    except Exception as e:
+        logger.error(f"CRON: İkas kur senk hatası: {e}")
+        await db.system_status.update_one(
+            {"task": "sync_ikas_currencies"},
+            {"$set": {"running": False, "error": str(e)}}
+        )
 
 @app.on_event("shutdown")
 async def shutdown():

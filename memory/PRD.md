@@ -22,9 +22,10 @@ E-commerce competitor price tracking application for Arıgastro (industrial kitc
 - İkas price updates target original currency price list (never Nihai)
 - Categories/brand preserved in all İkas mutations
 - Parallel scraping with ThreadPoolExecutor (4 workers)
+- İkas currency sync: bulk paginated fetch of all İkas products, matched by normalized name
 
 ## DB Schema (Key Collections)
-- `products`: {slug, name, our_price (TL), base_price, base_currency, price_list_id, floor_price (base_currency), ...}
+- `products`: {slug, name, our_price (TL), base_price, base_currency, price_list_id, floor_price (base_currency), ikas_product_id, ...}
 - `competitor_matches`: {product_slug, competitor_key, url, title, match_score, match_method}
 - `competitor_pricing`: {product_id, competitor_name, competitor_url, competitor_price (TL)}
 - `price_change_logs`: {product_slug, action, old_price_tl, new_price_tl, new_price_base, base_currency, floor_price, ...}
@@ -32,37 +33,25 @@ E-commerce competitor price tracking application for Arıgastro (industrial kitc
 
 ## What's Been Implemented
 ### Phase 1 — Core Product & SEO System ✅
-- Feed sync from Google Merchant Center
-- Product management with category/brand
-- AI SEO content generator (GPT-4o)
-- İkas GraphQL push for SEO data
-
 ### Phase 2 — Legacy Akakçe Price Tracking ✅
-- Akakçe price scraping (separate from new system)
-- PriceTrackingPage preserved per user request
-
 ### Phase 3 — 4-Site Competitor System ✅
-- Multi-competitor matching (site search + GTIN + Google fallback)
-- Parallel price scraping (ScraperAPI, 2-phase: no-render → render fallback)
-- CompetitorProductsPage with match/unmatch/scan UI
-- Product detail modal with competitor data
-
 ### Phase 4 — Auto-Pricing & Safety ✅
-- Floor price safety system
-- Category-based pricing rules
-- APScheduler nightly jobs (Feed 00:00, Scan+Price 01:00)
-- İkas price push in original currency
-- Price change logging
-
 ### Phase 5 — Multi-Currency (TCMB) Refactor ✅ (2026-08-14)
 - TCMB exchange rate service (`tcmb_exchange.py`)
 - Products display in original currency + TL equivalent
-- Floor price in original currency (not TL)
+- Floor price in original currency
 - Removed purchase_price/buy_price completely
 - Removed profit_margin_pct from category rules
-- All price conversions use TCMB rates (not ratio-based)
-- İkas Kur Senkronize button for batch currency fetch
-- Exchange rates displayed in page header
+- All price conversions use TCMB rates
+- Bulk İkas currency sync (paginated fetch, name-matching)
+- İkas Kur Senk added to nightly scheduler (00:15 TR)
+- 2802/4186 products synced (2414 EUR, 234 USD, 154 TRY)
+
+## Nightly Scheduler
+- 00:00 TR: Feed sync from Google Merchant Center
+- 00:15 TR: İkas currency sync (bulk fetch + name match)
+- 00:30 TR: Akakçe price check
+- 01:00 TR: Competitor scan + auto-pricing
 
 ## Backlog
 ### P2
@@ -70,5 +59,4 @@ E-commerce competitor price tracking application for Arıgastro (industrial kitc
 - **competitor_routes.py Refactor**: Split 1500+ line file into focused modules
 
 ### P3
-- Batch İkas currency sync optimization (currently one-by-one)
 - Replace `asyncio.get_event_loop()` with `asyncio.get_running_loop()`

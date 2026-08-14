@@ -57,6 +57,7 @@ export default function CompetitorProductsPage() {
   const [editingMatchKey, setEditingMatchKey] = useState(null);
   const [exchangeRates, setExchangeRates] = useState({});
   const [syncingCurrencies, setSyncingCurrencies] = useState(false);
+  const [syncProgress, setSyncProgress] = useState(null);
   const searchTimer = useRef(null);
 
   const fetchProducts = useCallback(async () => {
@@ -82,12 +83,20 @@ export default function CompetitorProductsPage() {
 
   useEffect(() => { fetchProducts(); }, [fetchProducts]);
 
-  // Fetch exchange rates on mount
+  // Fetch exchange rates + check if sync is running on mount
   useEffect(() => {
     (async () => {
       try {
         const { data } = await axios.get(`${API}/competitor/exchange-rates`, { headers: getAuthHeaders(), withCredentials: true });
         setExchangeRates(data.rates || {});
+      } catch {}
+      // Check if sync is already running
+      try {
+        const { data: st } = await axios.get(`${API}/competitor/sync-ikas-currencies-status`, { headers: getAuthHeaders(), withCredentials: true });
+        if (st.running) {
+          setSyncingCurrencies(true);
+          setSyncProgress(st);
+        }
       } catch {}
     })();
   }, []);
@@ -189,22 +198,24 @@ export default function CompetitorProductsPage() {
 
   const syncIkasCurrencies = async () => {
     setSyncingCurrencies(true);
+    setSyncProgress(null);
     try {
       const { data } = await axios.post(`${API}/competitor/sync-ikas-currencies`, {}, { headers: getAuthHeaders(), withCredentials: true });
       if (data.started) {
-        toast.success(`${data.total} ürün için kur senkronizasyonu başlatıldı`);
+        toast.success(`${data.total} ürün için İkas kur senkronizasyonu başlatıldı`);
         // Poll status
         const poll = setInterval(async () => {
           try {
             const { data: st } = await axios.get(`${API}/competitor/sync-ikas-currencies-status`, { headers: getAuthHeaders(), withCredentials: true });
+            setSyncProgress(st);
             if (!st.running) {
               clearInterval(poll);
               setSyncingCurrencies(false);
-              toast.success(`Kur senkronizasyonu tamamlandı: ${st.updated || 0} ürün güncellendi`);
+              toast.success(`İkas kur senkronizasyonu tamamlandı: ${st.updated || 0} ürün güncellendi`);
               fetchProducts();
             }
           } catch { clearInterval(poll); setSyncingCurrencies(false); }
-        }, 5000);
+        }, 3000);
       } else {
         toast.info(data.message);
         setSyncingCurrencies(false);
@@ -214,6 +225,23 @@ export default function CompetitorProductsPage() {
       setSyncingCurrencies(false);
     }
   };
+
+  // Poll sync progress if syncing
+  useEffect(() => {
+    if (!syncingCurrencies) return;
+    const interval = setInterval(async () => {
+      try {
+        const { data: st } = await axios.get(`${API}/competitor/sync-ikas-currencies-status`, { headers: getAuthHeaders(), withCredentials: true });
+        setSyncProgress(st);
+        if (!st.running) {
+          clearInterval(interval);
+          setSyncingCurrencies(false);
+          fetchProducts();
+        }
+      } catch {}
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [syncingCurrencies]);
 
   const openDetail = async (product) => {
     setDetailProduct(product);
@@ -318,6 +346,32 @@ export default function CompetitorProductsPage() {
               <p className="text-xs text-emerald-600 mt-1.5">Eşleştirme tamamlandı: {categoryMatchStatus.products_matched || 0} ürün. Fiyatlar çekiliyor...</p>
             </>
           )}
+        </div>
+      )}
+
+      {/* İkas Currency Sync Progress */}
+      {syncingCurrencies && syncProgress && (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4" data-testid="currency-sync-progress">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+              <span className="font-medium text-sm text-blue-900">
+                {syncProgress.phase === "fetching" ? "İkas'tan ürünler çekiliyor..." :
+                 syncProgress.phase === "matching" ? "Ürünler eşleştiriliyor..." :
+                 "İkas kur senkronizasyonu devam ediyor..."}
+              </span>
+            </div>
+            <span className="text-sm text-blue-700 font-mono">
+              {syncProgress.phase === "fetching" ? `${syncProgress.ikas_fetched || 0} ürün çekildi` :
+               `${syncProgress.progress || 0}/${syncProgress.total || 0}`}
+            </span>
+          </div>
+          {syncProgress.total > 0 && (
+            <div className="w-full bg-blue-200 rounded-full h-2">
+              <div className="bg-blue-600 h-2 rounded-full transition-all duration-500" style={{ width: `${syncProgress.total ? (syncProgress.progress / syncProgress.total * 100) : 0}%` }} />
+            </div>
+          )}
+          <p className="text-xs text-blue-600 mt-1.5">{syncProgress.updated || 0} ürün güncellendi</p>
         </div>
       )}
 
