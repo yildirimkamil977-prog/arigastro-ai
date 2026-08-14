@@ -220,6 +220,14 @@ export default function CompetitorProductsPage() {
           <p className="text-sm text-slate-500">{total} ürün listeleniyor</p>
         </div>
         <div className="flex gap-2">
+          <Button size="sm" variant="outline" onClick={async () => {
+            try {
+              const { data } = await axios.post(`${API}/competitor/retry-failed-prices`, {}, { headers: getAuthHeaders(), withCredentials: true });
+              if (data.started) { toast.success(data.message); } else { toast.info(data.message); }
+            } catch { toast.error("Yeniden tarama başlatılamadı"); }
+          }} data-testid="retry-prices-btn">
+            <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Eksik Fiyatları Tara
+          </Button>
           {category && (
             <Button size="sm" onClick={autoMatchCategory} disabled={categoryMatchStatus?.running} data-testid="match-category-btn" className="bg-violet-600 hover:bg-violet-700 text-white">
               {categoryMatchStatus?.running ? (

@@ -297,6 +297,75 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
     async def get_price_check_status(task_key: str, user: dict = Depends(get_current_user)):
         status = await db.system_status.find_one({"task": task_key}, {"_id": 0})
         return status or {"running": False}
+
+    @router.post("/retry-failed-prices")
+    async def retry_failed_prices(user: dict = Depends(get_current_user)):
+        """Re-scan prices for all matched products that don't have prices yet."""
+        # Find products with matches but missing some competitor prices
+        pipeline = [
+            {"$group": {"_id": "$product_slug", "competitors": {"$push": "$competitor_key"}}}
+        ]
+        match_groups = await db.competitor_matches.aggregate(pipeline).to_list(5000)
+        
+        retry_slugs = []
+        for mg in match_groups:
+            slug = mg["_id"]
+            prod = await db.products.find_one({"slug": slug}, {"competitor_prices": 1})
+            existing_prices = set((prod or {}).get("competitor_prices", {}).keys())
+            matched_comps = set(mg["competitors"])
+            missing = matched_comps - existing_prices
+            if missing:
+                retry_slugs.append(slug)
+        
+        if not retry_slugs:
+            return {"started": False, "message": "Eksik fiyat olan ürün yok."}
+        
+        task_key = "retry_failed_prices"
+        await db.system_status.update_one(
+            {"task": task_key},
+            {"$set": {"running": True, "total": len(retry_slugs), "progress": 0, "started_at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True
+        )
+        
+        asyncio.create_task(_run_retry_prices(db, retry_slugs, scrape_all_competitor_prices, task_key))
+        return {"started": True, "total": len(retry_slugs), "message": f"{len(retry_slugs)} ürünün eksik fiyatları taranacak."}
+    
+    async def _run_retry_prices(db, slugs, scrape_fn, task_key):
+        loop = asyncio.get_event_loop()
+        progress = 0
+        for slug in slugs:
+            try:
+                matches = await db.competitor_matches.find({"product_slug": slug}).to_list(10)
+                prod = await db.products.find_one({"slug": slug}, {"competitor_prices": 1})
+                existing = (prod or {}).get("competitor_prices", {})
+                
+                # Only scrape missing competitors
+                missing_matches = {m["competitor_key"]: m for m in matches if m["competitor_key"] not in existing}
+                if not missing_matches:
+                    progress += 1
+                    continue
+                
+                new_prices = await loop.run_in_executor(None, scrape_fn, missing_matches)
+                if new_prices:
+                    merged = {**existing, **new_prices}
+                    cheapest = min(merged.values(), key=lambda x: x["price"])
+                    await db.products.update_one({"slug": slug}, {"$set": {
+                        "competitor_prices": merged,
+                        "cheapest_competitor_price": cheapest["price"],
+                        "cheapest_competitor_name": cheapest["competitor_name"],
+                        "competitor_prices_checked_at": datetime.now(timezone.utc).isoformat(),
+                    }})
+                    # Update price history
+                    await db.price_history.insert_one({"product_slug": slug, "prices": merged, "checked_at": datetime.now(timezone.utc).isoformat()})
+                
+                progress += 1
+                await db.system_status.update_one({"task": task_key}, {"$set": {"progress": progress}})
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.error(f"Retry price error for {slug}: {e}")
+                progress += 1
+        
+        await db.system_status.update_one({"task": task_key}, {"$set": {"running": False, "progress": progress, "completed_at": datetime.now(timezone.utc).isoformat()}})
     
     # --- Product floor price & purchase price ---
     class PriceSettingsRequest(BaseModel):

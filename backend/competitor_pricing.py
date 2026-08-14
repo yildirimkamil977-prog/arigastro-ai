@@ -193,42 +193,55 @@ def search_competitor_product(product_name: str, competitor_key: str, brand: str
         return {"matched": False, "error": str(e)}
 
 
-def scrape_competitor_price(url: str, competitor_key: str) -> dict:
-    """Scrape the price from a competitor product page."""
+def scrape_competitor_price(url: str, competitor_key: str, retries: int = 2) -> dict:
+    """Scrape the price from a competitor product page with retry logic."""
     if not SCRAPERAPI_KEY:
         return {"success": False, "error": "ScraperAPI key missing"}
     
-    try:
-        resp = req_sync.get("http://api.scraperapi.com", params={
-            "api_key": SCRAPERAPI_KEY,
-            "url": url,
-            "render": "true",
-        }, timeout=45)
+    last_error = ""
+    for attempt in range(retries):
+        try:
+            resp = req_sync.get("http://api.scraperapi.com", params={
+                "api_key": SCRAPERAPI_KEY,
+                "url": url,
+                "render": "true",
+            }, timeout=50)
+            
+            if resp.status_code != 200:
+                last_error = f"HTTP {resp.status_code}"
+                continue
+            
+            soup = BeautifulSoup(resp.text, "html.parser")
+            price = _extract_price(soup, competitor_key)
+            
+            if price and price > 0:
+                return {
+                    "success": True,
+                    "price": price,
+                    "currency": "TRY",
+                    "scraped_at": datetime.now(timezone.utc).isoformat(),
+                }
+            else:
+                last_error = "Price not found on page"
+                # Don't retry if we got the page but couldn't find price (page structure issue)
+                if attempt == 0:
+                    # Try once more - sometimes page loads partially
+                    import time; time.sleep(2)
+                    continue
+                break
         
-        if resp.status_code != 200:
-            return {"success": False, "error": f"HTTP {resp.status_code}"}
-        
-        soup = BeautifulSoup(resp.text, "html.parser")
-        price = _extract_price(soup, competitor_key)
-        
-        if price and price > 0:
-            return {
-                "success": True,
-                "price": price,
-                "currency": "TRY",
-                "scraped_at": datetime.now(timezone.utc).isoformat(),
-            }
-        else:
-            return {"success": False, "error": "Price not found on page"}
+        except Exception as e:
+            last_error = str(e)
+            if attempt < retries - 1:
+                import time; time.sleep(3)
     
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    return {"success": False, "error": last_error}
 
 
 def _extract_price(soup: BeautifulSoup, competitor_key: str) -> float:
-    """Extract price from competitor page HTML."""
+    """Extract price from competitor page HTML with site-specific strategies."""
     
-    # Strategy 1: Schema.org / JSON-LD (returns price as number or string)
+    # Strategy 1: Schema.org / JSON-LD
     for script in soup.find_all("script", type="application/ld+json"):
         try:
             data = json.loads(script.string)
@@ -239,51 +252,99 @@ def _extract_price(soup: BeautifulSoup, competitor_key: str) -> float:
                 offers = offers[0]
             p = offers.get("price") or offers.get("lowPrice")
             if p:
-                return _parse_price_smart(str(p))
+                parsed = _parse_price_smart(str(p))
+                if parsed and parsed > 5:
+                    return parsed
         except:
             pass
     
-    # Strategy 2: Meta tags
-    for meta in soup.find_all("meta"):
-        prop = meta.get("property", "") or meta.get("name", "")
-        if "price" in prop.lower() and "amount" in prop.lower():
-            try:
-                return _parse_price_smart(meta.get("content", "0"))
-            except:
-                pass
+    # Strategy 2: Site-specific selectors
+    site_selectors = {
+        "mutfak10": [
+            ".product-price .current", ".product-price", ".ty-price-num",
+            ".ty-price", "[data-price]", ".price-sale", ".sales-price",
+        ],
+        "cafemarkt": [
+            ".product-info-price", ".current-price", ".price-new",
+            ".product-price", ".sales-price", ".discounted-price",
+            "span.price", ".product_price",
+        ],
+        "mutbex": [
+            ".current-price", ".product-price", ".price",
+            ".sales-price", ".product_price", "span.price",
+            ".discounted-price", ".price-new",
+        ],
+        "hakbilenler": [
+            ".product-price", ".current-price", ".price",
+            ".ty-price-num", "span.price", ".product_price",
+        ],
+    }
     
-    # Strategy 3: itemprop="price"
-    for el in soup.find_all(attrs={"itemprop": "price"}):
-        try:
-            val = el.get("content") or el.get_text(strip=True)
-            return _parse_price_smart(val)
-        except:
-            pass
-    
-    # Strategy 4: Common CSS classes
-    price_selectors = [
-        ".product-price", ".current-price", ".sales-price", ".discounted-price",
-        ".price-new", ".product-info-price", "[data-price]", ".product_price",
-        ".price--sale", ".price-box__price", ".ty-price-num", ".price_color",
-    ]
-    for selector in price_selectors:
+    selectors = site_selectors.get(competitor_key, [])
+    for selector in selectors:
         for el in soup.select(selector):
             text = el.get_text(strip=True)
             p = _parse_turkish_price(text)
-            if p and p > 10:
+            if p and p > 5:
+                return p
+            # Also check content attribute
+            content = el.get("content")
+            if content:
+                p = _parse_price_smart(content)
+                if p and p > 5:
+                    return p
+    
+    # Strategy 3: Meta tags
+    for meta in soup.find_all("meta"):
+        prop = (meta.get("property", "") or meta.get("name", "")).lower()
+        if "price" in prop:
+            content = meta.get("content", "")
+            if content:
+                p = _parse_price_smart(content)
+                if p and p > 5:
+                    return p
+    
+    # Strategy 4: itemprop="price"
+    for el in soup.find_all(attrs={"itemprop": "price"}):
+        val = el.get("content") or el.get_text(strip=True)
+        if val:
+            p = _parse_price_smart(val)
+            if p and p > 5:
                 return p
     
-    # Strategy 5: Regex on page text for TL prices
+    # Strategy 5: Generic price CSS classes
+    generic_selectors = [
+        ".product-price", ".current-price", ".sales-price",
+        ".price-new", "[data-price]", ".price--sale",
+        ".price-box__price", ".price_color", "span.price",
+        ".product_price", ".discounted-price", ".woocommerce-Price-amount",
+        "ins .amount", ".summary .price",
+    ]
+    for selector in generic_selectors:
+        for el in soup.select(selector):
+            text = el.get_text(strip=True)
+            p = _parse_turkish_price(text)
+            if p and p > 5:
+                return p
+    
+    # Strategy 6: data-price attributes
+    for el in soup.find_all(attrs={"data-price": True}):
+        p = _parse_price_smart(el["data-price"])
+        if p and p > 5:
+            return p
+    
+    # Strategy 7: Broad regex on page text for TL prices
     text = soup.get_text()
     patterns = [
-        r'([\d.]+[.,]\d{2})\s*(?:TL|₺)',
-        r'(?:TL|₺)\s*([\d.]+[.,]\d{2})',
+        r'([\d.]+[.,]\d{2})\s*(?:TL|₺|tl)',
+        r'(?:TL|₺|tl)\s*([\d.]+[.,]\d{2})',
+        r'(?:fiyat|price|tutar)[^\d]{0,20}([\d.]+[.,]\d{2})',
     ]
     for pattern in patterns:
-        matches = re.findall(pattern, text)
+        matches = re.findall(pattern, text, re.IGNORECASE)
         for m in matches:
             p = _parse_turkish_price(m)
-            if p and p > 10:
+            if p and p > 5:
                 return p
     
     return None
