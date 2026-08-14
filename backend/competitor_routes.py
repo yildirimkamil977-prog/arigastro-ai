@@ -697,11 +697,9 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
             await db.system_status.update_one({"task": task_key}, {"$set": {"running": False, "error": str(e)}})
 
     async def _apply_price_to_ikas_inline(loop, ikas_fn, ikas_id, new_price_tl, floor_price, base_currency, price_lists):
-        """Apply price to İkas using TCMB conversion — inline helper for category pricing."""
+        """Apply price to İkas using saveVariantPrices — safe, no category/brand risk."""
         gql = f'''{{ listProduct(id: {{eq: "{ikas_id}"}}) {{ data {{
-            categories {{ id }}
-            brand {{ id }}
-            variants {{ id prices {{ sellPrice discountPrice currency priceListId }} }}
+            variants {{ id prices {{ sellPrice currency priceListId }} }}
         }} }} }}'''
         result = await loop.run_in_executor(None, ikas_fn, gql, None)
         pdata = (result.get("listProduct", {}).get("data", []) or [{}])[0]
@@ -730,25 +728,18 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         if floor_price and new_price < floor_price:
             return False
 
-        updated_prices = []
-        for p in existing_prices:
-            entry = {"priceListId": p["priceListId"], "sellPrice": p.get("sellPrice", 0), "currency": p.get("currency", "TRY")}
-            if p.get("discountPrice"):
-                entry["discountPrice"] = p["discountPrice"]
-            if p["priceListId"] == target_plid:
-                entry["sellPrice"] = new_price
-            updated_prices.append(entry)
-
-        existing_cats = [c["id"] for c in (pdata.get("categories") or [])]
-        existing_brand = (pdata.get("brand") or {}).get("id")
-        update_input = {"id": ikas_id, "variants": [{"id": variant["id"], "prices": updated_prices}]}
-        if existing_cats:
-            update_input["categoryIds"] = existing_cats
-        if existing_brand:
-            update_input["brandId"] = existing_brand
-
-        mutation = "mutation UpdateProduct($input: UpdateProductInput!) { updateProduct(input: $input) { id } }"
-        await loop.run_in_executor(None, ikas_fn, mutation, {"input": update_input})
+        mutation = """mutation SaveVariantPrices($input: SaveVariantPricesInput!) {
+            saveVariantPrices(input: $input)
+        }"""
+        variables = {"input": {
+            "priceListId": target_plid,
+            "variantPriceInputs": [{
+                "productId": ikas_id,
+                "variantId": variant["id"],
+                "price": {"sellPrice": new_price}
+            }]
+        }}
+        await loop.run_in_executor(None, ikas_fn, mutation, variables)
         return True
     
     # --- Get matches for a product ---
@@ -1394,9 +1385,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
             # Step 1: Fetch current İkas prices and variant info
             gql_query = f'''{{ listProduct(id: {{eq: "{ikas_id}"}}) {{ data {{
                 name
-                categories {{ id }}
-                brand {{ id }}
-                variants {{ id prices {{ sellPrice discountPrice currency priceListId }} }}
+                variants {{ id prices {{ sellPrice currency priceListId }} }}
             }} }} }}'''
             result = await loop.run_in_executor(None, ikas_graphql, gql_query, None)
             product_data = (result.get("listProduct", {}).get("data", []) or [{}])[0]
@@ -1412,7 +1401,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
             target_currency = None
 
             for p in existing_prices:
-                plid = p.get("priceListId", "")
+                plid = p.get("priceListId") or ""
                 if plid.startswith("b8f60257"):
                     continue
                 if plid == IKAS_PRICE_LISTS.get("EUR"):
@@ -1436,37 +1425,21 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
             if new_price < floor_price:
                 return {"success": False, "error": f"Yeni fiyat ({new_price:.2f} {target_currency}) dip fiyatın ({floor_price:.2f} {target_currency}) altında."}
 
-            # Step 5: Build prices array
-            updated_prices = []
-            for p in existing_prices:
-                price_entry = {
-                    "priceListId": p["priceListId"],
-                    "sellPrice": p.get("sellPrice", 0),
-                    "currency": p.get("currency", "TRY"),
-                }
-                if p.get("discountPrice"):
-                    price_entry["discountPrice"] = p["discountPrice"]
-                if p["priceListId"] == target_price_list:
-                    price_entry["sellPrice"] = new_price
-                updated_prices.append(price_entry)
+            # Step 5: Use saveVariantPrices — SAFE, no category/brand risk
+            mutation = """mutation SaveVariantPrices($input: SaveVariantPricesInput!) {
+                saveVariantPrices(input: $input)
+            }"""
+            variables = {"input": {
+                "priceListId": target_price_list,
+                "variantPriceInputs": [{
+                    "productId": ikas_id,
+                    "variantId": variant["id"],
+                    "price": {"sellPrice": new_price}
+                }]
+            }}
+            await loop.run_in_executor(None, ikas_graphql, mutation, variables)
 
-            # Step 6: Build mutation preserving categories and brand
-            existing_cats = [c["id"] for c in (product_data.get("categories") or [])]
-            existing_brand = (product_data.get("brand") or {}).get("id")
-
-            update_input = {
-                "id": ikas_id,
-                "variants": [{"id": variant["id"], "prices": updated_prices}],
-            }
-            if existing_cats:
-                update_input["categoryIds"] = existing_cats
-            if existing_brand:
-                update_input["brandId"] = existing_brand
-
-            mutation = "mutation UpdateProduct($input: UpdateProductInput!) { updateProduct(input: $input) { id } }"
-            await loop.run_in_executor(None, ikas_graphql, mutation, {"input": update_input})
-
-            # Step 7: Log + update local
+            # Step 6: Log + update local
             cur_label = "TL" if target_currency in ("TRY", "TL") else target_currency
             await db.price_changes.update_one(
                 {"product_slug": req.slug, "applied": False, "action": "update"},
@@ -1553,9 +1526,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                         continue
 
                     gql_query = f'''{{ listProduct(id: {{eq: "{ikas_id}"}}) {{ data {{
-                        categories {{ id }}
-                        brand {{ id }}
-                        variants {{ id prices {{ sellPrice discountPrice currency priceListId }} }}
+                        variants {{ id prices {{ sellPrice currency priceListId }} }}
                     }} }} }}'''
                     result = await loop.run_in_executor(None, ikas_fn, gql_query, None)
                     product_data = (result.get("listProduct", {}).get("data", []) or [{}])[0]
@@ -1569,7 +1540,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
 
                     target_plid = target_currency = None
                     for p in existing_prices:
-                        plid = p.get("priceListId", "")
+                        plid = p.get("priceListId") or ""
                         if plid.startswith("b8f60257"):
                             continue
                         if plid == price_lists.get("EUR"):
@@ -1593,25 +1564,19 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                         failed += 1
                         continue
 
-                    updated_prices = []
-                    for p in existing_prices:
-                        entry = {"priceListId": p["priceListId"], "sellPrice": p.get("sellPrice", 0), "currency": p.get("currency", "TRY")}
-                        if p.get("discountPrice"):
-                            entry["discountPrice"] = p["discountPrice"]
-                        if p["priceListId"] == target_plid:
-                            entry["sellPrice"] = new_price
-                        updated_prices.append(entry)
-
-                    existing_cats = [c["id"] for c in (product_data.get("categories") or [])]
-                    existing_brand = (product_data.get("brand") or {}).get("id")
-                    update_input = {"id": ikas_id, "variants": [{"id": variant["id"], "prices": updated_prices}]}
-                    if existing_cats:
-                        update_input["categoryIds"] = existing_cats
-                    if existing_brand:
-                        update_input["brandId"] = existing_brand
-
-                    mutation = "mutation UpdateProduct($input: UpdateProductInput!) { updateProduct(input: $input) { id } }"
-                    await loop.run_in_executor(None, ikas_fn, mutation, {"input": update_input})
+                    # Use saveVariantPrices — SAFE
+                    mutation = """mutation SaveVariantPrices($input: SaveVariantPricesInput!) {
+                        saveVariantPrices(input: $input)
+                    }"""
+                    variables = {"input": {
+                        "priceListId": target_plid,
+                        "variantPriceInputs": [{
+                            "productId": ikas_id,
+                            "variantId": variant["id"],
+                            "price": {"sellPrice": new_price}
+                        }]
+                    }}
+                    await loop.run_in_executor(None, ikas_fn, mutation, variables)
 
                     await db.price_changes.update_one(
                         {"_id": ch["_id"]},
@@ -1883,13 +1848,11 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
 
 
 async def _apply_price_to_ikas(loop, ikas_graphql, db, slug, ikas_id, new_price_tl, floor_price, base_currency, price_lists):
-    """Helper: update a product's price in İkas original currency list using TCMB rates."""
+    """Helper: update a product's price in İkas using saveVariantPrices — SAFE."""
     from tcmb_exchange import convert_from_tl
 
     gql = f'''{{ listProduct(id: {{eq: "{ikas_id}"}}) {{ data {{
-        categories {{ id }}
-        brand {{ id }}
-        variants {{ id prices {{ sellPrice discountPrice currency priceListId }} }}
+        variants {{ id prices {{ sellPrice currency priceListId }} }}
     }} }} }}'''
     result = await loop.run_in_executor(None, ikas_graphql, gql, None)
     pdata = (result.get("listProduct", {}).get("data", []) or [{}])[0]
@@ -1902,7 +1865,7 @@ async def _apply_price_to_ikas(loop, ikas_graphql, db, slug, ikas_id, new_price_
 
     target_plid = target_currency = None
     for p in existing_prices:
-        plid = p.get("priceListId", "")
+        plid = p.get("priceListId") or ""
         if plid.startswith("b8f60257"):
             continue
         if plid == price_lists.get("EUR"):
@@ -1916,30 +1879,20 @@ async def _apply_price_to_ikas(loop, ikas_graphql, db, slug, ikas_id, new_price_
     if not target_plid:
         return False
 
-    # Convert using TCMB
     new_price = convert_from_tl(new_price_tl, target_currency)
-
-    # Floor check in base currency
     if floor_price and new_price < floor_price:
         return False
 
-    updated_prices = []
-    for p in existing_prices:
-        entry = {"priceListId": p["priceListId"], "sellPrice": p.get("sellPrice", 0), "currency": p.get("currency", "TRY")}
-        if p.get("discountPrice"):
-            entry["discountPrice"] = p["discountPrice"]
-        if p["priceListId"] == target_plid:
-            entry["sellPrice"] = new_price
-        updated_prices.append(entry)
-
-    existing_cats = [c["id"] for c in (pdata.get("categories") or [])]
-    existing_brand = (pdata.get("brand") or {}).get("id")
-    update_input = {"id": ikas_id, "variants": [{"id": variant["id"], "prices": updated_prices}]}
-    if existing_cats:
-        update_input["categoryIds"] = existing_cats
-    if existing_brand:
-        update_input["brandId"] = existing_brand
-
-    mutation = "mutation UpdateProduct($input: UpdateProductInput!) { updateProduct(input: $input) { id } }"
-    await loop.run_in_executor(None, ikas_graphql, mutation, {"input": update_input})
+    mutation = """mutation SaveVariantPrices($input: SaveVariantPricesInput!) {
+        saveVariantPrices(input: $input)
+    }"""
+    variables = {"input": {
+        "priceListId": target_plid,
+        "variantPriceInputs": [{
+            "productId": ikas_id,
+            "variantId": variant["id"],
+            "price": {"sellPrice": new_price}
+        }]
+    }}
+    await loop.run_in_executor(None, ikas_graphql, mutation, variables)
     return True
