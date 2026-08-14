@@ -248,9 +248,14 @@ def search_competitor_product(product_name: str, competitor_key: str, brand: str
     
     # Strategy 0: SKU/product code search (highest priority)
     if sku and len(sku) >= 3:
-        sku_results = _search_on_site(sku, competitor_key, use_render=False)
-        if not sku_results and comp.get("search_needs_render"):
-            sku_results = _search_on_site(sku, competitor_key, use_render=True)
+        # For T-Soft sites (search needs render), use Google site: search with SKU
+        # This is more reliable than site-native search which loads results via AJAX
+        if comp.get("search_needs_render"):
+            sku_results = _search_on_google(f"{sku}", competitor_key)
+        else:
+            sku_results = _search_on_site(sku, competitor_key, use_render=False)
+            if not sku_results:
+                sku_results = _search_on_google(f"{sku}", competitor_key)
         candidates_raw.extend(sku_results)
         logger.info(f"SKU search '{sku}' on {competitor_key}: {len(sku_results)} results")
     

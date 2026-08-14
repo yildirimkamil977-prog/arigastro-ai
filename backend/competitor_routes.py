@@ -158,7 +158,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         """Auto-match all products in a category. Runs in background."""
         products = await db.products.find(
             {"category_path": {"$regex": category_name, "$options": "i"}, "inactive": {"$ne": True}},
-            {"slug": 1, "name": 1, "brand": 1, "gtin": 1}
+            {"slug": 1, "name": 1, "brand": 1, "gtin": 1, "sku": 1}
         ).to_list(5000)
         
         if not products:
@@ -458,7 +458,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         # Find products in this category
         products = await db.products.find(
             {"category_path": {"$regex": category_name, "$options": "i"}, "inactive": {"$ne": True}},
-            {"_id": 0, "slug": 1, "name": 1, "ikas_product_id": 1}
+            {"_id": 0, "slug": 1, "name": 1, "ikas_product_id": 1, "sku": 1, "brand": 1, "gtin": 1}
         ).to_list(5000)
 
         if not products:
@@ -800,7 +800,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
     async def get_tcmb_rates(user: dict = Depends(get_current_user)):
         """Get current TCMB exchange rates."""
         rates = get_exchange_rates()
-        return {"rates": rates, "source": "TCMB"}
+        return {"rates": rates, "source": "CurrencyAPI"}
 
     # --- İkas Currency Sync: fetch original prices for products ---
     @router.post("/sync-ikas-currencies")
@@ -899,9 +899,15 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
             local_products = await db.products.find({}, {"_id": 0, "slug": 1, "name": 1, "our_price": 1, "ikas_product_id": 1}).to_list(10000)
             local_by_ikas_id = {p["ikas_product_id"]: p for p in local_products if p.get("ikas_product_id")}
             local_slugs = {p["slug"] for p in local_products}
-            matched_ikas_ids = set()
+            matched_ikas_ids = set()  # Track which İkas IDs have been claimed
             progress = 0
             new_products_added = 0
+
+            # First pass: match by existing ikas_product_id (exact, no duplicates)
+            for lp in local_products:
+                ikas_id = lp.get("ikas_product_id")
+                if ikas_id and ikas_id in ikas_products_by_id:
+                    matched_ikas_ids.add(ikas_id)
 
             for lp in local_products:
                 slug = lp["slug"]
@@ -910,12 +916,15 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                 if not match:
                     norm_name = normalize_name(lp.get("name", ""))
                     match = ikas_products_map.get(norm_name)
+                    # Only accept if this İkas ID isn't already claimed by another product
+                    if match and match["ikas_id"] in matched_ikas_ids:
+                        match = None
                     if not match and norm_name:
                         words = norm_name.split()
                         for length in range(len(words), max(2, len(words) - 3), -1):
                             prefix = ' '.join(words[:length])
                             for ik_name, ik_data in ikas_products_map.items():
-                                if ik_name.startswith(prefix) or prefix in ik_name:
+                                if ik_data["ikas_id"] not in matched_ikas_ids and (ik_name.startswith(prefix) or prefix in ik_name):
                                     match = ik_data; break
                             if match: break
                 if match:
