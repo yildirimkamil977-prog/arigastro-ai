@@ -612,16 +612,16 @@ def calculate_optimal_price(
     if not competitor_prices:
         return {"action": "no_change", "reason": "Rakip fiyatı bulunamadı"}
 
-    # SANITY CHECK: Filter out unreliable prices (< 10% of our price = likely scrape error)
+    # SANITY CHECK: Filter out unreliable prices (< 30% of our price = likely scrape error)
     if our_price_tl and our_price_tl > 0:
-        min_threshold = our_price_tl * 0.10
+        min_threshold = our_price_tl * 0.30
         reliable_prices = {}
         rejected = []
         for k, v in competitor_prices.items():
             if v["price"] >= min_threshold:
                 reliable_prices[k] = v
             else:
-                rejected.append(f"{v['competitor_name']}: {v['price']:.0f} TL (< %10 eşik: {min_threshold:.0f} TL)")
+                rejected.append(f"{v['competitor_name']}: {v['price']:.0f} TL (< %30 eşik: {min_threshold:.0f} TL)")
         if rejected:
             logger.warning(f"Güvenilmez fiyatlar filtrelendi: {', '.join(rejected)}")
         competitor_prices = reliable_prices
