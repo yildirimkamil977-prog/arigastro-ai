@@ -729,7 +729,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
             return False
 
         mutation = """mutation UpdateVariantPrices($input: UpdateVariantPricesInput!) {
-            saveVariantPrices(input: $input)
+            updateVariantPrices(input: $input)
         }"""
         variables = {"input": {
             "priceListId": target_plid,
@@ -1427,7 +1427,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
 
             # Step 5: Use saveVariantPrices — SAFE, no category/brand risk
             mutation = """mutation UpdateVariantPrices($input: UpdateVariantPricesInput!) {
-                saveVariantPrices(input: $input)
+                updateVariantPrices(input: $input)
             }"""
             variables = {"input": {
                 "priceListId": target_price_list,
@@ -1566,7 +1566,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
 
                     # Use saveVariantPrices — SAFE
                     mutation = """mutation UpdateVariantPrices($input: UpdateVariantPricesInput!) {
-                        saveVariantPrices(input: $input)
+                        updateVariantPrices(input: $input)
                     }"""
                     variables = {"input": {
                         "priceListId": target_plid,
@@ -1884,7 +1884,7 @@ async def _apply_price_to_ikas(loop, ikas_graphql, db, slug, ikas_id, new_price_
         return False
 
     mutation = """mutation UpdateVariantPrices($input: UpdateVariantPricesInput!) {
-        saveVariantPrices(input: $input)
+        updateVariantPrices(input: $input)
     }"""
     variables = {"input": {
         "priceListId": target_plid,
