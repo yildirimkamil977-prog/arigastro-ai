@@ -282,7 +282,7 @@ async def list_products(
     page: int = 1,
     limit: int = 50
 ):
-    query = {}
+    query = {"inactive": {"$ne": True}}
     if search:
         query["name"] = {"$regex": search, "$options": "i"}
     if category:
@@ -518,10 +518,10 @@ async def sync_prices_from_feed(user: dict = Depends(get_current_user)):
     inactive_count = 0
     for p in all_slugs:
         if p["slug"] not in feed_slugs:
-            await db.products.update_one({"slug": p["slug"]}, {"$set": {"feed_active": False}})
+            await db.products.update_one({"slug": p["slug"]}, {"$set": {"feed_active": False, "inactive": True}})
             inactive_count += 1
         else:
-            await db.products.update_one({"slug": p["slug"]}, {"$set": {"feed_active": True}})
+            await db.products.update_one({"slug": p["slug"]}, {"$set": {"feed_active": True}, "$unset": {"inactive": ""}})
     
     active = await db.products.count_documents({"feed_active": True})
     return {
@@ -538,14 +538,16 @@ async def sync_prices_from_feed(user: dict = Depends(get_current_user)):
 @api_router.get("/feed/status")
 async def feed_status(user: dict = Depends(get_current_user)):
     """Check feed sync status."""
-    total = await db.products.count_documents({})
-    priced = await db.products.count_documents({"our_price": {"$ne": None}})
-    unpriced = await db.products.count_documents({"our_price": None})
+    total = await db.products.count_documents({"inactive": {"$ne": True}})
+    priced = await db.products.count_documents({"inactive": {"$ne": True}, "our_price": {"$ne": None}})
+    unpriced = await db.products.count_documents({"inactive": {"$ne": True}, "our_price": None})
+    inactive = await db.products.count_documents({"inactive": True})
     return {
         "feed_url": FEED_URL[:50] + "..." if FEED_URL else "Not configured",
         "total_products": total,
         "products_with_price": priced,
         "products_without_price": unpriced,
+        "inactive_products": inactive,
     }
 
 # ============ AKAKCE PANEL IMPORT (FREE - no ScraperAPI needed) ============
@@ -2268,7 +2270,7 @@ async def get_seo_logs(page: int = 1, limit: int = 50, user: dict = Depends(get_
 
 @api_router.get("/dashboard/stats")
 async def get_dashboard_stats(user: dict = Depends(get_current_user)):
-    total_products = await db.products.count_documents({})
+    total_products = await db.products.count_documents({"inactive": {"$ne": True}})
     
     # Count tracked = products in tracked categories or matching brand
     tracked_cats = await db.categories.find({"is_tracked": True}, {"_id": 0, "name": 1}).to_list(500)
@@ -2278,12 +2280,13 @@ async def get_dashboard_stats(user: dict = Depends(get_current_user)):
         tracked_filter = build_tracked_query(cat_names)
         tracked_products = await db.products.count_documents({**tracked_filter, "our_price": {"$ne": None}})
     
-    matched_products = await db.products.count_documents({"akakce_matched": True})
+    matched_products = await db.products.count_documents({"akakce_matched": True, "inactive": {"$ne": True}})
     unmatched = tracked_products - matched_products if tracked_products > matched_products else 0
     
     # Products where competitors are cheaper
     cheaper_pipeline = [
         {"$match": {
+            "inactive": {"$ne": True},
             "cheapest_price": {"$ne": None},
             "our_price": {"$ne": None},
             "$expr": {"$lt": ["$cheapest_price", "$our_price"]}
@@ -2296,6 +2299,7 @@ async def get_dashboard_stats(user: dict = Depends(get_current_user)):
     # Products where we are cheapest
     we_cheaper_pipeline = [
         {"$match": {
+            "inactive": {"$ne": True},
             "cheapest_price": {"$ne": None},
             "our_price": {"$ne": None},
             "$expr": {"$gte": ["$cheapest_price", "$our_price"]}
@@ -2313,7 +2317,7 @@ async def get_dashboard_stats(user: dict = Depends(get_current_user)):
     
     # Recent price alerts (products where competitors recently became cheaper)
     recent_alerts = await db.products.find(
-        {"cheapest_price": {"$ne": None}, "our_price": {"$ne": None}, "price_difference": {"$gt": 0}},
+        {"inactive": {"$ne": True}, "cheapest_price": {"$ne": None}, "our_price": {"$ne": None}, "price_difference": {"$gt": 0}},
         {"_id": 0, "name": 1, "our_price": 1, "cheapest_price": 1, "cheapest_competitor": 1, "price_difference": 1, "slug": 1}
     ).sort("price_difference", -1).limit(10).to_list(10)
     
@@ -2756,8 +2760,8 @@ async def scheduled_feed_sync():
         )
         # Mark inactive products
         feed_slugs = set(item.get("slug", "") for item in feed_items if item.get("slug"))
-        await db.products.update_many({"slug": {"$nin": list(feed_slugs)}}, {"$set": {"feed_active": False}})
-        await db.products.update_many({"slug": {"$in": list(feed_slugs)}}, {"$set": {"feed_active": True}})
+        await db.products.update_many({"slug": {"$nin": list(feed_slugs)}}, {"$set": {"feed_active": False, "inactive": True}})
+        await db.products.update_many({"slug": {"$in": list(feed_slugs)}}, {"$set": {"feed_active": True}, "$unset": {"inactive": ""}})
         logger.info(f"CRON: Feed sync tamamlandi. {updated} urun guncellendi.")
     except Exception as e:
         logger.error(f"CRON: Feed sync hatasi: {e}")
