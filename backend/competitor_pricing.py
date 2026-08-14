@@ -194,48 +194,43 @@ def search_competitor_product(product_name: str, competitor_key: str, brand: str
 
 
 def scrape_competitor_price(url: str, competitor_key: str, retries: int = 2) -> dict:
-    """Scrape the price from a competitor product page with retry logic."""
+    """Scrape price: first try fast (no render), then retry with JS render if needed."""
     if not SCRAPERAPI_KEY:
         return {"success": False, "error": "ScraperAPI key missing"}
     
-    last_error = ""
-    for attempt in range(retries):
-        try:
-            resp = req_sync.get("http://api.scraperapi.com", params={
-                "api_key": SCRAPERAPI_KEY,
-                "url": url,
-                "render": "true",
-            }, timeout=50)
-            
-            if resp.status_code != 200:
-                last_error = f"HTTP {resp.status_code}"
-                continue
-            
+    # Phase 1: Fast scrape without render (3-5 seconds)
+    try:
+        resp = req_sync.get("http://api.scraperapi.com", params={
+            "api_key": SCRAPERAPI_KEY,
+            "url": url,
+        }, timeout=25)
+        
+        if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, "html.parser")
             price = _extract_price(soup, competitor_key)
-            
             if price and price > 0:
-                return {
-                    "success": True,
-                    "price": price,
-                    "currency": "TRY",
-                    "scraped_at": datetime.now(timezone.utc).isoformat(),
-                }
-            else:
-                last_error = "Price not found on page"
-                # Don't retry if we got the page but couldn't find price (page structure issue)
-                if attempt == 0:
-                    # Try once more - sometimes page loads partially
-                    import time; time.sleep(2)
-                    continue
-                break
-        
-        except Exception as e:
-            last_error = str(e)
-            if attempt < retries - 1:
-                import time; time.sleep(3)
+                return {"success": True, "price": price, "currency": "TRY", "scraped_at": datetime.now(timezone.utc).isoformat()}
+    except:
+        pass
     
-    return {"success": False, "error": last_error}
+    # Phase 2: Retry with JS render (for sites that need it)
+    import time; time.sleep(1)
+    try:
+        resp = req_sync.get("http://api.scraperapi.com", params={
+            "api_key": SCRAPERAPI_KEY,
+            "url": url,
+            "render": "true",
+        }, timeout=50)
+        
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            price = _extract_price(soup, competitor_key)
+            if price and price > 0:
+                return {"success": True, "price": price, "currency": "TRY", "scraped_at": datetime.now(timezone.utc).isoformat()}
+            return {"success": False, "error": "Price not found on page"}
+        return {"success": False, "error": f"HTTP {resp.status_code}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 def _extract_price(soup: BeautifulSoup, competitor_key: str) -> float:
