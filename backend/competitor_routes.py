@@ -728,7 +728,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         if floor_price and new_price < floor_price:
             return False
 
-        mutation = """mutation SaveVariantPrices($input: SaveVariantPricesInput!) {
+        mutation = """mutation UpdateVariantPrices($input: UpdateVariantPricesInput!) {
             saveVariantPrices(input: $input)
         }"""
         variables = {"input": {
@@ -1426,7 +1426,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                 return {"success": False, "error": f"Yeni fiyat ({new_price:.2f} {target_currency}) dip fiyatın ({floor_price:.2f} {target_currency}) altında."}
 
             # Step 5: Use saveVariantPrices — SAFE, no category/brand risk
-            mutation = """mutation SaveVariantPrices($input: SaveVariantPricesInput!) {
+            mutation = """mutation UpdateVariantPrices($input: UpdateVariantPricesInput!) {
                 saveVariantPrices(input: $input)
             }"""
             variables = {"input": {
@@ -1565,7 +1565,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                         continue
 
                     # Use saveVariantPrices — SAFE
-                    mutation = """mutation SaveVariantPrices($input: SaveVariantPricesInput!) {
+                    mutation = """mutation UpdateVariantPrices($input: UpdateVariantPricesInput!) {
                         saveVariantPrices(input: $input)
                     }"""
                     variables = {"input": {
@@ -1883,7 +1883,7 @@ async def _apply_price_to_ikas(loop, ikas_graphql, db, slug, ikas_id, new_price_
     if floor_price and new_price < floor_price:
         return False
 
-    mutation = """mutation SaveVariantPrices($input: SaveVariantPricesInput!) {
+    mutation = """mutation UpdateVariantPrices($input: UpdateVariantPricesInput!) {
         saveVariantPrices(input: $input)
     }"""
     variables = {"input": {
