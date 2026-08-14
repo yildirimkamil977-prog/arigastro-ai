@@ -14,10 +14,30 @@ SCRAPERAPI_KEY = os.environ.get("SCRAPERAPI_KEY", "")
 TR_TO_ASCII = str.maketrans("ıİşŞğĞüÜöÖçÇ", "iIsSgGuUoOcC")
 
 COMPETITORS = {
-    "mutfak10": {"domain": "mutfak10.com", "name": "Mutfak10", "icon": "🟠", "base_url": "https://www.mutfak10.com"},
-    "cafemarkt": {"domain": "cafemarkt.com", "name": "Cafemarkt", "icon": "🔵", "base_url": "https://www.cafemarkt.com"},
-    "mutbex": {"domain": "mutbex.com", "name": "Mutbex", "icon": "🟢", "base_url": "https://www.mutbex.com"},
-    "hakbilenler": {"domain": "shop.hakbilenler.com.tr", "name": "Hakbilenler", "icon": "🟣", "base_url": "https://shop.hakbilenler.com.tr"},
+    "mutfak10": {
+        "domain": "mutfak10.com", "name": "Mutfak10",
+        "base_url": "https://www.mutfak10.com",
+        "search_url": "https://www.mutfak10.com/?s={query}&post_type=product",
+        "search_needs_render": False,
+    },
+    "cafemarkt": {
+        "domain": "cafemarkt.com", "name": "Cafemarkt",
+        "base_url": "https://www.cafemarkt.com",
+        "search_url": "https://www.cafemarkt.com/arama?q={query}",
+        "search_needs_render": True,
+    },
+    "mutbex": {
+        "domain": "mutbex.com", "name": "Mutbex",
+        "base_url": "https://www.mutbex.com",
+        "search_url": "https://www.mutbex.com/arama?q={query}",
+        "search_needs_render": True,
+    },
+    "hakbilenler": {
+        "domain": "shop.hakbilenler.com.tr", "name": "Hakbilenler",
+        "base_url": "https://shop.hakbilenler.com.tr",
+        "search_url": "https://shop.hakbilenler.com.tr/?s={query}&post_type=product",
+        "search_needs_render": False,
+    },
 }
 
 
@@ -123,130 +143,167 @@ def _extract_gtin_from_page(html_text: str, soup: BeautifulSoup) -> str:
     return None
 
 
-def search_competitor_product(product_name: str, competitor_key: str, brand: str = "", gtin: str = "") -> dict:
-    """Multi-signal product matching: GTIN verification + text similarity."""
-    if not SCRAPERAPI_KEY:
-        return {"matched": False, "error": "ScraperAPI key missing"}
+def _search_on_site(query: str, competitor_key: str, use_render: bool = None) -> list:
+    """Search for products on competitor's own website search. Returns [{url, title}]."""
+    comp = COMPETITORS[competitor_key]
+    from urllib.parse import quote_plus
+    search_url = comp["search_url"].format(query=quote_plus(query))
+    params = {"api_key": SCRAPERAPI_KEY, "url": search_url}
+    should_render = use_render if use_render is not None else comp.get("search_needs_render", False)
+    if should_render:
+        params["render"] = "true"
+    timeout = 45 if should_render else 20
+    try:
+        resp = req_sync.get("http://api.scraperapi.com", params=params, timeout=timeout)
+        if resp.status_code != 200:
+            return []
+        soup = BeautifulSoup(resp.text, "html.parser")
+        domain = comp["domain"]
+        base = comp["base_url"]
+        
+        # Extract query keywords for relevance filtering
+        query_words = set(re.sub(r'[^a-z0-9\s]', ' ', query.lower()).split())
+        query_words -= {"ve", "ic", "dis", "icin", "ile", "bir"}
+        
+        all_links = []
+        seen = set()
+        for a in soup.find_all("a", href=True):
+            href = a["href"].strip()
+            title = a.get_text(strip=True)
+            if not title or len(title) < 15:
+                continue
+            lt = title.lower()
+            if any(skip in lt for skip in ["sepete ekle", "yanıt", "iptal", "giriş yap", "kayıt ol", "favoriler", "sepetim", "karşılaştır", "filtre"]):
+                continue
+            if href.startswith("/"):
+                href = base + href
+            if domain not in href:
+                continue
+            if not _is_valid_product_url(href, competitor_key):
+                continue
+            clean = href.split("?")[0].rstrip("/")
+            if clean in seen:
+                continue
+            seen.add(clean)
+            
+            # Check relevance: does the link text contain any query keyword?
+            title_lower = re.sub(r'[^a-z0-9\s]', ' ', title.lower())
+            title_words = set(title_lower.split())
+            overlap = query_words & title_words
+            relevance = len(overlap) / max(len(query_words), 1)
+            
+            all_links.append({"url": href, "title": title, "relevance": relevance})
+        
+        # Sort by relevance, return only relevant links
+        all_links.sort(key=lambda x: x["relevance"], reverse=True)
+        return [{"url": l["url"], "title": l["title"]} for l in all_links if l["relevance"] > 0][:15]
+    except Exception as e:
+        logger.warning(f"Site search failed for {competitor_key}: {e}")
+        return []
 
-    comp = COMPETITORS.get(competitor_key)
-    if not comp:
-        return {"matched": False, "error": f"Unknown competitor: {competitor_key}"}
 
-    # Build search query: include brand for better accuracy
-    search_name = " ".join(product_name.split()[:8])
-    if brand and brand.lower() not in product_name.lower():
-        search_name = f"{brand} {search_name}"
-    ascii_name = search_name.translate(TR_TO_ASCII)
-
+def _search_on_google(query: str, competitor_key: str) -> list:
+    """Fallback: Google site: search. Returns [{url, title}]."""
+    comp = COMPETITORS[competitor_key]
     try:
         resp = req_sync.get("https://api.scraperapi.com/structured/google/search", params={
             "api_key": SCRAPERAPI_KEY,
-            "query": f"site:{comp['domain']} {ascii_name}",
-            "country_code": "tr",
-            "tld": "com.tr",
-            "num": "10",
+            "query": f"site:{comp['domain']} {query}",
+            "country_code": "tr", "tld": "com.tr", "num": "10",
         }, timeout=25)
-
         if resp.status_code != 200:
-            return {"matched": False, "error": f"SERP API {resp.status_code}"}
+            return []
+        return [{"url": r["link"], "title": r.get("title", "")} for r in resp.json().get("organic_results", []) if _is_valid_product_url(r.get("link", ""), competitor_key)]
+    except:
+        return []
 
-        results = resp.json().get("organic_results", [])
-        if not results:
-            return {"matched": False, "error": "No results"}
 
-        # Score and filter results
-        candidates = []
+def search_competitor_product(product_name: str, competitor_key: str, brand: str = "", gtin: str = "") -> dict:
+    """Multi-strategy matching: site search → Google fallback → GTIN verification."""
+    if not SCRAPERAPI_KEY:
+        return {"matched": False, "error": "ScraperAPI key missing"}
+    comp = COMPETITORS.get(competitor_key)
+    if not comp:
+        return {"matched": False, "error": f"Unknown competitor"}
 
-        # Extract "core" product words (exclude brand-like first word and pure numbers/units)
-        product_norm = _normalize_text(product_name)
-        product_words = product_norm.split()
-        skip_words = {"cm", "lt", "mm", "kg", "gr", "ml", "adet", "li", "lu", "x", "set", "seri", "ve", "ic", "dis", "icin"}
-        core_words = set()
-        for w in product_words:
-            if w in skip_words or re.match(r'^\d+x?\d*$', w):
-                continue
-            # Skip if it looks like a brand (first word or very short)
-            core_words.add(w)
-        # Remove the first word (usually brand) from core to avoid brand-only matches
-        if product_words:
-            core_words.discard(product_words[0])
+    search_terms = product_name
+    if brand and brand.lower() not in product_name.lower():
+        search_terms = f"{brand} {product_name}"
+    ascii_terms = search_terms.translate(TR_TO_ASCII)
 
-        for r in results:
-            url = r.get("link", "")
-            title = r.get("title", "")
+    # Collect candidates from ALL strategies, then score together
+    candidates_raw = []
+    
+    # Strategy 1a: Site search without render (fast)
+    site_results = _search_on_site(ascii_terms, competitor_key, use_render=False)
+    candidates_raw.extend(site_results)
+    
+    # Strategy 1b: Shorter model-focused query
+    model_parts = re.findall(r'[A-Z0-9]{2,}[A-Za-z]*\d+[A-Za-z]*|[A-Za-z]+\d+[A-Za-z]*', product_name)
+    if model_parts:
+        short_q = f"{brand} {' '.join(model_parts)}".translate(TR_TO_ASCII) if brand else " ".join(model_parts)
+        extra = _search_on_site(short_q, competitor_key, use_render=False)
+        seen = {c["url"].split("?")[0].rstrip("/") for c in candidates_raw}
+        candidates_raw += [e for e in extra if e["url"].split("?")[0].rstrip("/") not in seen]
+    
+    # Strategy 2: Google fallback (always try for more coverage)
+    google_results = _search_on_google(ascii_terms, competitor_key)
+    seen = {c["url"].split("?")[0].rstrip("/") for c in candidates_raw}
+    candidates_raw += [e for e in google_results if e["url"].split("?")[0].rstrip("/") not in seen]
 
-            # Step 1: Must be a valid product URL
-            if not _is_valid_product_url(url, competitor_key):
-                continue
+    if not candidates_raw:
+        return {"matched": False, "error": "No results from site or Google"}
 
-            # Step 2: Core keyword check — at least 1 core product word must appear in title
-            title_norm = _normalize_text(title)
-            title_words_set = set(title_norm.split())
-            core_overlap = core_words & title_words_set
-            if len(core_words) >= 2 and len(core_overlap) == 0:
-                continue  # No core product word found in title — skip
+    # Score candidates
+    product_norm = _normalize_text(product_name)
+    product_words = product_norm.split()
+    skip_words = {"cm", "lt", "mm", "kg", "gr", "ml", "adet", "li", "lu", "x", "set", "seri", "ve", "ic", "dis", "icin"}
+    core_words = {w for w in product_words if w not in skip_words and not re.match(r'^\d+x?\d*$', w)}
+    if product_words:
+        core_words.discard(product_words[0])
 
-            # Step 3: Calculate title similarity
-            similarity = _text_similarity(product_name, title)
+    candidates = []
+    for r in candidates_raw:
+        title_norm = _normalize_text(r["title"])
+        title_words_set = set(title_norm.split())
+        core_overlap = core_words & title_words_set
+        if len(core_words) >= 2 and not core_overlap:
+            continue
+        sim = _text_similarity(product_name, r["title"])
+        pnums = set(re.findall(r'\d+', product_norm))
+        tnums = set(re.findall(r'\d+', title_norm))
+        nmatch = len(pnums & tnums) / max(len(pnums), 1) if pnums else 0.5
+        score = (sim * 0.6) + (nmatch * 0.4)
+        if core_words:
+            score *= (0.5 + 0.5 * len(core_overlap) / len(core_words))
+        if score >= 0.15:
+            candidates.append({"url": r["url"], "title": r["title"], "score": score})
 
-            # Step 4: Number matching (sizes, volumes)
-            product_numbers = re.findall(r'\d+', product_norm)
-            title_numbers = re.findall(r'\d+', title_norm)
-            number_match = len(set(product_numbers) & set(title_numbers)) / max(len(set(product_numbers)), 1) if product_numbers else 0.5
+    if not candidates:
+        return {"matched": False, "error": "No quality match in search results"}
+    candidates.sort(key=lambda x: x["score"], reverse=True)
 
-            # Combined score
-            score = (similarity * 0.6) + (number_match * 0.4)
+    # GTIN verification on top candidates
+    if gtin and len(gtin) >= 8:
+        for cand in candidates[:3]:
+            try:
+                pr = req_sync.get("http://api.scraperapi.com", params={"api_key": SCRAPERAPI_KEY, "url": cand["url"]}, timeout=20)
+                if pr.status_code == 200:
+                    ps = BeautifulSoup(pr.text, "html.parser")
+                    pg = _extract_gtin_from_page(pr.text, ps)
+                    if pg and pg == gtin:
+                        return {"matched": True, "url": cand["url"], "title": cand["title"], "score": 1.0, "match_method": "gtin", "competitor_key": competitor_key, "competitor_name": comp["name"]}
+                    elif pg and pg != gtin:
+                        cand["score"] = 0
+                        continue
+            except:
+                pass
+            import time; time.sleep(0.3)
 
-            # Bonus for core word overlap
-            if core_words:
-                core_ratio = len(core_overlap) / len(core_words)
-                score = score * (0.5 + 0.5 * core_ratio)
-
-            if score >= 0.20:
-                candidates.append({"url": url, "title": title, "score": score})
-
-        if not candidates:
-            return {"matched": False, "error": "No quality match found"}
-
-        # Sort candidates by score
-        candidates.sort(key=lambda x: x["score"], reverse=True)
-
-        # GTIN VERIFICATION: scrape top candidates to verify via barcode
-        if gtin and len(gtin) >= 8:
-            for cand in candidates[:3]:
-                try:
-                    page_resp = req_sync.get("http://api.scraperapi.com", params={
-                        "api_key": SCRAPERAPI_KEY, "url": cand["url"],
-                    }, timeout=20)
-                    if page_resp.status_code == 200:
-                        page_soup = BeautifulSoup(page_resp.text, "html.parser")
-                        page_gtin = _extract_gtin_from_page(page_resp.text, page_soup)
-                        if page_gtin and page_gtin == gtin:
-                            return {
-                                "matched": True, "url": cand["url"], "title": cand["title"],
-                                "score": 1.0, "match_method": "gtin",
-                                "competitor_key": competitor_key, "competitor_name": comp["name"],
-                            }
-                        elif page_gtin and page_gtin != gtin:
-                            cand["score"] = 0  # Wrong product
-                            continue
-                except:
-                    pass
-                import time; time.sleep(0.5)
-
-        # Return best text-match (exclude disqualified)
-        valid = [c for c in candidates if c["score"] >= 0.30]
-        if valid:
-            best = valid[0]
-            return {
-                "matched": True, "url": best["url"], "title": best["title"],
-                "score": round(best["score"], 3), "match_method": "text",
-                "competitor_key": competitor_key, "competitor_name": comp["name"],
-            }
-
-        return {"matched": False, "error": f"No quality match (best: {candidates[0]['score']:.2f} after GTIN check)"}
-    except Exception as e:
-        return {"matched": False, "error": str(e)}
+    valid = [c for c in candidates if c["score"] >= 0.35]
+    if valid:
+        return {"matched": True, "url": valid[0]["url"], "title": valid[0]["title"], "score": round(valid[0]["score"], 3), "match_method": "text", "competitor_key": competitor_key, "competitor_name": comp["name"]}
+    return {"matched": False, "error": f"No quality match (best: {candidates[0]['score']:.2f})"}
 
 
 def scrape_competitor_price(url: str, competitor_key: str, retries: int = 2) -> dict:
