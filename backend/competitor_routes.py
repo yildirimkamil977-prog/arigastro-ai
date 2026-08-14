@@ -699,8 +699,8 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
     async def _apply_price_to_ikas_inline(loop, ikas_fn, ikas_id, new_price_tl, floor_price, base_currency, price_lists):
         """Apply price to İkas using TCMB conversion — inline helper for category pricing."""
         gql = f'''{{ listProduct(id: {{eq: "{ikas_id}"}}) {{ data {{
-            categories {{ categoryId }}
-            brand {{ brandId }}
+            categories {{ id }}
+            brand {{ id }}
             variants {{ id prices {{ sellPrice discountPrice currency priceListId }} }}
         }} }} }}'''
         result = await loop.run_in_executor(None, ikas_fn, gql, None)
@@ -739,8 +739,8 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                 entry["sellPrice"] = new_price
             updated_prices.append(entry)
 
-        existing_cats = [c["categoryId"] for c in (pdata.get("categories") or [])]
-        existing_brand = (pdata.get("brand") or {}).get("brandId")
+        existing_cats = [c["id"] for c in (pdata.get("categories") or [])]
+        existing_brand = (pdata.get("brand") or {}).get("id")
         update_input = {"id": ikas_id, "variants": [{"id": variant["id"], "prices": updated_prices}]}
         if existing_cats:
             update_input["categoryIds"] = existing_cats
@@ -1394,8 +1394,8 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
             # Step 1: Fetch current İkas prices and variant info
             gql_query = f'''{{ listProduct(id: {{eq: "{ikas_id}"}}) {{ data {{
                 name
-                categories {{ categoryId }}
-                brand {{ brandId }}
+                categories {{ id }}
+                brand {{ id }}
                 variants {{ id prices {{ sellPrice discountPrice currency priceListId }} }}
             }} }} }}'''
             result = await loop.run_in_executor(None, ikas_graphql, gql_query, None)
@@ -1451,8 +1451,8 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                 updated_prices.append(price_entry)
 
             # Step 6: Build mutation preserving categories and brand
-            existing_cats = [c["categoryId"] for c in (product_data.get("categories") or [])]
-            existing_brand = (product_data.get("brand") or {}).get("brandId")
+            existing_cats = [c["id"] for c in (product_data.get("categories") or [])]
+            existing_brand = (product_data.get("brand") or {}).get("id")
 
             update_input = {
                 "id": ikas_id,
@@ -1553,8 +1553,8 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                         continue
 
                     gql_query = f'''{{ listProduct(id: {{eq: "{ikas_id}"}}) {{ data {{
-                        categories {{ categoryId }}
-                        brand {{ brandId }}
+                        categories {{ id }}
+                        brand {{ id }}
                         variants {{ id prices {{ sellPrice discountPrice currency priceListId }} }}
                     }} }} }}'''
                     result = await loop.run_in_executor(None, ikas_fn, gql_query, None)
@@ -1602,8 +1602,8 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                             entry["sellPrice"] = new_price
                         updated_prices.append(entry)
 
-                    existing_cats = [c["categoryId"] for c in (product_data.get("categories") or [])]
-                    existing_brand = (product_data.get("brand") or {}).get("brandId")
+                    existing_cats = [c["id"] for c in (product_data.get("categories") or [])]
+                    existing_brand = (product_data.get("brand") or {}).get("id")
                     update_input = {"id": ikas_id, "variants": [{"id": variant["id"], "prices": updated_prices}]}
                     if existing_cats:
                         update_input["categoryIds"] = existing_cats
@@ -1887,8 +1887,8 @@ async def _apply_price_to_ikas(loop, ikas_graphql, db, slug, ikas_id, new_price_
     from tcmb_exchange import convert_from_tl
 
     gql = f'''{{ listProduct(id: {{eq: "{ikas_id}"}}) {{ data {{
-        categories {{ categoryId }}
-        brand {{ brandId }}
+        categories {{ id }}
+        brand {{ id }}
         variants {{ id prices {{ sellPrice discountPrice currency priceListId }} }}
     }} }} }}'''
     result = await loop.run_in_executor(None, ikas_graphql, gql, None)
@@ -1932,8 +1932,8 @@ async def _apply_price_to_ikas(loop, ikas_graphql, db, slug, ikas_id, new_price_
             entry["sellPrice"] = new_price
         updated_prices.append(entry)
 
-    existing_cats = [c["categoryId"] for c in (pdata.get("categories") or [])]
-    existing_brand = (pdata.get("brand") or {}).get("brandId")
+    existing_cats = [c["id"] for c in (pdata.get("categories") or [])]
+    existing_brand = (pdata.get("brand") or {}).get("id")
     update_input = {"id": ikas_id, "variants": [{"id": variant["id"], "prices": updated_prices}]}
     if existing_cats:
         update_input["categoryIds"] = existing_cats
