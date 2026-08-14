@@ -16,6 +16,7 @@ const COMPETITOR_ICONS = {
   cafemarkt: { name: "CM", color: "#3b82f6", domain: "cafemarkt.com" },
   mutbex: { name: "MX", color: "#22c55e", domain: "mutbex.com" },
   hakbilenler: { name: "HB", color: "#a855f7", domain: "hakbilenler.com.tr" },
+  oguzmutfak: { name: "OM", color: "#ef4444", domain: "oguzmutfakonline.com" },
 };
 
 const CURRENCY_SYMBOLS = {
@@ -625,7 +626,7 @@ export default function CompetitorProductsPage() {
                 {/* Right Column: Competitor Matches */}
                 <div>
                   <h3 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-1.5">
-                    <Link2 className="h-4 w-4" /> Rakip Eşleştirmeleri ({matchDetail?.length || 0}/4)
+                    <Link2 className="h-4 w-4" /> Rakip Eşleştirmeleri ({matchDetail?.length || 0}/5)
                   </h3>
                   <div className="space-y-2">
                     {Object.entries(COMPETITOR_ICONS).map(([key, comp]) => {

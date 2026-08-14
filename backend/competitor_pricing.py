@@ -38,6 +38,12 @@ COMPETITORS = {
         "search_url": "https://shop.hakbilenler.com.tr/?s={query}&post_type=product",
         "search_needs_render": False,
     },
+    "oguzmutfak": {
+        "domain": "oguzmutfakonline.com", "name": "Oğuz Mutfak",
+        "base_url": "https://oguzmutfakonline.com",
+        "search_url": "https://oguzmutfakonline.com/arama?q={query}",
+        "search_needs_render": True,
+    },
 }
 
 
@@ -66,6 +72,7 @@ _PRODUCT_URL_PATTERNS = {
     "cafemarkt":   [],  # cafemarkt uses direct slugs like /product-name
     "mutbex":      [],  # mutbex uses direct slugs like /product-name
     "hakbilenler": ["/urun/"],
+    "oguzmutfak":  [],  # oguzmutfakonline.com uses direct slugs
 }
 
 # URL patterns to REJECT (category, search, homepage, pagination)
@@ -105,8 +112,8 @@ def _is_valid_product_url(url: str, competitor_key: str) -> bool:
         if not any(p in url_lower for p in required_patterns):
             return False
 
-    # For cafemarkt/mutbex: URL should have a meaningful slug (at least 10 chars after domain)
-    if competitor_key in ("cafemarkt", "mutbex"):
+    # For cafemarkt/mutbex/oguzmutfak: URL should have a meaningful slug (at least 10 chars after domain)
+    if competitor_key in ("cafemarkt", "mutbex", "oguzmutfak"):
         if len(path) < 10:
             return False
 
@@ -398,6 +405,11 @@ def _extract_price(soup: BeautifulSoup, competitor_key: str) -> float:
         "hakbilenler": [
             ".product-price", ".current-price", ".price",
             ".ty-price-num", "span.price", ".product_price",
+        ],
+        "oguzmutfak": [
+            ".peer-[.line-through\\:not\\(.\\!hidden\\)]\\/price\\:text-body",
+            ".price-control", ".product-price", ".current-price",
+            "span.price", ".discountedPrice", ".currentPrice",
         ],
     }
     
