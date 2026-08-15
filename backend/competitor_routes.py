@@ -508,6 +508,9 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         skipped = 0
 
         try:
+            # Force refresh exchange rates before pricing
+            force_refresh_rates()
+            logger.info(f"Category pricing [{category_name}]: Kur verileri güncellendi")
             # ===== PHASE 1: Refresh İkas prices for each product =====
             await db.system_status.update_one({"task": task_key}, {"$set": {"phase": "ikas_refresh"}})
             logger.info(f"Category pricing [{category_name}]: Phase 1 — İkas fiyat güncelleme ({len(products)} ürün)")
@@ -1016,7 +1019,10 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
     ):
         query = {"inactive": {"$ne": True}}
         if search:
-            query["name"] = {"$regex": search, "$options": "i"}
+            query["$or"] = [
+                {"name": {"$regex": search, "$options": "i"}},
+                {"sku": {"$regex": search, "$options": "i"}},
+            ]
         if category:
             query["category_path"] = {"$regex": category, "$options": "i"}
         if brand:
@@ -1064,6 +1070,17 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         for p in products:
             p["competitor_matches"] = match_map.get(p["slug"], {})
             p["match_count"] = len(p["competitor_matches"])
+            # Add converted competitor prices in product's base currency
+            base_cur = p.get("base_currency", "TRY")
+            if base_cur and base_cur != "TRY" and p.get("cheapest_competitor_price"):
+                p["cheapest_price_in_base"] = convert_from_tl(p["cheapest_competitor_price"], base_cur)
+            comp_prices = p.get("competitor_prices", {})
+            if comp_prices and base_cur and base_cur != "TRY":
+                converted = {}
+                for ck, cv in comp_prices.items():
+                    if isinstance(cv, dict) and cv.get("price"):
+                        converted[ck] = convert_from_tl(cv["price"], base_cur)
+                p["competitor_prices_in_base"] = converted
             # Parse top-level category from category_path for display
             cp = p.get("category_path", "")
             if cp:
@@ -1669,9 +1686,12 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
     from competitor_pricing import (
         COMPETITORS, scrape_all_competitor_prices, calculate_optimal_price,
     )
-    from tcmb_exchange import convert_from_tl, convert_to_tl
+    from tcmb_exchange import convert_from_tl, convert_to_tl, force_refresh_rates
     logger.info("CRON: Rakip fiyat taramasi basladi")
     try:
+        # Force refresh exchange rates before scan
+        force_refresh_rates()
+        logger.info("CRON: Kur verileri güncellendi")
         rules_list = await db.pricing_rules.find({"enabled": True}).to_list(100)
         rules_map = {r["category_name"]: r for r in rules_list}
         auto_update_cats = {r["category_name"] for r in rules_list if r.get("auto_update_ikas")}

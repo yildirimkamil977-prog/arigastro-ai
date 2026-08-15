@@ -9,16 +9,19 @@ import { Link } from "react-router-dom";
 export default function DashboardPage() {
   const [stats, setStats] = useState(null);
   const [scraperApi, setScraperApi] = useState(null);
+  const [currencyApi, setCurrencyApi] = useState(null);
   const [loading, setLoading] = useState(true);
 
   const fetchStats = async () => {
     try {
-      const [statsRes, scraperRes] = await Promise.all([
+      const [statsRes, scraperRes, currencyRes] = await Promise.all([
         axios.get(`${API}/dashboard/stats`, { headers: getAuthHeaders(), withCredentials: true }),
         axios.get(`${API}/scraperapi/account`, { headers: getAuthHeaders(), withCredentials: true }).catch(() => ({ data: {} })),
+        axios.get(`${API}/currencyapi/account`, { headers: getAuthHeaders(), withCredentials: true }).catch(() => ({ data: {} })),
       ]);
       setStats(statsRes.data);
       setScraperApi(scraperRes.data);
+      setCurrencyApi(currencyRes.data);
     } catch (err) {
       console.error("Dashboard stats error:", err);
     } finally {
@@ -144,6 +147,44 @@ export default function DashboardPage() {
                   Eslzamanli istek limiti: {scraperApi.concurrent_limit}
                 </div>
               )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* CurrencyAPI Credits */}
+      {currencyApi?.configured && !currencyApi?.error && (
+        <Card className="border-slate-200 shadow-sm" data-testid="currencyapi-credits-card">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-base font-semibold tracking-tight font-heading flex items-center gap-2">
+                <TrendingUp className="h-4 w-4 text-blue-500" />
+                CurrencyAPI Kredi Durumu
+              </CardTitle>
+              <a href="https://app.currencyapi.com" target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline flex items-center gap-1" data-testid="currencyapi-dashboard-link">
+                Dashboard <ArrowRight className="h-3 w-3" />
+              </a>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-slate-600">Kullanilan / Toplam</span>
+                <span className="text-sm font-semibold text-slate-900" data-testid="currencyapi-credits-text">
+                  {(currencyApi.used || 0).toLocaleString('tr-TR')} / {(currencyApi.total || 0).toLocaleString('tr-TR')}
+                </span>
+              </div>
+              <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-500 ${(currencyApi.used / currencyApi.total * 100) > 80 ? 'bg-red-500' : (currencyApi.used / currencyApi.total * 100) > 50 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                  style={{ width: `${Math.min((currencyApi.used || 0) / (currencyApi.total || 1) * 100, 100)}%` }}
+                  data-testid="currencyapi-credits-bar"
+                />
+              </div>
+              <div className="flex items-center justify-between text-xs text-slate-500">
+                <span>Kalan: <strong className={(currencyApi.remaining || 0) < 50 ? "text-red-600" : "text-emerald-600"}>{(currencyApi.remaining || 0).toLocaleString('tr-TR')}</strong> istek</span>
+                <span>%{Math.round((currencyApi.used || 0) / (currencyApi.total || 1) * 100)} kullanildi</span>
+              </div>
             </div>
           </CardContent>
         </Card>

@@ -382,7 +382,7 @@ export default function CompetitorProductsPage() {
           <div className="relative flex-1 min-w-[200px]">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
             <Input
-              placeholder="Ürün ara..."
+              placeholder="Ürün adı veya SKU ile ara..."
               defaultValue={search}
               onChange={e => handleSearch(e.target.value)}
               className="pl-9 h-9"
@@ -555,7 +555,16 @@ export default function CompetitorProductsPage() {
                     </div>
                   </div>
 
-                  {/* Safety warning */}
+                  {/* Safety warnings */}
+                  {detailProduct.price_recommendation?.action === "floor_hit" && (
+                    <div className="bg-orange-50 border border-orange-300 rounded-lg p-3 text-xs text-orange-800 flex items-start gap-2">
+                      <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                      <div>
+                        <strong>DİP FİYAT SINIRI!</strong> Rakip daha ucuz ama fiyat düşürülemedi — dip fiyat sınırına takıldı.
+                        <div className="mt-1 text-orange-600">{detailProduct.price_recommendation?.reason}</div>
+                      </div>
+                    </div>
+                  )}
                   {!detailProduct.floor_price && (
                     <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-700 flex items-center gap-2">
                       <AlertTriangle className="h-4 w-4 shrink-0" />
@@ -832,8 +841,16 @@ function ProductRow({
             <div className={`font-bold text-sm ${p.cheapest_competitor_price < (p.our_price || 0) ? "text-red-600" : "text-emerald-600"}`}>
               {formatPrice(p.cheapest_competitor_price)} ₺
             </div>
+            {p.cheapest_price_in_base && (
+              <div className="text-[10px] text-violet-600 font-medium">≈ {formatPrice(p.cheapest_price_in_base)} {getCurrencyLabel(p.base_currency)}</div>
+            )}
             <div className="text-[10px] text-slate-400 mt-0.5">{p.cheapest_competitor_name}</div>
-            {p.cheapest_competitor_price < (p.our_price || 0) && (
+            {p.price_recommendation?.action === "floor_hit" ? (
+              <div className="text-[10px] text-orange-600 font-bold flex items-center justify-center gap-0.5 mt-0.5 bg-orange-50 px-1.5 py-0.5 rounded border border-orange-200" title={p.price_recommendation?.reason}>
+                <AlertTriangle className="h-3 w-3" />
+                DİP FİYAT SINIRI
+              </div>
+            ) : p.cheapest_competitor_price < (p.our_price || 0) && (
               <div className="text-[10px] text-red-500 font-medium flex items-center justify-center gap-0.5 mt-0.5">
                 <AlertTriangle className="h-3 w-3" />
                 -{formatPrice((p.our_price || 0) - p.cheapest_competitor_price)} ₺

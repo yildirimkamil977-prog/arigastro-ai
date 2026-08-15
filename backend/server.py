@@ -2849,6 +2849,28 @@ async def get_scraperapi_account(user: dict = Depends(get_current_user)):
         logger.error(f"ScraperAPI account error: {e}")
         return {"configured": True, "error": str(e)}
 
+@api_router.get("/currencyapi/account")
+async def get_currencyapi_account(user: dict = Depends(get_current_user)):
+    """Get CurrencyAPI account info (quota usage)."""
+    currency_key = os.environ.get("CURRENCY_API_KEY", "")
+    if not currency_key:
+        return {"configured": False, "error": "CurrencyAPI key yapılandırılmamış"}
+    try:
+        import requests as req_sync
+        resp = req_sync.get(f"https://api.currencyapi.com/v3/status?apikey={currency_key}", timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            month = data.get("quotas", {}).get("month", {})
+            return {
+                "configured": True,
+                "total": month.get("total", 0),
+                "used": month.get("used", 0),
+                "remaining": month.get("remaining", 0),
+            }
+        return {"configured": True, "error": f"HTTP {resp.status_code}"}
+    except Exception as e:
+        return {"configured": True, "error": str(e)}
+
 # ============ USER MANAGEMENT ============
 
 class CreateUserRequest(BaseModel):
