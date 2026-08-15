@@ -759,19 +759,6 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         }}
         await loop.run_in_executor(None, ikas_fn, mutation1, variables1)
 
-        # 2. Update variant sellPrice (top "Satış Fiyatı" in İkas panel)
-        mutation2 = """mutation UpdateProduct($input: UpdateProductInput!) {
-            updateProduct(input: $input) { id }
-        }"""
-        variables2 = {"input": {
-            "id": ikas_id,
-            "variants": [{"id": variant["id"], "prices": [{"sellPrice": new_price, "currency": target_currency}]}]
-        }}
-        try:
-            await loop.run_in_executor(None, ikas_fn, mutation2, variables2)
-        except Exception as e:
-            logger.warning(f"Variant sellPrice update failed for {ikas_id}: {e}")
-
         return True
     
     # --- Get matches for a product ---
@@ -1938,19 +1925,6 @@ async def _apply_price_to_ikas(loop, ikas_graphql, db, slug, ikas_id, new_price_
         }]
     }}
     await loop.run_in_executor(None, ikas_graphql, mutation1, variables1)
-
-    # 2. Update variant sellPrice (top "Satış Fiyatı")
-    try:
-        mutation2 = """mutation UpdateProduct($input: UpdateProductInput!) {
-            updateProduct(input: $input) { id }
-        }"""
-        variables2 = {"input": {
-            "id": ikas_id,
-            "variants": [{"id": variant["id"], "prices": [{"sellPrice": new_price, "currency": target_currency}]}]
-        }}
-        await loop.run_in_executor(None, ikas_graphql, mutation2, variables2)
-    except Exception as e:
-        logger.warning(f"Variant sellPrice update failed for {ikas_id}: {e}")
 
     # Update price_updated_at for 23-hour protection
     await db.products.update_one({"ikas_product_id": ikas_id}, {"$set": {"price_updated_at": datetime.now(timezone.utc).isoformat()}})
