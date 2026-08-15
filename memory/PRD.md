@@ -8,16 +8,23 @@
 5. Oğuz Mutfak — oguzmutfakonline.com
 
 ## İkas Price Update Method
-- `updateVariantPrices` for price list (EUR/USD/TL)
-- `updateProduct` ONLY for SEO/description updates — MUST always fetch and preserve existing `categories` and `brand` first
-- Price updates NEVER use `updateProduct` — only `updateVariantPrices`
+- `updateVariantPrices` for price list (EUR/USD/TL) — SAFE
+- `updateProduct` ONLY for SEO/description — ALWAYS fetches and preserves categories+brand
+- **CRITICAL FIX (2026-08-15):** `ikas_update_product` now ABORTS if it can't fetch current product data. Previously it silently continued with empty categories, causing category wipes during bulk SEO operations.
 - competitor_routes.py has NO `updateProduct` calls (confirmed safe)
 
 ## İkas Category Safety Rules
-- `updateProduct` WITHOUT `categories` field WIPES all product categories
+- `updateProduct` WITHOUT `categories` field WIPES all product categories (İkas behavior)
 - Always fetch current categories before any `updateProduct` call
-- Category restoration script: `/app/backend/restore_categories.py` (additive, preserves existing)
-- 19 missing categories were created on 2026-08-15
+- If fetch fails → ABORT update entirely (never proceed with unknown state)
+- Restoration scripts: `/app/backend/restore_categories.py`, `/app/backend/fix_hierarchy.py`
+
+## Category Restoration Log (2026-08-15)
+- 19 missing categories CREATED in İkas
+- 185 products had missing category assignments FIXED (additive)
+- 137 category parent-child hierarchies FIXED via updateCategory
+- 6 empty root-level duplicates remain (İkas API timeout on delete — can delete from İkas panel)
+- Root cause fixed: `ikas_update_product` no longer silently wipes categories on fetch failure
 
 ## Safety Features
 - Floor price (Dip Fiyat) in original currency
@@ -55,8 +62,10 @@
 - ✅ Category-based manual "Çalıştır" button
 - ✅ Turkish price parsing fix
 - ✅ 30% unreliable price filter
-- ✅ Kategori kurtarma tamamlandı (2026-08-15): 19 yeni kategori, 185 ürün güncellendi
+- ✅ Category restoration (19 created, 185 products fixed, 137 hierarchies fixed)
+- ✅ ikas_update_product safety fix (abort on fetch failure)
 
 ## Pending Tasks
 - P1: Haftalık/aylık fiyat değişim özet raporu
 - P2: server.py refactoring (4300+ satır → modüler yapı)
+- P3: 6 boş duplicate kategori silme (İkas panelden veya API retry ile)

@@ -1343,8 +1343,11 @@ def ikas_search_product(product_name: str) -> list:
     return products
 
 def ikas_update_product(product_id: str, meta_title: str = None, meta_description: str = None, description: str = None) -> dict:
-    """Update product SEO fields in İkas — preserves existing categories and other data."""
-    # First, fetch the product's current categories to preserve them
+    """Update product SEO fields in İkas — ALWAYS preserves categories and brand.
+    CRITICAL: If we cannot fetch the product's current data, we ABORT the update
+    entirely to prevent wiping categories/brand. Never proceed with unknown state.
+    """
+    # Step 1: MUST fetch current product data — ABORT on failure
     fetch_query = """
     query GetProduct($id: StringFilterInput!) {
         listProduct(id: $id) { data { id categories { id name } brand { id name } } }
@@ -1352,33 +1355,36 @@ def ikas_update_product(product_id: str, meta_title: str = None, meta_descriptio
     """
     try:
         current = ikas_graphql(fetch_query, {"id": {"eq": product_id}})
-        product_data = (current.get("listProduct", {}).get("data", []) or [{}])[0]
+        products_list = current.get("listProduct", {}).get("data", [])
+        if not products_list:
+            raise Exception(f"Urun Ikas'ta bulunamadi (ID: {product_id})")
+        product_data = products_list[0]
         current_categories = product_data.get("categories", [])
         current_brand = product_data.get("brand")
-    except Exception:
-        current_categories = []
-        current_brand = None
-    
+    except Exception as e:
+        # ABORT — never update with unknown category state
+        logger.error(f"ikas_update_product IPTAL: Mevcut veri alinamadi ({product_id}): {e}")
+        raise Exception(f"SEO guncelleme iptal edildi — urun verisi alinamadi: {e}")
+
     mutation = """
     mutation UpdateProduct($input: UpdateProductInput!) {
         updateProduct(input: $input) { id name updatedAt }
     }
     """
     input_data = {"id": product_id}
-    
-    # Preserve existing categories (using name, not id)
-    if current_categories:
-        input_data["categories"] = [{"name": c["name"]} for c in current_categories if c.get("name")]
-    
-    # Preserve existing brand (using name, not id)
+
+    # ALWAYS include categories — even empty list to be explicit
+    input_data["categories"] = [{"name": c["name"]} for c in current_categories if c.get("name")]
+
+    # ALWAYS include brand
     if current_brand and current_brand.get("name"):
         input_data["brand"] = {"name": current_brand["name"]}
-    
+
     # Product description (main body)
     if description is not None:
         input_data["description"] = description[:32000]
-    
-    # SEO meta data (pageTitle + description)
+
+    # SEO meta data
     meta_data = {}
     if meta_title is not None:
         meta_data["pageTitle"] = meta_title[:256]
@@ -1386,7 +1392,7 @@ def ikas_update_product(product_id: str, meta_title: str = None, meta_descriptio
         meta_data["description"] = meta_description[:320]
     if meta_data:
         input_data["metaData"] = meta_data
-    
+
     return ikas_graphql(mutation, {"input": input_data})
 
 class IkasSearchRequest(BaseModel):
