@@ -1343,42 +1343,17 @@ def ikas_search_product(product_name: str) -> list:
     return products
 
 def ikas_update_product(product_id: str, meta_title: str = None, meta_description: str = None, description: str = None) -> dict:
-    """Update product SEO fields in İkas — ALWAYS preserves categories and brand.
-    CRITICAL: If we cannot fetch the product's current data, we ABORT the update
-    entirely to prevent wiping categories/brand. Never proceed with unknown state.
+    """Update ONLY SEO/description fields in Ikas.
+    CRITICAL: Do NOT send categories or brand fields.
+    Ikas preserves them automatically when omitted.
+    Sending categories by name causes ghost duplicates for same-name categories.
     """
-    # Step 1: MUST fetch current product data — ABORT on failure
-    fetch_query = """
-    query GetProduct($id: StringFilterInput!) {
-        listProduct(id: $id) { data { id categories { id name } brand { id name } } }
-    }
-    """
-    try:
-        current = ikas_graphql(fetch_query, {"id": {"eq": product_id}})
-        products_list = current.get("listProduct", {}).get("data", [])
-        if not products_list:
-            raise Exception(f"Urun Ikas'ta bulunamadi (ID: {product_id})")
-        product_data = products_list[0]
-        current_categories = product_data.get("categories", [])
-        current_brand = product_data.get("brand")
-    except Exception as e:
-        # ABORT — never update with unknown category state
-        logger.error(f"ikas_update_product IPTAL: Mevcut veri alinamadi ({product_id}): {e}")
-        raise Exception(f"SEO guncelleme iptal edildi — urun verisi alinamadi: {e}")
-
     mutation = """
     mutation UpdateProduct($input: UpdateProductInput!) {
         updateProduct(input: $input) { id name updatedAt }
     }
     """
     input_data = {"id": product_id}
-
-    # ALWAYS include categories — even empty list to be explicit
-    input_data["categories"] = [{"name": c["name"]} for c in current_categories if c.get("name")]
-
-    # ALWAYS include brand
-    if current_brand and current_brand.get("name"):
-        input_data["brand"] = {"name": current_brand["name"]}
 
     # Product description (main body)
     if description is not None:
