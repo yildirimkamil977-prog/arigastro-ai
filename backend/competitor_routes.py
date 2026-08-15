@@ -842,7 +842,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
             while True:
                 query = """query ListProducts($pagination: PaginationInput) {
                     listProduct(pagination: $pagination) {
-                        data { id name variants { id sku prices { sellPrice currency priceListId } } }
+                        data { id name categories { id name } brand { name } variants { id sku prices { sellPrice currency priceListId } } }
                         count
                     }
                 }"""
@@ -874,7 +874,10 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                             base_currency, base_price, price_list_id = "USD", sell, plid
                         elif cur == "TRY" and not base_currency:
                             base_currency, base_price, price_list_id = "TRY", sell, plid
-                    info = {"ikas_id": ikas_id, "ikas_name": name, "sku": sku, "base_currency": base_currency, "base_price": base_price, "price_list_id": price_list_id}
+                    # Extract categories and brand from Ikas
+                    ikas_categories = [{"id": c.get("id",""), "name": c.get("name","")} for c in ip.get("categories", []) if c.get("name")]
+                    ikas_brand = (ip.get("brand") or {}).get("name", "")
+                    info = {"ikas_id": ikas_id, "ikas_name": name, "sku": sku, "base_currency": base_currency, "base_price": base_price, "price_list_id": price_list_id, "ikas_categories": ikas_categories, "ikas_brand": ikas_brand}
                     ikas_products_map[normalize_name(name)] = info
                     ikas_products_by_id[ikas_id] = info
                     total_fetched += 1
@@ -920,6 +923,10 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                 if match:
                     matched_ikas_ids.add(match["ikas_id"])
                     uf = {"ikas_product_id": match["ikas_id"], "sku": match.get("sku", ""), "inactive": False, "feed_active": True}
+                    if match.get("ikas_categories"):
+                        uf["ikas_categories"] = match["ikas_categories"]
+                    if match.get("ikas_brand"):
+                        uf["ikas_brand"] = match["ikas_brand"]
                     if match.get("base_currency") and match.get("base_price"):
                         uf["base_currency"] = match["base_currency"]
                         uf["base_price"] = match["base_price"]
@@ -943,6 +950,8 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                 new_doc = {
                     "slug": slug_candidate, "name": name, "ikas_product_id": ikas_id,
                     "sku": info.get("sku", ""),
+                    "ikas_categories": info.get("ikas_categories", []),
+                    "ikas_brand": info.get("ikas_brand", ""),
                     "base_currency": info.get("base_currency"), "base_price": info.get("base_price"),
                     "price_list_id": info.get("price_list_id"),
                     "our_price": convert_to_tl(info["base_price"], info["base_currency"]) if info.get("base_price") and info.get("base_currency") and info["base_currency"] != "TRY" else info.get("base_price"),
@@ -958,6 +967,20 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                 lid = lp.get("ikas_product_id")
                 if lid and lid not in active_ikas_ids:
                     await db.products.update_one({"slug": lp["slug"]}, {"$set": {"inactive": True, "feed_active": False}})
+
+            # Also sync Ikas category tree to local DB
+            try:
+                cat_result = await loop.run_in_executor(None, ikas_fn, "{ listCategory { id name parentId } }", None)
+                ikas_cats = cat_result.get("listCategory", [])
+                if ikas_cats:
+                    await db.ikas_categories.delete_many({})
+                    await db.ikas_categories.insert_many([
+                        {"cat_id": c["id"], "name": c["name"], "parentId": c.get("parentId"), "synced_at": datetime.now(timezone.utc).isoformat()}
+                        for c in ikas_cats
+                    ])
+                    logger.info(f"İkas category sync: {len(ikas_cats)} categories synced")
+            except Exception as e:
+                logger.error(f"İkas category sync error: {e}")
 
             await db.system_status.update_one({"task": task_key}, {"$set": {
                 "running": False, "phase": "done", "progress": progress, "updated": updated,
