@@ -1034,9 +1034,20 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                 {"sku": {"$regex": search, "$options": "i"}},
             ]
         if category:
-            query["category_path"] = {"$regex": category, "$options": "i"}
+            query["$or"] = query.get("$or", []) + [] if "$or" not in query else []
+            query["$and"] = query.get("$and", [])
+            query["$and"].append({"$or": [
+                {"ikas_categories.name": category},
+                {"category_path": {"$regex": category, "$options": "i"}},
+            ]})
         if brand:
-            query["brand"] = {"$regex": f"^{brand}$", "$options": "i"}
+            query["$or"] = query.get("$or", []) + [] if "$or" not in query else []
+            if "$and" not in query:
+                query["$and"] = []
+            query["$and"].append({"$or": [
+                {"ikas_brand": {"$regex": f"^{brand}$", "$options": "i"}},
+                {"brand": {"$regex": f"^{brand}$", "$options": "i"}},
+            ]})
         
         skip = (page - 1) * limit
 
@@ -1091,26 +1102,55 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                     if isinstance(cv, dict) and cv.get("price"):
                         converted[ck] = convert_from_tl(cv["price"], base_cur)
                 p["competitor_prices_in_base"] = converted
-            # Parse top-level category from category_path for display
-            cp = p.get("category_path", "")
-            if cp:
-                first_segment = cp.split(",")[0].strip()
-                if first_segment != "Tüm Ürünler":
-                    parts = [x.strip() for x in first_segment.split(">")]
-                    p["category"] = parts[0] if parts else ""
-                    p["subcategory"] = parts[1] if len(parts) > 1 else ""
+            # Use ikas_categories for category display (fallback to category_path)
+            ikas_cats = p.get("ikas_categories", [])
+            if ikas_cats:
+                cat_names = [c["name"] for c in ikas_cats if c.get("name") and c["name"] != "Tüm Ürünler"]
+                p["category"] = cat_names[0] if cat_names else ""
+                p["subcategory"] = cat_names[1] if len(cat_names) > 1 else ""
+            else:
+                cp = p.get("category_path", "")
+                if cp:
+                    first_segment = cp.split(",")[0].strip()
+                    if first_segment != "Tüm Ürünler":
+                        parts = [x.strip() for x in first_segment.split(">")]
+                        p["category"] = parts[0] if parts else ""
+                        p["subcategory"] = parts[1] if len(parts) > 1 else ""
+                    else:
+                        p["category"] = ""
+                        p["subcategory"] = ""
                 else:
                     p["category"] = ""
                     p["subcategory"] = ""
-            else:
-                p["category"] = ""
-                p["subcategory"] = ""
+
+            # Use ikas_brand for brand display (fallback to brand)
+            if p.get("ikas_brand"):
+                p["brand"] = p["ikas_brand"]
         
-        # Get unique categories and brands for filters
-        all_paths = await db.products.distinct("category_path", {"inactive": {"$ne": True}})
-        top_categories, sub_categories = _parse_categories_from_paths(all_paths)
-        brands = await db.products.distinct("brand", {"inactive": {"$ne": True}})
-        brands = sorted([b for b in brands if b])
+        # Get unique categories and brands from ikas data (with fallback to old fields)
+        ikas_cat_names = set()
+        ikas_brand_names = set()
+        async for doc in db.products.find({"inactive": {"$ne": True}}, {"ikas_categories": 1, "ikas_brand": 1, "category_path": 1, "brand": 1}):
+            for c in doc.get("ikas_categories", []):
+                if c.get("name") and c["name"] != "Tüm Ürünler":
+                    ikas_cat_names.add(c["name"])
+            if doc.get("ikas_brand"):
+                ikas_brand_names.add(doc["ikas_brand"])
+            # Fallback for products without ikas data
+            if not doc.get("ikas_categories"):
+                cp = doc.get("category_path", "")
+                if cp:
+                    for seg in cp.split(","):
+                        for part in seg.strip().split(">"):
+                            part = part.strip()
+                            if part and part != "Tüm Ürünler":
+                                ikas_cat_names.add(part)
+            if not doc.get("ikas_brand") and doc.get("brand"):
+                ikas_brand_names.add(doc["brand"])
+
+        top_categories = sorted(ikas_cat_names)
+        sub_categories = []  # Flat list from ikas, no sub needed
+        brands = sorted(ikas_brand_names)
         
         return {
             "products": products,
