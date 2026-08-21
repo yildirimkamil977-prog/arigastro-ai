@@ -366,15 +366,16 @@ DOLDURULACAK FİLTRELER: {json.dumps(filter_names, ensure_ascii=False)}
 
 KURALLAR:
 1. Ürün adından, SKU'dan ve açıklamadan bilgi çıkar
-2. Ürün adında model numarası, boyut, kapasite gibi bilgiler varsa kullan
-3. Açıklamadaki teknik tablolar ve özellik listelerinden veri çek
-4. Eğer filtre bu ürüne hiç uygun değilse (örn: çekmeceli ürüne "Kapı Sayısı") o filtreyi ATLAMA
+2. SADECE açıklamada veya ürün adında açıkça belirtilen bilgileri kullan
+3. TAHMİN YAPMA — emin olmadığın değerleri EKLEME
+4. Eğer filtre bu ürüne hiç uygun değilse o filtreyi ATLAMA
 5. Değerler kısa ve net olsun (örn: "220V", "Paslanmaz Çelik", "150 Litre", "Çift")
-6. Mümkün olduğunca ÇOK filtre doldur — belirsiz olsa bile makul bir çıkarım yap
+6. Açıklamadaki teknik tablolar ve özellik listelerinden veri çek
+7. Bu filtreler müşterilerin satın alma kararını yönlendirecek — DOĞRULUK kritik önemde
 
 CEVABINI SADECE JSON OLARAK VER:
 {{"Filtre Adı": "Değer", "Başka Filtre": "Değer"}}
-Uygun olmayan filtreler için anahtar EKLEME."""
+Uygun olmayan veya emin olmadığın filtreler için anahtar EKLEME."""
 
                 ai_result = await ai_analyze(prompt)
                 ai_result = ai_result.strip()
