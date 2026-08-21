@@ -27,7 +27,31 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 IKAS_CLIENT_ID = os.environ.get("IKAS_CLIENT_ID")
 IKAS_CLIENT_SECRET = os.environ.get("IKAS_CLIENT_SECRET")
 
+TEKNIK_OZELLIKLER_ATTR_ID = "0e243181-b2d4-4b4c-aed6-c79a953f3208"
+
 _mongo_client = None
+
+
+def build_specs_html(filter_values):
+    """Build a clean HTML table from filter name-value pairs for Teknik Özellikler."""
+    if not filter_values:
+        return ""
+    rows = ""
+    for i, fv in enumerate(filter_values):
+        bg = "#f8f9fa" if i % 2 == 0 else "#ffffff"
+        rows += (
+            f'<tr style="background:{bg}">'
+            f'<td style="padding:10px 14px;border:1px solid #e2e8f0;font-weight:600;color:#334155;width:40%">{fv["name"]}</td>'
+            f'<td style="padding:10px 14px;border:1px solid #e2e8f0;color:#475569">{fv["value"]}</td>'
+            f'</tr>'
+        )
+    return (
+        '<table style="width:100%;border-collapse:collapse;font-size:14px;font-family:inherit">'
+        '<thead><tr style="background:#1e293b">'
+        '<th style="padding:10px 14px;text-align:left;color:#fff;border:1px solid #1e293b">Özellik</th>'
+        '<th style="padding:10px 14px;text-align:left;color:#fff;border:1px solid #1e293b">Değer</th>'
+        f'</tr></thead><tbody>{rows}</tbody></table>'
+    )
 
 
 def get_db():
@@ -419,15 +443,18 @@ Uygun olmayan veya emin olmadığın filtreler için anahtar EKLEME."""
                         added_filters.append({"name": fname, "value": fvalue_str})
 
                 # Apply to Ikas
-                if attr_updates:
+                if attr_updates or added_filters:
                     # Get existing attributes first to preserve them
-                    existing = ikas_gql('{listProduct(id:{eq:"' + ikas_id + '"}){data{attributes{productAttributeId productAttributeOptionId}}}}')
+                    existing = ikas_gql('{listProduct(id:{eq:"' + ikas_id + '"}){data{attributes{productAttributeId productAttributeOptionId value}}}}')
                     existing_attrs_prod = (existing.get("listProduct", {}).get("data", []) or [{}])[0].get("attributes", [])
 
                     # Merge: keep existing + add new
                     merged = {}
                     for ea in existing_attrs_prod:
                         aid = ea["productAttributeId"]
+                        if aid == TEKNIK_OZELLIKLER_ATTR_ID:
+                            # Preserve existing Teknik Özellikler for merging
+                            continue
                         if aid not in merged:
                             merged[aid] = {"productAttributeId": aid, "productAttributeOptionIds": []}
                         if ea.get("productAttributeOptionId"):
@@ -436,6 +463,14 @@ Uygun olmayan veya emin olmadığın filtreler için anahtar EKLEME."""
                     for au in attr_updates:
                         aid = au["productAttributeId"]
                         merged[aid] = au
+
+                    # Build Teknik Özellikler HTML table from ALL extracted filters
+                    if added_filters:
+                        specs_html = build_specs_html(added_filters)
+                        merged[TEKNIK_OZELLIKLER_ATTR_ID] = {
+                            "productAttributeId": TEKNIK_OZELLIKLER_ATTR_ID,
+                            "value": specs_html,
+                        }
 
                     ikas_gql(
                         "mutation U($i:UpdateProductAndVariantAttributesInput!){updateProductAndVariantAttributes(input:$i){id}}",
