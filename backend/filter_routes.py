@@ -71,23 +71,21 @@ def ikas_gql(q, v=None):
 
 # --- AI helper ---
 async def ai_analyze(prompt, system_msg="Sen endüstriyel mutfak ekipmanları uzmanısın."):
-    from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
-    api_key = OPENAI_API_KEY or EMERGENT_LLM_KEY
+    from openai import OpenAI
+    api_key = OPENAI_API_KEY
     if not api_key:
-        raise Exception("AI API anahtarı bulunamadı (OPENAI_API_KEY veya EMERGENT_LLM_KEY)")
-    chat = LlmChat(
-        api_key=api_key,
-        session_id=f"filter-{uuid.uuid4().hex[:8]}",
-        system_message=system_msg,
-    ).with_model("openai", "gpt-4o")
-
-    result = ""
-    async for ev in chat.stream_message(UserMessage(text=prompt)):
-        if isinstance(ev, TextDelta):
-            result += ev.content
-        elif isinstance(ev, StreamDone):
-            break
-    return result
+        raise Exception("AI API anahtarı bulunamadı (OPENAI_API_KEY)")
+    client = OpenAI(api_key=api_key)
+    loop = asyncio.get_event_loop()
+    response = await loop.run_in_executor(None, lambda: client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.3,
+    ))
+    return response.choices[0].message.content
 
 
 # --- Auth dependency (reuse from server) ---
