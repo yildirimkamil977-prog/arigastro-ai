@@ -4,7 +4,7 @@ import { useNavigate, useLocation, Link } from "react-router-dom";
 import { Button } from "./ui/button";
 import {
   LayoutDashboard, Package, Tags, TrendingDown, FileText,
-  ChevronLeft, ChevronRight, LogOut, Menu, Sparkles, Settings, BookOpen, Send, Brain, BarChart3, Building2, Radar, History
+  ChevronLeft, ChevronRight, LogOut, Menu, Sparkles, Settings, BookOpen, Send, Brain, BarChart3, Building2, Radar, History, SlidersHorizontal
 } from "lucide-react";
 
 const navItems = [
@@ -17,6 +17,7 @@ const navItems = [
   { path: "/seo", label: "SEO Uretici", icon: FileText },
   { path: "/seo-logs", label: "Toplu SEO", icon: Send },
   { path: "/brand-category-seo", label: "Marka/Kategori SEO", icon: Building2 },
+  { path: "/filter-management", label: "Filtre Yonetimi", icon: SlidersHorizontal },
   { path: "/marketing", label: "AI Pazarlama", icon: Brain },
   { path: "/reports", label: "Analiz & Rapor", icon: BarChart3 },
   { path: "/settings", label: "Ayarlar", icon: Settings },

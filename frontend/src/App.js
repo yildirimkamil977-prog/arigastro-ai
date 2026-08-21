@@ -17,6 +17,7 @@ import ReportsPage from "./pages/ReportsPage";
 import BrandCategorySeoPage from "./pages/BrandCategorySeoPage";
 import GuidePage from "./pages/GuidePage";
 import SettingsPage from "./pages/SettingsPage";
+import FilterManagementPage from "./pages/FilterManagementPage";
 import "./App.css";
 
 function ProtectedRoute({ children }) {
@@ -62,6 +63,7 @@ function App() {
           <Route path="/reports" element={<ProtectedRoute><ReportsPage /></ProtectedRoute>} />
           <Route path="/brand-category-seo" element={<ProtectedRoute><BrandCategorySeoPage /></ProtectedRoute>} />
           <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
+          <Route path="/filter-management" element={<ProtectedRoute><FilterManagementPage /></ProtectedRoute>} />
           <Route path="/guide" element={<ProtectedRoute><GuidePage /></ProtectedRoute>} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>

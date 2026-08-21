@@ -4106,6 +4106,10 @@ async def root():
 from competitor_routes import setup_competitor_routes, router as competitor_router, run_scheduled_competitor_scan, _apply_price_to_ikas
 setup_competitor_routes(db, get_current_user, ikas_graphql)
 api_router.include_router(competitor_router)
+
+from filter_routes import router as filter_router
+api_router.include_router(filter_router)
+
 app.include_router(api_router)
 
 
