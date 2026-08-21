@@ -23,6 +23,7 @@ router = APIRouter(prefix="/filters", tags=["filters"])
 MONGO_URL = os.environ.get("MONGO_URL")
 DB_NAME = os.environ.get("DB_NAME", "arigastro")
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 IKAS_CLIENT_ID = os.environ.get("IKAS_CLIENT_ID")
 IKAS_CLIENT_SECRET = os.environ.get("IKAS_CLIENT_SECRET")
 
@@ -71,11 +72,14 @@ def ikas_gql(q, v=None):
 # --- AI helper ---
 async def ai_analyze(prompt, system_msg="Sen endüstriyel mutfak ekipmanları uzmanısın."):
     from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
+    api_key = OPENAI_API_KEY or EMERGENT_LLM_KEY
+    if not api_key:
+        raise Exception("AI API anahtarı bulunamadı (OPENAI_API_KEY veya EMERGENT_LLM_KEY)")
     chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
+        api_key=api_key,
         session_id=f"filter-{uuid.uuid4().hex[:8]}",
         system_message=system_msg,
-    ).with_model("openai", "gpt-5.4")
+    ).with_model("openai", "gpt-4o")
 
     result = ""
     async for ev in chat.stream_message(UserMessage(text=prompt)):
