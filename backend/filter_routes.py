@@ -444,18 +444,50 @@ JSON CEVAP:
                     filter_values = parsed
                     spec_values = parsed
 
-                # Build Ikas attribute update from filter values
+                # Merge filter_values into spec_values (specs is the master list)
+                all_values = dict(spec_values)
+                for fname, fvalue in filter_values.items():
+                    if fname not in all_values:
+                        all_values[fname] = fvalue
+
+                # Build Ikas attribute updates for ALL values (both filters and specs)
                 attr_updates = []
                 added_filters = []
-                for fname, fvalue in filter_values.items():
-                    if fname not in filter_map:
-                        continue
-                    fdata = filter_map[fname]
+                for fname, fvalue in all_values.items():
                     fvalue_str = str(fvalue).strip()
                     if not fvalue_str:
                         continue
 
-                    # Check if option exists, if not create it
+                    # Check if this attribute exists in filter_map
+                    if fname not in filter_map:
+                        # Auto-create the attribute in İkas
+                        try:
+                            # Check if it already exists in İkas (might have been created by another product)
+                            existing_attrs_refresh = ikas_gql("{listProductAttribute{id name type}}").get("listProductAttribute", [])
+                            existing_match = next((a for a in existing_attrs_refresh if a["name"] == fname), None)
+                            if existing_match:
+                                filter_map[fname] = {
+                                    "id": existing_match["id"],
+                                    "options": {},
+                                }
+                            else:
+                                res = ikas_gql(
+                                    "mutation C($i:CreateProductAttributeInput!){createProductAttribute(input:$i){id name options{id name}}}",
+                                    {"i": {"name": fname, "type": "MULTIPLE_CHOICE", "options": [{"name": fvalue_str}]}},
+                                )
+                                new_attr = res.get("createProductAttribute", {})
+                                filter_map[fname] = {
+                                    "id": new_attr["id"],
+                                    "options": {o["name"]: o["id"] for o in new_attr.get("options", [])},
+                                }
+                                logger.info(f"Auto-created filter: {fname}")
+                        except Exception as e:
+                            logger.warning(f"Could not create filter '{fname}': {e}")
+                            continue
+
+                    fdata = filter_map[fname]
+
+                    # Ensure option exists
                     if fvalue_str not in fdata["options"]:
                         try:
                             res = ikas_gql(
@@ -478,7 +510,7 @@ JSON CEVAP:
                         added_filters.append({"name": fname, "value": fvalue_str})
 
                 # Apply to Ikas
-                if attr_updates or added_filters:
+                if attr_updates:
                     # Get existing attributes first to preserve them
                     existing = ikas_gql('{listProduct(id:{eq:"' + ikas_id + '"}){data{attributes{productAttributeId productAttributeOptionId value}}}}')
                     existing_attrs_prod = (existing.get("listProduct", {}).get("data", []) or [{}])[0].get("attributes", [])
@@ -488,7 +520,6 @@ JSON CEVAP:
                     for ea in existing_attrs_prod:
                         aid = ea["productAttributeId"]
                         if aid == TEKNIK_OZELLIKLER_ATTR_ID:
-                            # Preserve existing Teknik Özellikler for merging
                             continue
                         if aid not in merged:
                             merged[aid] = {"productAttributeId": aid, "productAttributeOptionIds": []}
@@ -499,21 +530,9 @@ JSON CEVAP:
                         aid = au["productAttributeId"]
                         merged[aid] = au
 
-                    # Build Teknik Özellikler HTML table from ALL extracted specs
-                    all_specs = []
-                    # First add spec_values (comprehensive technical specs)
-                    for sname, svalue in spec_values.items():
-                        svalue_str = str(svalue).strip()
-                        if svalue_str:
-                            all_specs.append({"name": sname, "value": svalue_str})
-                    # Add any filter values not already in specs
-                    spec_names = {s["name"] for s in all_specs}
-                    for af in added_filters:
-                        if af["name"] not in spec_names:
-                            all_specs.append(af)
-
-                    if all_specs:
-                        specs_html = build_specs_html(all_specs)
+                    # Build Teknik Özellikler HTML table from all specs (same data as filters)
+                    if added_filters:
+                        specs_html = build_specs_html(added_filters)
                         merged[TEKNIK_OZELLIKLER_ATTR_ID] = {
                             "productAttributeId": TEKNIK_OZELLIKLER_ATTR_ID,
                             "value": specs_html,
