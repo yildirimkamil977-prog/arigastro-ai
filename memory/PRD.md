@@ -1,21 +1,45 @@
-# Arıgastro Rakip Fiyat Takip & SEO Sistemi — PRD
+# ARI AI - Ürün Gereksinimleri Belgesi (PRD)
 
-## İkas Category Safety Rules (CRITICAL)
-- `ikas_update_product` artık veri çekilemezse güncellemeyi İPTAL ediyor
-- `updateProduct` categories alanı İSİM bazlı çalışıyor — aynı isimli birden fazla kategori varsa YENİ KATEGORİ YARATIYOR
-- 600/700/900 Seri alt kategorileri (Fritözler, Izgaralar vb.) İkas API ile güvenle güncellenemez
-- Bu ürünler İkas admin panelden düzeltilmeli
+## Orijinal Problem
+E-ticaret rakip fiyat takip uygulaması (Arıgastro vs rakipler: Akakçe, Mutfak10, Mutbex, Cafemarkt, Hakbilenler, Oğuz Mutfak). Sistem rakip fiyatlarını ScraperAPI ile takip eder, ürünleri eşleştirir ve İkas e-ticaret platformu fiyatını rakiplerden ucuz olacak şekilde günceller. "Dip Fiyat" (floor price) koruması altında.
 
-## Category Restoration Log (2026-08-15)
-- 19 eksik kategori oluşturuldu
-- 137 kategori hiyerarşisi düzeltildi (parentId, açıklama/SEO korundu)
-- 185 + 112 = 297 ürünün eksik kategorileri eklendi
-- 268 ürünün yanlış kategori ID'leri düzeltildi
-- 19 root-level duplicate kategori devre dışı bırakıldı (_SLINECEK_ prefix)
-- Root cause: ikas_update_product'ta silent category wipe düzeltildi
-- **175 ürün İkas panelden düzeltilmeli** (600/700/900 Seri alt kategorileri)
+## Teknoloji Stack
+- **Frontend**: React 19, Tailwind CSS, Shadcn/UI
+- **Backend**: FastAPI (Python 3.11)
+- **Veritabanı**: MongoDB
+- **Entegrasyonlar**: İkas GraphQL API, ScraperAPI, OpenAI GPT-4o, CurrencyAPI, TCMB Kur
 
-## Competitors (5)
+## Temel Özellikler
+
+### Tamamlanan Özellikler ✅
+- Multi-currency desteği (EUR/USD/TL) - CurrencyAPI entegrasyonu
+- 5 rakip sitesi sistemi (Mutfak10, Cafemarkt, Mutbex, Hakbilenler, Oğuz Mutfak)
+- SKU tabanlı eşleştirme + gösterim
+- İkas feed senkronizasyonu (yeni ürün algılama)
+- saveVariantPrices + variant sellPrice dual güncelleme
+- 23-saat duplicate koruma
+- Manuel eşleştirme koruma
+- Kategori tabanlı manuel "Çalıştır" butonu
+- Türkçe fiyat ayrıştırma düzeltmesi
+- %30 güvenilmez fiyat filtresi
+- Kategori restorasyonu (297 ürün, 137 hiyerarşi)
+- ikas_update_product güvenlik düzeltmesi (kategori silme bug'ı)
+- SEO İçerik Üretici (GPT-4o ile)
+- Marka/Kategori SEO
+- AI Filter Yönetimi (İkas Özel Alanlar/Attributes)
+- Gece otomatik akış (00:00 Feed, 00:15 İkas Kur, 00:30 Akakçe, 01:00 Rakip Tarama)
+- Kategori filtresi düzeltmesi ($or:[] bug) — 21 Ağustos 2026
+- Auto-pricing ikas_categories uyumluluğu — 21 Ağustos 2026
+
+### Bekleyen Görevler
+- P0: 175 ürünün seri-spesifik alt kategorileri İkas panelden düzeltilmeli
+- P0: _SLINECEK_ prefixli ghost kategoriler İkas panelden silinmeli
+- P1: Dashboard "Eşleşmiş" sayısını yeni 4-site sisteme göre birleştir
+- P1: Haftalık/aylık fiyat değişim özet raporu
+- P2: server.py refactoring (4300+ satır → modüler yapı)
+- P2: competitor_routes.py refactoring (2024 satır)
+
+## Rakipler (5)
 1. Mutfak10 — mutfak10.com
 2. Cafemarkt — cafemarkt.com
 3. Mutbex — mutbex.com
@@ -39,22 +63,9 @@
 - 00:30 TR: Akakçe price check
 - 01:00 TR: Competitor scan + auto-pricing (with 23h protection)
 
-## Implemented Features
-- ✅ Multi-currency CurrencyAPI support (EUR/USD/TL)
-- ✅ 5-site competitor system
-- ✅ SKU-based matching + display
-- ✅ İkas sync with new product detection
-- ✅ saveVariantPrices + variant sellPrice dual update
-- ✅ 23-hour duplicate protection
-- ✅ Manual match protection
-- ✅ Category-based manual "Çalıştır" button
-- ✅ Turkish price parsing fix
-- ✅ 30% unreliable price filter
-- ✅ Category restoration (297 ürün, 137 hiyerarşi)
-- ✅ ikas_update_product safety fix
-
-## Pending Tasks
-- P0: 175 ürünün seri-spesifik alt kategorileri İkas panelden düzeltilmeli
-- P0: _SLINECEK_ prefixli ghost kategoriler İkas panelden silinmeli
-- P1: Haftalık/aylık fiyat değişim özet raporu
-- P2: server.py refactoring (4300+ satır → modüler yapı)
+## Deploy
+- Sunucu IP: 161.97.122.111
+- Domain: arigastro-ai.com
+- Docker Compose: MongoDB + Backend + Frontend (Nginx SSL)
+- Hızlı güncelleme: `./update.sh` (git pull + rebuild + restart)
+- İlk deploy: `./deploy.sh`

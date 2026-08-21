@@ -1,0 +1,57 @@
+{
+  "summary": "Iteration 15 — Validated the two P0 fixes: (1) category/brand filter query builder bug in list_products_enhanced (competitor_routes.py L1036-1055) and (2) competitor scanning / auto-pricing category rule lookup using ikas_categories (competitor_routes.py L156-165, 445-465, 1295-1310, 1792-1812). Backend: 10/10 pytest tests PASS in /app/backend/tests/test_iteration15_filters.py. Frontend: end-to-end via Playwright — login → /products filters (Tavalar → 72, Tavalar+tava search → 67, brand Öztiryakiler → 1596, match=matched → 18, cleared → 2805) → /competitor-scan create rule via Kural Ekle modal (dropdown populated with İkas categories, 'Kategori kuralı kaydedildi' toast) → delete rule via trash icon → 'Tüm Fiyatları Tara' starts scan (progress bar 1/31) → 'Taramayı Durdur' stops it. Dashboard shows Toplam Ürün 2805. All 7 review items pass.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/competitor/dashboard vs GET /api/competitor/scan-status", "issue": "Dashboard shows 'Eşleşmiş Ürünler 1694' (legacy competitor_products count) while Rakip Tarama stats card shows 'Eşleşmiş 31' (new competitor_matches count). Users may be confused by the discrepancy. Consider unifying to the new 4-site system count everywhere."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed_tests": [
+    "Backend TestProductsFilters.test_list_all_products (total=2805)",
+    "Backend TestProductsFilters.test_category_filter_tavalar (total=72 — matches expected ~72)",
+    "Backend TestProductsFilters.test_category_and_search (Tavalar+tava total=67 — matches expected ~67)",
+    "Backend TestProductsFilters.test_brand_filter (Öztiryakiler total=1596 — matches expected ~1596)",
+    "Backend TestProductsFilters.test_match_status_matched (total=18)",
+    "Backend TestProductsFilters.test_match_status_unmatched (total=2787)",
+    "Backend TestPricingRules.test_list_rules (schema {rules: []})",
+    "Backend TestPricingRules.test_create_and_delete_rule (POST/GET/DELETE flow)",
+    "Backend TestScanAll.test_scan_all_returns_meaningful (started=True, total=31 matched)",
+    "Backend TestDashboard.test_dashboard_stats (total_products=2805)",
+    "Frontend LOGIN arigastro/Arigastro2026! → /dashboard OK",
+    "Frontend /products category filter (native <select> data-testid='category-filter') → header 'X ürün listeleniyor' updates to 72/67/1596/18/2805 as expected",
+    "Frontend /competitor-scan → 'Kural Ekle' opens Kategori Fiyatlama Kuralı modal, category dropdown populated with İkas categories (600 Seri, 700 Seri, ...), save shows 'Kategori kuralı kaydedildi' toast, rule listed in 'Kategori Fiyatlama Kuralları' section",
+    "Frontend rule delete via trash icon removes row from list",
+    "Frontend 'Tüm Fiyatları Tara' triggers scan → progress bar '1/31' + 'Fiyat taraması devam ediyor...' visible; 'Taramayı Durdur' stops it"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_iteration15_filters.py",
+    "/app/test_reports/pytest/iteration15.xml"
+  ],
+  "action_items": [
+    "(LOW) Unify Eşleşmiş count between /dashboard (1694 legacy) and /competitor-scan stats (31 new 4-site) — user confusion.",
+    "(NOTE) 6 stale test cases in /app/backend/tests/test_competitor_endpoints.py still reference removed fields purchase_price / profit_margin_pct (already flagged in iter-14).",
+    "(NOTE) competitor_routes.py is now 2024 lines — split recommendation still open from iter-11 through iter-14."
+  ],
+  "critical_code_review_comments": [
+    "Filter query builder at list_products_enhanced now correctly uses $and for category and brand filters; previously the buggy `query['$or']=[]` reassignments wiped out the search $or. Consider also refactoring into a `_build_products_query()` helper — it is 30+ lines and duplicated logic could be reused by /api/competitor/dashboard filter counts.",
+    "Category rule lookup now correctly uses `ikas_categories.name` array match with fallback to `category_path` regex in 4 places (auto-match-category, run-category-pricing, nightly scheduler, bulk scan). Consider extracting `_products_query_for_category(name)` to a single helper to prevent future drift.",
+    "asyncio.get_event_loop() still used in coroutines (recurring comment from iter-14).",
+    "IKAS_PRICE_LISTS UUIDs still hardcoded in three places (recurring comment from iter-14)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration15_filters.py (new)",
+    "/app/test_reports/pytest/iteration15.xml"
+  ],
+  "success_rate": {"backend": "100% (10/10)", "frontend": "100% (7/7 review items)"},
+  "test_credentials": {"username": "arigastro", "password": "Arigastro2026!", "auth_field": "token"},
+  "seed_data_creation": "Backend test: created & deleted 'TEST_Iter15_Kategori' pricing rule (cleanup done). Frontend test: created & deleted '600 Seri' pricing rule via UI (cleanup done). Started scan-all via UI and via backend — stopped both via /scan-stop and 'Taramayı Durdur' UI button. Final state: pricing_rules collection is empty as it was pre-test.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Both P0 bugs from iter-15 review request are FIXED and verified end-to-end. Backend regression: /app/backend/tests/test_iteration15_filters.py (10 tests, ~3s). Key selectors: [data-testid='category-filter'], [data-testid='brand-filter'], [data-testid='match-status-filter'] — all native <select> elements, use page.select_option(). Rakip Tarama page uses 'Kural Ekle' button (get_by_role) → dialog with native <select> for category; 'Kaydet' saves; trash icon button (button:has(svg.lucide-trash-2)) deletes. Scan buttons: 'Tüm Fiyatları Tara' (start) / 'Taramayı Durdur' (stop). Header 'X ürün listeleniyor' is the total-count indicator on /products. matched=31 in the new 4-site system, /dashboard still reports legacy 1694.",
+  "rca of the issue": "P0 #1 (category filter broken): list_products_enhanced was setting `query['$or'] = []` when either category or brand was empty, then later overwriting `query['$or']` with actual criteria. This wiped the search $or block AND when only one of category/brand was set, the empty $or:[] evaluated to no-match in MongoDB → 0 results. Fix uses `$and` list with per-filter `$or` sub-clauses, preserving the top-level search `$or`. Verified: Tavalar=72, Öztiryakiler=1596, Tavalar+search=67 all match expected. P0 #2 (auto-pricing not working): four call sites were doing string-regex on `category_path` to find products for a rule. Since İkas categories are stored as an `ikas_categories: [{name, ...}]` array, the regex missed products that only had the name in the array. Fix queries `ikas_categories.name` first with category_path as fallback. Verified: POST /api/competitor/scan-all returns `{started:true, total:31}` and progress reaches 1/31 in the UI."
+}

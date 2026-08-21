@@ -157,7 +157,10 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
     async def auto_match_category(category_name: str, user: dict = Depends(get_current_user)):
         """Auto-match all products in a category. Runs in background."""
         products = await db.products.find(
-            {"category_path": {"$regex": category_name, "$options": "i"}, "inactive": {"$ne": True}},
+            {"$or": [
+                {"ikas_categories.name": category_name},
+                {"category_path": {"$regex": category_name, "$options": "i"}},
+            ], "inactive": {"$ne": True}},
             {"slug": 1, "name": 1, "brand": 1, "gtin": 1, "sku": 1}
         ).to_list(5000)
         
@@ -457,7 +460,10 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
 
         # Find products in this category
         products = await db.products.find(
-            {"category_path": {"$regex": category_name, "$options": "i"}, "inactive": {"$ne": True}},
+            {"$or": [
+                {"ikas_categories.name": category_name},
+                {"category_path": {"$regex": category_name, "$options": "i"}},
+            ], "inactive": {"$ne": True}},
             {"_id": 0, "slug": 1, "name": 1, "ikas_product_id": 1, "sku": 1, "brand": 1, "gtin": 1}
         ).to_list(5000)
 
@@ -1034,14 +1040,13 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                 {"sku": {"$regex": search, "$options": "i"}},
             ]
         if category:
-            query["$or"] = query.get("$or", []) + [] if "$or" not in query else []
-            query["$and"] = query.get("$and", [])
+            if "$and" not in query:
+                query["$and"] = []
             query["$and"].append({"$or": [
                 {"ikas_categories.name": category},
                 {"category_path": {"$regex": category, "$options": "i"}},
             ]})
         if brand:
-            query["$or"] = query.get("$or", []) + [] if "$or" not in query else []
             if "$and" not in query:
                 query["$and"] = []
             query["$and"].append({"$or": [
@@ -1287,13 +1292,24 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
 
                         # Get undercut amount from category rule
                         undercut = 100
-                        cp = product.get("category_path", "")
-                        if cp:
-                            top_cat = cp.split(",")[0].strip().split(">")[0].strip()
-                            if top_cat and top_cat != "Tüm Ürünler":
-                                rule = await db.pricing_rules.find_one({"category_name": top_cat})
-                                if rule:
-                                    undercut = rule.get("undercut_amount", 100)
+                        product_cats = set()
+                        ikas_cats = product.get("ikas_categories", [])
+                        for c in ikas_cats:
+                            if c.get("name") and c["name"] != "Tüm Ürünler":
+                                product_cats.add(c["name"])
+                        if not product_cats:
+                            cp = product.get("category_path", "")
+                            if cp:
+                                for seg in cp.split(","):
+                                    for part in seg.strip().split(">"):
+                                        part = part.strip()
+                                        if part and part != "Tüm Ürünler":
+                                            product_cats.add(part)
+                        for cat in product_cats:
+                            rule = await db.pricing_rules.find_one({"category_name": cat})
+                            if rule:
+                                undercut = rule.get("undercut_amount", 100)
+                                break
 
                         result = calc_fn(
                             prices,
@@ -1789,14 +1805,28 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
                     {"$set": {"current_product": (product.get("name") or slug)[:50], "scanned": scanned}},
                 )
 
-                cp = product.get("category_path", "")
-                top_cat = ""
-                if cp:
-                    first_seg = cp.split(",")[0].strip()
-                    if first_seg != "Tüm Ürünler":
-                        top_cat = first_seg.split(">")[0].strip()
+                # Determine product categories from ikas_categories (with category_path fallback)
+                product_cats = set()
+                ikas_cats = product.get("ikas_categories", [])
+                for c in ikas_cats:
+                    if c.get("name") and c["name"] != "Tüm Ürünler":
+                        product_cats.add(c["name"])
+                if not product_cats:
+                    cp = product.get("category_path", "")
+                    if cp:
+                        for seg in cp.split(","):
+                            for part in seg.strip().split(">"):
+                                part = part.strip()
+                                if part and part != "Tüm Ürünler":
+                                    product_cats.add(part)
 
-                rule = rules_map.get(top_cat, {})
+                # Find matching rule from any of the product's categories
+                rule = {}
+                for cat in product_cats:
+                    if cat in rules_map:
+                        rule = rules_map[cat]
+                        break
+                should_auto = any(cat in auto_update_cats for cat in product_cats)
                 base_currency = product.get("base_currency", "TRY")
                 floor_price = product.get("floor_price")
 
@@ -1833,7 +1863,6 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
                     await db.products.update_one({"slug": slug}, {"$set": update_fields})
 
                     if result.get("action") == "update":
-                        should_auto = top_cat in auto_update_cats
                         log_entry = {
                             "product_slug": slug,
                             "product_name": product.get("name", ""),
