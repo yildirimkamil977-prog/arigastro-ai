@@ -289,25 +289,35 @@ async def _execute_background(job_id):
 
         filter_map = {}  # filter_name -> {id, options: {value: option_id}}
         for f in approved:
-            if f["name"] in existing_map:
-                attr = existing_map[f["name"]]
-                filter_map[f["name"]] = {
-                    "id": attr["id"],
-                    "options": {o["name"]: o["id"] for o in attr.get("options", [])},
-                }
-            else:
-                # Create new attribute
-                options = [{"name": v} for v in f.get("sample_values", [])]
-                res = ikas_gql(
-                    "mutation C($i:CreateProductAttributeInput!){createProductAttribute(input:$i){id name options{id name}}}",
-                    {"i": {"name": f["name"], "type": f.get("type", "MULTIPLE_CHOICE"), "options": options}},
-                )
-                new_attr = res.get("createProductAttribute", {})
-                filter_map[f["name"]] = {
-                    "id": new_attr["id"],
-                    "options": {o["name"]: o["id"] for o in new_attr.get("options", [])},
-                }
-                logger.info(f"Created filter: {f['name']} with {len(options)} options")
+            try:
+                if f["name"] in existing_map:
+                    attr = existing_map[f["name"]]
+                    filter_map[f["name"]] = {
+                        "id": attr["id"],
+                        "options": {o["name"]: o["id"] for o in attr.get("options", [])},
+                    }
+                else:
+                    # Create new attribute — options must not be empty for MULTIPLE_CHOICE
+                    options = [{"name": v} for v in f.get("sample_values", []) if v and v.strip()]
+                    create_input = {"name": f["name"], "type": f.get("type", "MULTIPLE_CHOICE")}
+                    if options:
+                        create_input["options"] = options
+                    else:
+                        # İkas requires at least one option for MULTIPLE_CHOICE
+                        create_input["options"] = [{"name": "-"}]
+                    res = ikas_gql(
+                        "mutation C($i:CreateProductAttributeInput!){createProductAttribute(input:$i){id name options{id name}}}",
+                        {"i": create_input},
+                    )
+                    new_attr = res.get("createProductAttribute", {})
+                    filter_map[f["name"]] = {
+                        "id": new_attr["id"],
+                        "options": {o["name"]: o["id"] for o in new_attr.get("options", [])},
+                    }
+                    logger.info(f"Created filter: {f['name']} with {len(options)} options")
+            except Exception as e:
+                logger.error(f"Filter create/lookup error for '{f['name']}': {e}")
+                continue
 
         # 2. Get all products in category
         products = []
