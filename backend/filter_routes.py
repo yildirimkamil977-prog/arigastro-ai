@@ -173,11 +173,13 @@ async def _analyze_background(job_id, category, products):
                 continue
             try:
                 data = ikas_gql(
-                    '{listProduct(id:{eq:"' + ikas_id + '"}){data{name description}}}')
+                    '{listProduct(id:{eq:"' + ikas_id + '"}){data{name description shortDescription}}}')
                 prod = (data.get("listProduct", {}).get("data", []) or [{}])[0]
-                desc = prod.get("description", "")
-                if desc and len(desc) > 50:
-                    sample_descs.append({"name": prod.get("name", p.get("name", "")), "description": desc[:2000]})
+                desc = prod.get("description", "") or ""
+                short_desc = prod.get("shortDescription", "") or ""
+                full = f"{desc}\n{short_desc}".strip()
+                if full and len(full) > 30:
+                    sample_descs.append({"name": prod.get("name", p.get("name", "")), "description": full[:2000], "sku": p.get("sku", "")})
             except Exception:
                 pass
             if len(sample_descs) >= 15:
@@ -193,18 +195,21 @@ async def _analyze_background(job_id, category, products):
         # Build prompt
         descs_text = ""
         for i, sd in enumerate(sample_descs, 1):
-            descs_text += f"\n--- Ürün {i}: {sd['name']} ---\n{sd['description'][:1500]}\n"
+            descs_text += f"\n--- Ürün {i}: {sd['name']} (SKU: {sd.get('sku','')}) ---\n{sd['description'][:1500]}\n"
 
-        prompt = f"""Aşağıda "{category}" kategorisindeki {len(sample_descs)} ürünün açıklamaları var.
+        prompt = f"""Aşağıda "{category}" kategorisindeki {len(sample_descs)} endüstriyel mutfak ekipmanı ürününün bilgileri var.
 
 Bu ürünlerin teknik özelliklerini analiz et ve bu kategori için uygun FİLTRE ÖNERİLERİ çıkar.
 
 KURALLAR:
-1. Sadece bu kategoriye özgü, anlamlı filtreler öner (genel filtreler değil)
+1. Bu kategoriye özgü, müşterinin satın alma kararını kolaylaştıracak filtreler öner
 2. Her filtre için 3-8 örnek değer belirt
-3. Tüm ürünlere uygulanamayacak filtreler de olabilir (örn: çekmeceli ürünlere "Çekmece Sayısı", kapılı ürünlere "Kapı Sayısı")
-4. Mevcut İkas filtreleri: Materyal, Çalışma Tipi, Çalışma Teknolojisi, Voltaj, Kapasite, Boyutlar — bunları tekrar önerme, sadece YENİ filtreler öner
-5. Filtre isimleri Türkçe ve profesyonel olmalı
+3. Ürün adlarından, açıklamalardan ve teknik tablolardan veri çıkar
+4. Boyut, ağırlık, güç, kapasite, malzeme gibi somut teknik filtreleri öncelikle öner
+5. Tüm ürünlere uygulanamayacak filtreler de olabilir
+6. Mevcut İkas filtreleri: Materyal, Çalışma Tipi, Çalışma Teknolojisi, Voltaj, Kapasite, Boyutlar — bunları tekrar önerme, sadece YENİ filtreler öner
+7. Filtre isimleri Türkçe ve profesyonel olmalı
+8. En az 4, en fazla 12 filtre öner
 
 CEVABINI SADECE JSON OLARAK VER, başka hiçbir şey yazma:
 [
@@ -336,29 +341,36 @@ async def _execute_background(job_id):
                 continue
 
             try:
-                # Get description from Ikas
-                pdata = ikas_gql('{listProduct(id:{eq:"' + ikas_id + '"}){data{name description}}}')
+                # Get description + shortDescription from Ikas
+                pdata = ikas_gql('{listProduct(id:{eq:"' + ikas_id + '"}){data{name description shortDescription}}}')
                 pinfo = (pdata.get("listProduct", {}).get("data", []) or [{}])[0]
-                desc = pinfo.get("description", "")
+                desc = pinfo.get("description", "") or ""
+                short_desc = pinfo.get("shortDescription", "") or ""
                 pname = pinfo.get("name", prod.get("name", ""))
+                sku = prod.get("sku", "")
 
-                if not desc or len(desc) < 30:
+                # Combine all available text
+                full_text = f"{desc}\n{short_desc}".strip()
+                if not full_text or len(full_text) < 10:
                     await _update_job_progress(db, job_id, idx + 1, pname, [], "Açıklama yok")
                     continue
 
-                # AI extraction
-                prompt = f"""Bu ürünün açıklamasını analiz et ve aşağıdaki filtrelerden SADECE bu ürüne uygun olanları doldur.
+                # AI extraction — use name + SKU + description for maximum data
+                prompt = f"""Bu endüstriyel mutfak ekipmanı ürününü analiz et ve aşağıdaki filtrelerden uygun olanları doldur.
 
-ÜRÜN: {pname}
-AÇIKLAMA: {desc[:3000]}
+ÜRÜN ADI: {pname}
+SKU: {sku}
+AÇIKLAMA: {full_text[:3000]}
 
-MEVCUT FİLTRELER: {json.dumps(filter_names, ensure_ascii=False)}
+DOLDURULACAK FİLTRELER: {json.dumps(filter_names, ensure_ascii=False)}
 
 KURALLAR:
-1. Sadece ürüne GERÇEKTEN uygun filtreleri doldur
-2. Uygun olmayan filtreleri ATLAMA (örn: çekmeceli ürüne "Kapı Sayısı" yazma)
-3. Açıklamada bilgi yoksa o filtreyi ATLAMA
-4. Değerler kısa ve net olsun (örn: "220V", "Paslanmaz Çelik", "150 Litre")
+1. Ürün adından, SKU'dan ve açıklamadan bilgi çıkar
+2. Ürün adında model numarası, boyut, kapasite gibi bilgiler varsa kullan
+3. Açıklamadaki teknik tablolar ve özellik listelerinden veri çek
+4. Eğer filtre bu ürüne hiç uygun değilse (örn: çekmeceli ürüne "Kapı Sayısı") o filtreyi ATLAMA
+5. Değerler kısa ve net olsun (örn: "220V", "Paslanmaz Çelik", "150 Litre", "Çift")
+6. Mümkün olduğunca ÇOK filtre doldur — belirsiz olsa bile makul bir çıkarım yap
 
 CEVABINI SADECE JSON OLARAK VER:
 {{"Filtre Adı": "Değer", "Başka Filtre": "Değer"}}
