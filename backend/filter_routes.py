@@ -379,27 +379,35 @@ async def _execute_background(job_id):
                     await _update_job_progress(db, job_id, idx + 1, pname, [], "Açıklama yok")
                     continue
 
-                # AI extraction — use name + SKU + description for maximum data
-                prompt = f"""Bu endüstriyel mutfak ekipmanı ürününü analiz et ve aşağıdaki filtrelerden uygun olanları doldur.
+                # AI extraction — two parts: (1) filter values, (2) ALL technical specs for table
+                prompt = f"""Bu endüstriyel mutfak ekipmanı ürününü analiz et.
 
 ÜRÜN ADI: {pname}
 SKU: {sku}
 AÇIKLAMA: {full_text[:3000]}
 
-DOLDURULACAK FİLTRELER: {json.dumps(filter_names, ensure_ascii=False)}
+İKİ GÖREV:
 
-KURALLAR:
-1. Ürün adından, SKU'dan ve açıklamadan bilgi çıkar
-2. SADECE açıklamada veya ürün adında açıkça belirtilen bilgileri kullan
-3. TAHMİN YAPMA — emin olmadığın değerleri EKLEME
-4. Eğer filtre bu ürüne hiç uygun değilse o filtreyi ATLAMA
-5. Değerler kısa ve net olsun (örn: "220V", "Paslanmaz Çelik", "150 Litre", "Çift")
-6. Açıklamadaki teknik tablolar ve özellik listelerinden veri çek
-7. Bu filtreler müşterilerin satın alma kararını yönlendirecek — DOĞRULUK kritik önemde
+GÖREV 1 — FİLTRELER:
+Aşağıdaki filtrelerden bu ürüne uygun olanları doldur:
+{json.dumps(filter_names, ensure_ascii=False)}
+
+GÖREV 2 — TEKNİK ÖZELLİKLER TABLOSU:
+Açıklamada ve ürün adında geçen TÜM teknik özellikleri çıkar (Kapasite, Boyutlar, Ağırlık, Güç, Model, Voltaj, vb.)
+
+KRİTİK KURALLAR:
+1. SADECE metinde birebir yazan bilgileri kullan
+2. KESİNLİKLE tahmin yapma, bilgiyi değiştirme veya uydurmma
+3. Metinde "Krom Çelik" yazıyorsa "Krom Çelik" yaz, "304 Paslanmaz Çelik" diye değiştirme
+4. Değerler metindeki orijinal ifadeyle aynı olmalı
+5. Metinde olmayan bilgiyi hiçbir alana EKLEME
 
 CEVABINI SADECE JSON OLARAK VER:
-{{"Filtre Adı": "Değer", "Başka Filtre": "Değer"}}
-Uygun olmayan veya emin olmadığın filtreler için anahtar EKLEME."""
+{{
+  "filters": {{"Filtre Adı": "Değer"}},
+  "specs": {{"Özellik Adı": "Değer", "Kapasite": "400 litre", "Net Ağırlık": "163 kg"}}
+}}
+"filters" sadece yukarıdaki filtre listesinden, "specs" ise açıklamadaki TÜM teknik bilgileri içermeli."""
 
                 ai_result = await ai_analyze(prompt)
                 ai_result = ai_result.strip()
@@ -407,12 +415,19 @@ Uygun olmayan veya emin olmadığın filtreler için anahtar EKLEME."""
                     ai_result = ai_result.split("\n", 1)[1] if "\n" in ai_result else ai_result
                     ai_result = ai_result.rsplit("```", 1)[0]
 
-                values = json.loads(ai_result)
+                parsed = json.loads(ai_result)
+                # Support both new format {filters, specs} and old format {key: value}
+                if "filters" in parsed and "specs" in parsed:
+                    filter_values = parsed["filters"]
+                    spec_values = parsed["specs"]
+                else:
+                    filter_values = parsed
+                    spec_values = parsed
 
-                # Build Ikas attribute update
+                # Build Ikas attribute update from filter values
                 attr_updates = []
                 added_filters = []
-                for fname, fvalue in values.items():
+                for fname, fvalue in filter_values.items():
                     if fname not in filter_map:
                         continue
                     fdata = filter_map[fname]
@@ -464,9 +479,21 @@ Uygun olmayan veya emin olmadığın filtreler için anahtar EKLEME."""
                         aid = au["productAttributeId"]
                         merged[aid] = au
 
-                    # Build Teknik Özellikler HTML table from ALL extracted filters
-                    if added_filters:
-                        specs_html = build_specs_html(added_filters)
+                    # Build Teknik Özellikler HTML table from ALL extracted specs
+                    all_specs = []
+                    # First add spec_values (comprehensive technical specs)
+                    for sname, svalue in spec_values.items():
+                        svalue_str = str(svalue).strip()
+                        if svalue_str:
+                            all_specs.append({"name": sname, "value": svalue_str})
+                    # Add any filter values not already in specs
+                    spec_names = {s["name"] for s in all_specs}
+                    for af in added_filters:
+                        if af["name"] not in spec_names:
+                            all_specs.append(af)
+
+                    if all_specs:
+                        specs_html = build_specs_html(all_specs)
                         merged[TEKNIK_OZELLIKLER_ATTR_ID] = {
                             "productAttributeId": TEKNIK_OZELLIKLER_ATTR_ID,
                             "value": specs_html,
