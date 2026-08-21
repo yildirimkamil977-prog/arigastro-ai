@@ -6,6 +6,7 @@ which is completely isolated from product categories/descriptions/prices.
 
 import os
 import json
+import re
 import asyncio
 import logging
 import uuid
@@ -52,6 +53,18 @@ def build_specs_html(filter_values):
         '<th style="padding:10px 14px;text-align:left;color:#fff;border:1px solid #1e293b">Değer</th>'
         f'</tr></thead><tbody>{rows}</tbody></table>'
     )
+
+
+def strip_html(html_text):
+    """Strip HTML tags and clean up text for AI processing."""
+    if not html_text:
+        return ""
+    text = re.sub(r'<br\s*/?>', '\n', html_text)
+    text = re.sub(r'</?(li|p|div|tr|td|th|h[1-6])[^>]*>', '\n', text)
+    text = re.sub(r'<[^>]+>', '', text)
+    text = text.replace('&nbsp;', ' ').replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&#39;', "'").replace('&quot;', '"')
+    lines = [line.strip() for line in text.split('\n') if line.strip()]
+    return '\n'.join(lines)
 
 
 def get_db():
@@ -203,7 +216,8 @@ async def _analyze_background(job_id, category, products):
                 short_desc = prod.get("shortDescription", "") or ""
                 full = f"{desc}\n{short_desc}".strip()
                 if full and len(full) > 30:
-                    sample_descs.append({"name": prod.get("name", p.get("name", "")), "description": full[:2000], "sku": p.get("sku", "")})
+                    clean = strip_html(full)
+                    sample_descs.append({"name": prod.get("name", p.get("name", "")), "description": clean[:2000], "sku": p.get("sku", "")})
             except Exception:
                 pass
             if len(sample_descs) >= 15:
@@ -373,47 +387,47 @@ async def _execute_background(job_id):
                 pname = pinfo.get("name", prod.get("name", ""))
                 sku = prod.get("sku", "")
 
-                # Combine all available text
-                full_text = f"{desc}\n{short_desc}".strip()
+                # Combine all available text and strip HTML for cleaner AI input
+                raw_text = f"{desc}\n{short_desc}".strip()
+                full_text = strip_html(raw_text)
                 if not full_text or len(full_text) < 10:
                     await _update_job_progress(db, job_id, idx + 1, pname, [], "Açıklama yok")
                     continue
 
                 # AI extraction — two parts: (1) filter values, (2) ALL technical specs for table
-                prompt = f"""Bu endüstriyel mutfak ekipmanı ürününü analiz et.
+                prompt = f"""Aşağıdaki endüstriyel mutfak ekipmanı ürününün bilgilerini analiz et.
 
 ÜRÜN ADI: {pname}
 SKU: {sku}
-AÇIKLAMA: {full_text[:3000]}
+AÇIKLAMA:
+{full_text[:4000]}
 
-İKİ GÖREV:
+===
+
+İKİ GÖREV VAR:
 
 GÖREV 1 — FİLTRELER:
-Aşağıdaki filtrelerden bu ürüne uygun olanları doldur:
-{json.dumps(filter_names, ensure_ascii=False)}
+Bu filtrelerden uygun olanları doldur: {json.dumps(filter_names, ensure_ascii=False)}
+- Ürün adındaki bilgiler de geçerlidir (örn: adında "İki Katlı" → Kat Sayısı: İki Katlı)
+- Bir filtre bu ürüne uygunsa MUTLAKA doldur
 
-Her filtreyi tek tek değerlendir:
-- Ürün adında geçen bilgiler ÖNCELİKLİDİR. Örnek: Ürün adında "İki Katlı" yazıyorsa → Kat Sayısı: İki Katlı
-- Ürün adında "Gazlı" yazıyorsa → Yakıt Türü: Doğalgaz/LPG
-- Ürün adında "Elektrikli" yazıyorsa → Yakıt Türü: Elektrik
-- Açıklamadaki teknik detayları da kullan
-
-GÖREV 2 — TEKNİK ÖZELLİKLER TABLOSU:
-Açıklamada ve ürün adında geçen TÜM teknik özellikleri çıkar (Kapasite, Boyutlar, Ağırlık, Güç, Model, Voltaj, Kat Sayısı, vb.)
+GÖREV 2 — TEKNİK ÖZELLİKLER:
+Açıklamadaki "Teknik Detaylar" bölümündeki HER maddeyi eksiksiz aktar. Örnek:
+- "En (mm): 900" → {{"En (mm)": "900"}}
+- "Elektrik Gücü (kW): 3.43" → {{"Elektrik Gücü (kW)": "3.43"}}
+- "Gerilim: 220 V / 50-60 Hz" → {{"Gerilim": "220 V / 50-60 Hz"}}
+TEK BİR maddeyi bile atlama. Açıklamada kaç adet teknik özellik varsa hepsini al.
 
 KRİTİK KURALLAR:
-1. Ürün adındaki her teknik bilgiyi mutlaka kullan (katlı, gazlı, elektrikli, boyut, kapasite vb.)
-2. SADECE metinde gerçekten yazan bilgileri kullan — tahmin yapma
-3. Metinde "Krom Çelik" yazıyorsa "Krom Çelik" yaz, başka bir şeye çevirme
-4. Değerler metindeki orijinal ifadeyle AYNI olmalı
-5. Bir filtre bu ürüne uygunsa MUTLAKA doldur — atlamak yasak
+1. Değerleri metindeki HALİYLE yaz — değiştirme, yorumlama, çevirme
+2. Tahmin yapma — metinde olmayan bilgiyi ekleme
+3. Açıklamadaki HER teknik özelliği specs'e ekle — hiçbirini atlama
 
-CEVABINI SADECE JSON OLARAK VER:
+JSON CEVAP:
 {{
   "filters": {{"Filtre Adı": "Değer"}},
-  "specs": {{"Özellik Adı": "Değer"}}
-}}
-"filters" sadece yukarıdaki filtre listesinden, "specs" ise açıklamadaki TÜM teknik bilgileri içermeli."""
+  "specs": {{"Özellik": "Değer", "En (mm)": "900", "Boy (mm)": "1200"}}
+}}"""
 
                 ai_result = await ai_analyze(prompt)
                 ai_result = ai_result.strip()
