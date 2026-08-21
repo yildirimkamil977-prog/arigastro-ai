@@ -392,20 +392,26 @@ GÖREV 1 — FİLTRELER:
 Aşağıdaki filtrelerden bu ürüne uygun olanları doldur:
 {json.dumps(filter_names, ensure_ascii=False)}
 
+Her filtreyi tek tek değerlendir:
+- Ürün adında geçen bilgiler ÖNCELİKLİDİR. Örnek: Ürün adında "İki Katlı" yazıyorsa → Kat Sayısı: İki Katlı
+- Ürün adında "Gazlı" yazıyorsa → Yakıt Türü: Doğalgaz/LPG
+- Ürün adında "Elektrikli" yazıyorsa → Yakıt Türü: Elektrik
+- Açıklamadaki teknik detayları da kullan
+
 GÖREV 2 — TEKNİK ÖZELLİKLER TABLOSU:
-Açıklamada ve ürün adında geçen TÜM teknik özellikleri çıkar (Kapasite, Boyutlar, Ağırlık, Güç, Model, Voltaj, vb.)
+Açıklamada ve ürün adında geçen TÜM teknik özellikleri çıkar (Kapasite, Boyutlar, Ağırlık, Güç, Model, Voltaj, Kat Sayısı, vb.)
 
 KRİTİK KURALLAR:
-1. SADECE metinde birebir yazan bilgileri kullan
-2. KESİNLİKLE tahmin yapma, bilgiyi değiştirme veya uydurmma
-3. Metinde "Krom Çelik" yazıyorsa "Krom Çelik" yaz, "304 Paslanmaz Çelik" diye değiştirme
-4. Değerler metindeki orijinal ifadeyle aynı olmalı
-5. Metinde olmayan bilgiyi hiçbir alana EKLEME
+1. Ürün adındaki her teknik bilgiyi mutlaka kullan (katlı, gazlı, elektrikli, boyut, kapasite vb.)
+2. SADECE metinde gerçekten yazan bilgileri kullan — tahmin yapma
+3. Metinde "Krom Çelik" yazıyorsa "Krom Çelik" yaz, başka bir şeye çevirme
+4. Değerler metindeki orijinal ifadeyle AYNI olmalı
+5. Bir filtre bu ürüne uygunsa MUTLAKA doldur — atlamak yasak
 
 CEVABINI SADECE JSON OLARAK VER:
 {{
   "filters": {{"Filtre Adı": "Değer"}},
-  "specs": {{"Özellik Adı": "Değer", "Kapasite": "400 litre", "Net Ağırlık": "163 kg"}}
+  "specs": {{"Özellik Adı": "Değer"}}
 }}
 "filters" sadece yukarıdaki filtre listesinden, "specs" ise açıklamadaki TÜM teknik bilgileri içermeli."""
 
