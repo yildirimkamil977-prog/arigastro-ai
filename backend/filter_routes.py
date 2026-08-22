@@ -408,25 +408,28 @@ AÇIKLAMA:
 
 GÖREV 1 — FİLTRELER:
 Bu filtrelerden uygun olanları doldur: {json.dumps(filter_names, ensure_ascii=False)}
-- Ürün adındaki bilgiler de geçerlidir (örn: adında "İki Katlı" → Kat Sayısı: İki Katlı)
-- Bir filtre bu ürüne uygunsa MUTLAKA doldur
+Ürün adındaki bilgiler de geçerlidir (örn: "İki Katlı" → Kat Sayısı: İki Katlı)
 
 GÖREV 2 — TEKNİK ÖZELLİKLER:
-Açıklamadaki "Teknik Detaylar" bölümündeki HER maddeyi eksiksiz aktar. Örnek:
-- "En (mm): 900" → {{"En (mm)": "900"}}
-- "Elektrik Gücü (kW): 3.43" → {{"Elektrik Gücü (kW)": "3.43"}}
-- "Gerilim: 220 V / 50-60 Hz" → {{"Gerilim": "220 V / 50-60 Hz"}}
-TEK BİR maddeyi bile atlama. Açıklamada kaç adet teknik özellik varsa hepsini al.
+Açıklamadaki HER teknik özelliği eksiksiz çıkar.
 
-KRİTİK KURALLAR:
-1. Değerleri metindeki HALİYLE yaz — değiştirme, yorumlama, çevirme
-2. Tahmin yapma — metinde olmayan bilgiyi ekleme
-3. Açıklamadaki HER teknik özelliği specs'e ekle — hiçbirini atlama
+FORMAT KURALLARI:
+1. Değerler KISA ve NET olmalı — asla tam cümle yazma
+   YANLIŞ: "Restoranlar, oteller ve büyük mutfak işletmeleri için idealdir"
+   DOĞRU: "Profesyonel"
+   YANLIŞ: "Yüksek kaliteli paslanmaz çelikten üretilmiştir"
+   DOĞRU: "Paslanmaz Çelik"
+2. Boyutları HER ZAMAN ayrı ayrı yaz:
+   YANLIŞ: {{"Boyutlar": "900 x 1200 x 840 mm"}}
+   DOĞRU: {{"En (mm)": "900", "Boy (mm)": "1200", "Yükseklik (mm)": "840"}}
+3. Değerleri metindeki orijinal haliyle yaz — tahmin yapma, uydurmma
+4. Açıklamadaki HER maddeyi specs'e ekle — atlama
+5. Sadece kısa, filtrelenebilir değerler yaz: sayı, birim, kısa terim
 
 JSON CEVAP:
 {{
   "filters": {{"Filtre Adı": "Değer"}},
-  "specs": {{"Özellik": "Değer", "En (mm)": "900", "Boy (mm)": "1200"}}
+  "specs": {{"En (mm)": "900", "Boy (mm)": "1200", "Yükseklik (mm)": "840", "Elektrik Gücü (kW)": "3.43", "Net Ağırlık (Kg)": "139"}}
 }}"""
 
                 ai_result = await ai_analyze(prompt)
@@ -462,13 +465,12 @@ JSON CEVAP:
                     if fname not in filter_map:
                         # Auto-create the attribute in İkas
                         try:
-                            # Check if it already exists in İkas (might have been created by another product)
-                            existing_attrs_refresh = ikas_gql("{listProductAttribute{id name type}}").get("listProductAttribute", [])
-                            existing_match = next((a for a in existing_attrs_refresh if a["name"] == fname), None)
+                            # Check existing_map (cached from start) first
+                            existing_match = existing_map.get(fname)
                             if existing_match:
                                 filter_map[fname] = {
                                     "id": existing_match["id"],
-                                    "options": {},
+                                    "options": {o["name"]: o["id"] for o in existing_match.get("options", [])},
                                 }
                             else:
                                 res = ikas_gql(
@@ -480,6 +482,8 @@ JSON CEVAP:
                                     "id": new_attr["id"],
                                     "options": {o["name"]: o["id"] for o in new_attr.get("options", [])},
                                 }
+                                # Update existing_map cache
+                                existing_map[fname] = new_attr
                                 logger.info(f"Auto-created filter: {fname}")
                         except Exception as e:
                             logger.warning(f"Could not create filter '{fname}': {e}")
