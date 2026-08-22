@@ -142,10 +142,87 @@ class ApproveRequest(BaseModel):
 
 # --- Routes ---
 
+@router.post("/sync-categories")
+async def sync_filter_categories(user: dict = Depends(get_current_user)):
+    """Fetch latest categories from İkas and store hierarchically."""
+    db = get_db()
+    try:
+        result = ikas_gql("{listCategory{id name parentId deleted}}")
+        cats = result.get("listCategory", result) if isinstance(result, dict) else result
+        if not isinstance(cats, list):
+            cats = []
+        active_cats = [c for c in cats if not c.get("deleted")]
+
+        # Get product counts per category from local DB
+        pipeline = [
+            {"$match": {"inactive": {"$ne": True}, "ikas_categories": {"$exists": True, "$ne": []}}},
+            {"$unwind": "$ikas_categories"},
+            {"$group": {"_id": "$ikas_categories.name", "count": {"$sum": 1}}},
+        ]
+        count_map = {}
+        async for doc in db.products.aggregate(pipeline):
+            if doc["_id"]:
+                count_map[doc["_id"]] = doc["count"]
+
+        # Store in DB
+        await db.filter_categories.delete_many({})
+        if active_cats:
+            docs = []
+            for c in active_cats:
+                docs.append({
+                    "ikas_id": c["id"],
+                    "name": c["name"],
+                    "parent_id": c.get("parentId"),
+                    "product_count": count_map.get(c["name"], 0),
+                    "synced_at": datetime.now(timezone.utc).isoformat(),
+                })
+            await db.filter_categories.insert_many(docs)
+
+        return {"synced": len(active_cats), "message": f"{len(active_cats)} kategori senkronize edildi"}
+    except Exception as e:
+        raise HTTPException(500, f"Kategori senkronizasyonu hatası: {str(e)[:200]}")
+
+
 @router.get("/categories")
 async def list_filter_categories(user: dict = Depends(get_current_user)):
-    """List categories with product counts for filter management."""
+    """List categories hierarchically with product counts."""
     db = get_db()
+
+    # Check if synced categories exist
+    synced_count = await db.filter_categories.count_documents({})
+    if synced_count > 0:
+        cats = await db.filter_categories.find({}, {"_id": 0}).to_list(500)
+        # Build hierarchy
+        cat_map = {c["ikas_id"]: c for c in cats}
+        root_cats = []
+        for c in cats:
+            c["children"] = []
+        for c in cats:
+            pid = c.get("parent_id")
+            if pid and pid in cat_map:
+                cat_map[pid]["children"].append(c)
+            elif not pid:
+                root_cats.append(c)
+
+        # Flatten into hierarchical list with depth info
+        flat = []
+        def walk(node, depth=0):
+            flat.append({
+                "name": node["name"],
+                "ikas_id": node["ikas_id"],
+                "product_count": node.get("product_count", 0),
+                "depth": depth,
+                "parent_name": cat_map.get(node.get("parent_id"), {}).get("name", ""),
+            })
+            for child in sorted(node.get("children", []), key=lambda x: x["name"]):
+                walk(child, depth + 1)
+
+        for rc in sorted(root_cats, key=lambda x: x["name"]):
+            walk(rc)
+
+        return {"categories": flat, "synced": True, "total": len(cats)}
+
+    # Fallback: old method from products collection
     pipeline = [
         {"$match": {"inactive": {"$ne": True}, "ikas_categories": {"$exists": True, "$ne": []}}},
         {"$unwind": "$ikas_categories"},
@@ -155,8 +232,8 @@ async def list_filter_categories(user: dict = Depends(get_current_user)):
     cats = []
     async for doc in db.products.aggregate(pipeline):
         if doc["_id"] and doc["_id"] != "Tüm Ürünler":
-            cats.append({"name": doc["_id"], "product_count": doc["count"]})
-    return {"categories": cats}
+            cats.append({"name": doc["_id"], "product_count": doc["count"], "depth": 0})
+    return {"categories": cats, "synced": False, "total": len(cats)}
 
 
 @router.post("/analyze-category")

@@ -4,6 +4,8 @@ const API = process.env.REACT_APP_BACKEND_URL;
 
 export default function FilterManagementPage() {
   const [categories, setCategories] = useState([]);
+  const [categorySynced, setCategorySynced] = useState(false);
+  const [syncingCats, setSyncingCats] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState("");
   const [job, setJob] = useState(null);
   const [jobs, setJobs] = useState([]);
@@ -15,10 +17,32 @@ export default function FilterManagementPage() {
   const token = localStorage.getItem("token");
   const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 
+  const fetchCategories = () => {
+    fetch(`${API}/api/filters/categories`, { headers }).then(r => r.json()).then(d => {
+      setCategories(d.categories || []);
+      setCategorySynced(d.synced || false);
+    });
+  };
+
   useEffect(() => {
-    fetch(`${API}/api/filters/categories`, { headers }).then(r => r.json()).then(d => setCategories(d.categories || []));
+    fetchCategories();
     fetch(`${API}/api/filters/jobs`, { headers }).then(r => r.json()).then(d => setJobs(d.jobs || []));
   }, []);
+
+  const syncCategories = async () => {
+    setSyncingCats(true);
+    try {
+      const r = await fetch(`${API}/api/filters/sync-categories`, { method: "POST", headers });
+      const d = await r.json();
+      if (r.ok) {
+        fetchCategories();
+        alert(d.message || "Kategoriler senkronize edildi");
+      } else {
+        alert(d.detail || "Senkronizasyon hatası");
+      }
+    } catch (e) { alert("Hata: " + e.message); }
+    setSyncingCats(false);
+  };
 
   // Poll job status
   const pollJob = useCallback((jobId) => {
@@ -112,7 +136,26 @@ export default function FilterManagementPage() {
 
       {/* Category selector */}
       <div className="bg-white rounded-xl border p-5 mb-6">
-        <h2 className="font-semibold text-slate-700 mb-3">1. Kategori Seçin</h2>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-semibold text-slate-700">1. Kategori Seçin</h2>
+          <button
+            data-testid="sync-categories-btn"
+            onClick={syncCategories}
+            disabled={syncingCats}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border rounded-lg text-blue-700 border-blue-300 bg-blue-50 hover:bg-blue-100 disabled:opacity-40"
+          >
+            {syncingCats ? (
+              <><svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Senkronize Ediliyor...</>
+            ) : (
+              <><svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>Kategorileri Güncelle</>
+            )}
+          </button>
+        </div>
+        {!categorySynced && (
+          <div className="mb-3 p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-700">
+            Kategoriler henüz İkas ile senkronize edilmedi. "Kategorileri Güncelle" butonuna tıklayarak güncel hiyerarşiyi çekin.
+          </div>
+        )}
         <div className="flex gap-3 items-end">
           <div className="flex-1">
             <select
@@ -121,9 +164,11 @@ export default function FilterManagementPage() {
               onChange={e => setSelectedCategory(e.target.value)}
               className="w-full h-10 px-3 border rounded-lg text-sm"
             >
-              <option value="">Kategori seçin...</option>
+              <option value="">Kategori seçin... ({categories.length} kategori)</option>
               {categories.map(c => (
-                <option key={c.name} value={c.name}>{c.name} ({c.product_count} ürün)</option>
+                <option key={c.name + (c.ikas_id || "")} value={c.name}>
+                  {c.depth > 0 ? "\u00A0\u00A0".repeat(c.depth) + "└ " : ""}{c.name}{c.product_count > 0 ? ` (${c.product_count} ürün)` : ""}
+                </option>
               ))}
             </select>
           </div>
