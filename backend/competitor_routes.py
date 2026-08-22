@@ -994,6 +994,35 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                 "completed_at": datetime.now(timezone.utc).isoformat()
             }})
             logger.info(f"İkas sync done: {updated} matched, {new_products_added} new, {total_fetched} İkas total")
+
+            # Also update filter_categories collection for Filtre Yönetimi page
+            try:
+                all_ikas_cats = await loop.run_in_executor(None, ikas_fn, "{listCategory{id name parentId deleted}}", {})
+                raw_cats = all_ikas_cats.get("listCategory", all_ikas_cats) if isinstance(all_ikas_cats, dict) else all_ikas_cats
+                if isinstance(raw_cats, list):
+                    active_cats = [c for c in raw_cats if not c.get("deleted")]
+                    # Product counts
+                    cat_pipeline = [
+                        {"$match": {"inactive": {"$ne": True}, "ikas_categories": {"$exists": True, "$ne": []}}},
+                        {"$unwind": "$ikas_categories"},
+                        {"$group": {"_id": "$ikas_categories.name", "count": {"$sum": 1}}},
+                    ]
+                    cat_count_map = {}
+                    async for doc in db.products.aggregate(cat_pipeline):
+                        if doc["_id"]:
+                            cat_count_map[doc["_id"]] = doc["count"]
+                    await db.filter_categories.delete_many({})
+                    if active_cats:
+                        cat_docs = [{
+                            "ikas_id": c["id"], "name": c["name"],
+                            "parent_id": c.get("parentId"),
+                            "product_count": cat_count_map.get(c["name"], 0),
+                            "synced_at": datetime.now(timezone.utc).isoformat(),
+                        } for c in active_cats]
+                        await db.filter_categories.insert_many(cat_docs)
+                    logger.info(f"Filter categories also synced: {len(active_cats)} categories")
+            except Exception as ce:
+                logger.warning(f"Filter categories sync during ikas sync failed: {ce}")
         except Exception as e:
             logger.error(f"İkas currency sync error: {e}")
             await db.system_status.update_one({"task": task_key}, {"$set": {"running": False, "error": str(e), "completed_at": datetime.now(timezone.utc).isoformat()}})

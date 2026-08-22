@@ -203,7 +203,7 @@ export default function CompetitorProductsPage() {
     try {
       const { data } = await axios.post(`${API}/competitor/sync-ikas-currencies`, {}, { headers: getAuthHeaders(), withCredentials: true });
       if (data.started) {
-        toast.success(`${data.total} ürün için İkas kur senkronizasyonu başlatıldı`);
+        toast.success(`${data.total} ürün için güncelleme başlatıldı`);
         // Poll status
         const poll = setInterval(async () => {
           try {
@@ -212,7 +212,7 @@ export default function CompetitorProductsPage() {
             if (!st.running) {
               clearInterval(poll);
               setSyncingCurrencies(false);
-              toast.success(`İkas kur senkronizasyonu tamamlandı: ${st.updated || 0} ürün güncellendi`);
+              toast.success(`Güncelleme tamamlandı: ${st.updated || 0} ürün, ${st.new_products || 0} yeni ürün eklendi`);
               fetchProducts();
             }
           } catch { clearInterval(poll); setSyncingCurrencies(false); }
@@ -293,7 +293,7 @@ export default function CompetitorProductsPage() {
         <div className="flex gap-2">
           <Button size="sm" variant="outline" onClick={syncIkasCurrencies} disabled={syncingCurrencies} data-testid="sync-currencies-btn">
             {syncingCurrencies ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Download className="h-3.5 w-3.5 mr-1.5" />}
-            İkas Kur Senkronize
+            Ürün ve Kategorileri Güncelle
           </Button>
           <Button size="sm" variant="outline" onClick={async () => {
             try {
@@ -358,8 +358,8 @@ export default function CompetitorProductsPage() {
               <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
               <span className="font-medium text-sm text-blue-900">
                 {syncProgress.phase === "fetching" ? "İkas'tan ürünler çekiliyor..." :
-                 syncProgress.phase === "matching" ? "Ürünler eşleştiriliyor..." :
-                 "İkas kur senkronizasyonu devam ediyor..."}
+                 syncProgress.phase === "matching" ? "Ürünler ve kategoriler güncelleniyor..." :
+                 "Güncelleme devam ediyor..."}
               </span>
             </div>
             <span className="text-sm text-blue-700 font-mono">
