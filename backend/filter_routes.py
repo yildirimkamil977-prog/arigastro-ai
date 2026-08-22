@@ -144,16 +144,48 @@ class ApproveRequest(BaseModel):
 
 @router.post("/sync-categories")
 async def sync_filter_categories(user: dict = Depends(get_current_user)):
-    """Fetch latest categories from İkas and store hierarchically."""
+    """Fetch latest categories from İkas, update product-category mappings, and store hierarchically."""
     db = get_db()
     try:
+        # Step 1: Fetch category hierarchy from İkas
         result = ikas_gql("{listCategory{id name parentId deleted}}")
         cats = result.get("listCategory", result) if isinstance(result, dict) else result
         if not isinstance(cats, list):
             cats = []
         active_cats = [c for c in cats if not c.get("deleted")]
 
-        # Get product counts per category from local DB
+        # Step 2: Fetch ALL products from İkas with their categories (paginated)
+        loop = asyncio.get_event_loop()
+        ikas_page = 1
+        updated_products = 0
+        while True:
+            query = """query LP($p:PaginationInput){listProduct(pagination:$p){data{id name categories{id name}}count}}"""
+            try:
+                prod_result = await loop.run_in_executor(None, ikas_gql, query, {"p": {"page": ikas_page, "limit": 100}})
+            except Exception as e:
+                logger.error(f"İkas product fetch page {ikas_page} error: {e}")
+                break
+            products_data = prod_result.get("listProduct", {}).get("data", [])
+            if not products_data:
+                break
+
+            for ip in products_data:
+                ikas_id = ip.get("id", "")
+                if not ikas_id:
+                    continue
+                ikas_categories = [{"id": c.get("id", ""), "name": c.get("name", "")} for c in ip.get("categories", []) if c.get("name")]
+                if ikas_categories:
+                    result = await db.products.update_one(
+                        {"ikas_product_id": ikas_id},
+                        {"$set": {"ikas_categories": ikas_categories}}
+                    )
+                    if result.modified_count > 0:
+                        updated_products += 1
+
+            ikas_page += 1
+            await asyncio.sleep(0.2)
+
+        # Step 3: Calculate product counts per category
         pipeline = [
             {"$match": {"inactive": {"$ne": True}, "ikas_categories": {"$exists": True, "$ne": []}}},
             {"$unwind": "$ikas_categories"},
@@ -164,7 +196,7 @@ async def sync_filter_categories(user: dict = Depends(get_current_user)):
             if doc["_id"]:
                 count_map[doc["_id"]] = doc["count"]
 
-        # Store in DB
+        # Step 4: Store categories in DB
         await db.filter_categories.delete_many({})
         if active_cats:
             docs = []
@@ -178,8 +210,13 @@ async def sync_filter_categories(user: dict = Depends(get_current_user)):
                 })
             await db.filter_categories.insert_many(docs)
 
-        return {"synced": len(active_cats), "message": f"{len(active_cats)} kategori senkronize edildi"}
+        return {
+            "synced": len(active_cats),
+            "products_updated": updated_products,
+            "message": f"{len(active_cats)} kategori ve {updated_products} ürün güncellendi"
+        }
     except Exception as e:
+        logger.error(f"Category sync error: {traceback.format_exc()}")
         raise HTTPException(500, f"Kategori senkronizasyonu hatası: {str(e)[:200]}")
 
 

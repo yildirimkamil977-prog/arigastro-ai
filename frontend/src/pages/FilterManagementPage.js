@@ -36,7 +36,7 @@ export default function FilterManagementPage() {
       const d = await r.json();
       if (r.ok) {
         fetchCategories();
-        alert(d.message || "Kategoriler senkronize edildi");
+        alert(`${d.synced} kategori senkronize edildi, ${d.products_updated || 0} ürünün kategorisi güncellendi.`);
       } else {
         alert(d.detail || "Senkronizasyon hatası");
       }
