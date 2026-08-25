@@ -1987,34 +1987,36 @@ async def get_seo_content(slug: str, user: dict = Depends(get_current_user)):
 
 @api_router.get("/seo/categories/stats")
 async def seo_category_stats(user: dict = Depends(get_current_user)):
-    """Get SEO generation stats per İkas category."""
+    """Get SEO generation stats per İkas category (hierarchical)."""
+    # Use ikas_categories for grouping
     pipeline = [
-        {"$match": {"our_price": {"$ne": None}, "feed_active": {"$ne": False}}},
-        {"$group": {"_id": "$category_path", "count": {"$sum": 1}}},
-        {"$sort": {"count": -1}},
+        {"$match": {"inactive": {"$ne": True}, "ikas_categories": {"$exists": True, "$ne": []}}},
+        {"$unwind": "$ikas_categories"},
+        {"$match": {"ikas_categories.name": {"$ne": "Tüm Ürünler"}}},
+        {"$group": {"_id": "$ikas_categories.name", "slugs": {"$addToSet": "$slug"}, "count": {"$sum": 1}}},
+        {"$sort": {"_id": 1}},
     ]
     cat_groups = await db.products.aggregate(pipeline).to_list(500)
-    
+
+    # Also include products without ikas_categories (fallback to category_path)
+    no_ikas_count = await db.products.count_documents({"inactive": {"$ne": True}, "$or": [{"ikas_categories": {"$exists": False}}, {"ikas_categories": []}]})
+
     categories = []
     for cg in cat_groups:
-        cat_name = cg["_id"] or "Kategori Yok"
-        total = cg["count"]
-        
-        if cat_name == "Kategori Yok":
-            slugs = await db.products.find({"category_path": {"$in": [None, ""]}, "our_price": {"$ne": None}, "feed_active": {"$ne": False}}, {"_id": 0, "slug": 1}).to_list(5000)
-        else:
-            slugs = await db.products.find({"category_path": cat_name, "our_price": {"$ne": None}, "feed_active": {"$ne": False}}, {"_id": 0, "slug": 1}).to_list(5000)
-        slug_list = [s["slug"] for s in slugs]
-        
+        cat_name = cg["_id"]
+        if not cat_name:
+            continue
+        slug_list = cg["slugs"]
+        total = len(slug_list)
+
         seo_done = await db.seo_content.count_documents({"product_slug": {"$in": slug_list}})
         ikas_pushed = await db.products.count_documents({"slug": {"$in": slug_list}, "ikas_seo_pushed": True})
-        
-        # Check if this category has a running task
+
         task_key = f"bulk_seo_{cat_name[:50]}"
         task_status = await db.system_status.find_one({"task": task_key}, {"_id": 0})
         running = task_status.get("running", False) if task_status else False
         paused = task_status.get("paused", False) if task_status else False
-        
+
         categories.append({
             "category": cat_name,
             "total": total,
@@ -2025,7 +2027,24 @@ async def seo_category_stats(user: dict = Depends(get_current_user)):
             "paused": paused,
             "task_status": task_status,
         })
-    
+
+    if no_ikas_count > 0:
+        no_cat_slugs = await db.products.find(
+            {"inactive": {"$ne": True}, "$or": [{"ikas_categories": {"$exists": False}}, {"ikas_categories": []}]},
+            {"_id": 0, "slug": 1}
+        ).to_list(5000)
+        slug_list = [s["slug"] for s in no_cat_slugs]
+        seo_done = await db.seo_content.count_documents({"product_slug": {"$in": slug_list}})
+        ikas_pushed = await db.products.count_documents({"slug": {"$in": slug_list}, "ikas_seo_pushed": True})
+        categories.append({
+            "category": "Kategori Yok",
+            "total": no_ikas_count,
+            "seo_generated": seo_done,
+            "ikas_pushed": ikas_pushed,
+            "remaining": no_ikas_count - seo_done,
+            "running": False, "paused": False, "task_status": None,
+        })
+
     return {"categories": categories}
 
 @api_router.post("/seo/bulk-generate-push")
@@ -2037,11 +2056,11 @@ async def bulk_seo_generate_push(category: str = "", user: dict = Depends(get_cu
     if status and status.get("running") and not status.get("paused"):
         return {"started": False, "message": "Bu kategori icin SEO uretimi zaten calisiyor."}
     
-    query = {"our_price": {"$ne": None}, "feed_active": {"$ne": False}}
+    query = {"inactive": {"$ne": True}}
     if category and category != "Kategori Yok":
-        query["category_path"] = category
+        query["ikas_categories.name"] = category
     elif category == "Kategori Yok":
-        query["category_path"] = {"$in": [None, ""]}
+        query["$or"] = [{"ikas_categories": {"$exists": False}}, {"ikas_categories": []}]
     
     products = await db.products.find(query, {"_id": 0, "slug": 1, "name": 1}).to_list(10000)
     slug_list = [p["slug"] for p in products]
@@ -4164,13 +4183,98 @@ async def startup():
         f.write(f"## Admin\n- Username: {admin_username}\n- Password: {admin_password}\n- Role: admin\n\n")
         f.write(f"## Auth Endpoints\n- POST /api/auth/login\n- GET /api/auth/me\n- POST /api/auth/logout\n")
     
-    # Start scheduler — TR saatleri: 00:00 Feed, 00:15 İkas Kur, 01:00 Rakip Tarama+Oto Fiyat
+    # Start scheduler — TR saatleri: 00:00 Feed, 00:15 İkas Kur, 01:00 Rakip Tarama+Oto Fiyat, 03:00 Oto SEO
     scheduler.add_job(scheduled_feed_sync, CronTrigger(hour=21, minute=0), id="feed_sync", name="Feed Guncelleme (Her gece 00:00 TR)", replace_existing=True)
     scheduler.add_job(scheduled_price_check, CronTrigger(hour=21, minute=30), id="price_check_cron", name="Akakce Fiyat (Her gece 00:30 TR)", replace_existing=True)
-    scheduler.add_job(lambda: asyncio.ensure_future(scheduled_ikas_currency_sync()), CronTrigger(hour=21, minute=15), id="ikas_currency_sync_cron", name="Ikas Kur Senk (Her gece 00:15 TR)", replace_existing=True)
+    scheduler.add_job(lambda: asyncio.ensure_future(scheduled_ikas_currency_sync()), CronTrigger(hour=21, minute=15), id="ikas_currency_sync_cron", name="Ikas Urun/Kategori Senk (Her gece 00:15 TR)", replace_existing=True)
     scheduler.add_job(lambda: asyncio.ensure_future(run_scheduled_competitor_scan(db, ikas_graphql)), CronTrigger(hour=22, minute=0), id="competitor_scan_cron", name="Rakip Tarama + Oto Fiyat (Her gece 01:00 TR)", replace_existing=True)
+    scheduler.add_job(lambda: asyncio.ensure_future(scheduled_auto_seo()), CronTrigger(hour=0, minute=0), id="auto_seo_cron", name="Otomatik SEO Uretimi (Her gece 03:00 TR)", replace_existing=True)
     scheduler.start()
-    logger.info("Scheduler basladi: Feed (00:00 TR), Ikas Kur (00:15 TR), Akakce (00:30 TR), Rakip Tarama+Fiyat (01:00 TR)")
+    logger.info("Scheduler basladi: Feed (00:00 TR), Ikas Senk (00:15 TR), Akakce (00:30 TR), Rakip (01:00 TR), Oto SEO (03:00 TR)")
+
+
+async def scheduled_auto_seo():
+    """Scheduled task (03:00 TR): Auto-generate SEO for products without SEO and push to İkas.
+    SAFETY: Only updates SEO fields (meta_title, meta_description, description). 
+    Does NOT touch categories, prices, names, stock or any other product data.
+    """
+    logger.info("CRON: Otomatik SEO üretimi başladı")
+    task_key = "auto_seo_nightly"
+    try:
+        # Check if already running
+        status = await db.system_status.find_one({"task": task_key})
+        if status and status.get("running"):
+            logger.info("CRON: Oto SEO zaten çalışıyor, atlaniyor")
+            return
+
+        # Find products without SEO content that have ikas_product_id
+        all_products = await db.products.find(
+            {"inactive": {"$ne": True}, "ikas_product_id": {"$exists": True, "$ne": ""}},
+            {"_id": 0, "slug": 1, "name": 1, "title": 1, "brand": 1, "category_path": 1, "ikas_categories": 1, "price": 1, "url": 1, "gtin": 1, "ikas_product_id": 1}
+        ).to_list(10000)
+
+        all_slugs = [p["slug"] for p in all_products]
+        existing_seo = await db.seo_content.find({"product_slug": {"$in": all_slugs}}, {"_id": 0, "product_slug": 1}).to_list(10000)
+        existing_slugs = set(s["product_slug"] for s in existing_seo)
+
+        pending = [p for p in all_products if p["slug"] not in existing_slugs]
+
+        if not pending:
+            logger.info("CRON: Oto SEO — tüm ürünlerin SEO içeriği mevcut, atlaniyor")
+            return
+
+        openai_key = os.environ.get("OPENAI_API_KEY")
+        if not openai_key:
+            logger.error("CRON: Oto SEO — OpenAI API key bulunamadı")
+            return
+
+        await db.system_status.update_one(
+            {"task": task_key},
+            {"$set": {"running": True, "started_at": datetime.now(timezone.utc).isoformat(), "total": len(pending), "progress": 0, "generated": 0, "pushed": 0, "failed": 0}},
+            upsert=True
+        )
+
+        logger.info(f"CRON: Oto SEO — {len(pending)} ürün için SEO üretimi başlıyor")
+        loop = asyncio.get_event_loop()
+        generated = pushed = failed = 0
+
+        for i, product in enumerate(pending):
+            slug = product["slug"]
+            try:
+                seo_record = await _generate_single_product_seo(product, openai_key)
+                generated += 1
+
+                # Push to İkas — ONLY SEO fields
+                ikas_id = product.get("ikas_product_id")
+                if ikas_id and seo_record:
+                    desc_html = markdown_to_html(seo_record.get("product_description", ""))
+                    await loop.run_in_executor(
+                        None, ikas_update_product, ikas_id,
+                        seo_record.get("seo_title", ""), seo_record.get("seo_description", ""), desc_html
+                    )
+                    await db.products.update_one({"slug": slug}, {"$set": {
+                        "ikas_seo_pushed": True,
+                        "ikas_pushed_at": datetime.now(timezone.utc).isoformat(),
+                    }})
+                    pushed += 1
+            except Exception as e:
+                logger.warning(f"CRON: Oto SEO failed for {slug}: {e}")
+                failed += 1
+
+            if (i + 1) % 10 == 0:
+                await db.system_status.update_one({"task": task_key}, {"$set": {"progress": i + 1, "generated": generated, "pushed": pushed, "failed": failed}})
+            await asyncio.sleep(3)  # Rate limit
+
+        await db.system_status.update_one({"task": task_key}, {"$set": {
+            "running": False, "completed_at": datetime.now(timezone.utc).isoformat(),
+            "progress": len(pending), "generated": generated, "pushed": pushed, "failed": failed,
+        }})
+        logger.info(f"CRON: Oto SEO tamamlandı — {generated} üretildi, {pushed} İkas'a gönderildi, {failed} başarısız")
+
+    except Exception as e:
+        logger.error(f"CRON: Oto SEO hata: {e}")
+        await db.system_status.update_one({"task": task_key}, {"$set": {"running": False, "error": str(e)}})
+
 
 async def scheduled_ikas_currency_sync():
     """Scheduled task: sync İkas original currency prices for all products."""

@@ -19,6 +19,7 @@ export default function SeoLogsPage() {
   const [loading, setLoading] = useState(true);
   const [repushStatus, setRepushStatus] = useState(null);
   const [genAllStatus, setGenAllStatus] = useState(null);
+  const [syncing, setSyncing] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -81,6 +82,33 @@ export default function SeoLogsPage() {
     }
   };
 
+  const syncProductsCategories = async () => {
+    setSyncing(true);
+    try {
+      const { data } = await axios.post(`${API}/competitor/sync-ikas-currencies`, {}, { headers: getAuthHeaders(), withCredentials: true });
+      if (data.started) {
+        toast.success("Ürün ve kategori güncelleme başlatıldı");
+        const poll = setInterval(async () => {
+          try {
+            const { data: st } = await axios.get(`${API}/competitor/sync-ikas-currencies-status`, { headers: getAuthHeaders(), withCredentials: true });
+            if (!st.running) {
+              clearInterval(poll);
+              setSyncing(false);
+              toast.success(`Güncelleme tamamlandı: ${st.updated || 0} ürün güncellendi`);
+              fetchData();
+            }
+          } catch { clearInterval(poll); setSyncing(false); }
+        }, 3000);
+      } else {
+        toast.info(data.message);
+        setSyncing(false);
+      }
+    } catch {
+      toast.error("Senkronizasyon başlatılamadı");
+      setSyncing(false);
+    }
+  };
+
   const stopGenerateAll = async () => {
     try {
       const { data } = await axios.post(`${API}/seo/generate-all-stop`, {}, { headers: getAuthHeaders(), withCredentials: true });
@@ -105,9 +133,15 @@ export default function SeoLogsPage() {
 
   return (
     <div className="space-y-6" data-testid="seo-logs-page">
-      <div>
-        <h2 className="text-2xl font-bold tracking-tight text-slate-900 font-heading">Toplu SEO Yonetimi</h2>
-        <p className="text-sm text-slate-500 mt-1">Kategorilere gore SEO uretimi ve Ikas'a gonderme</p>
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="text-2xl font-bold tracking-tight text-slate-900 font-heading">Toplu SEO Yonetimi</h2>
+          <p className="text-sm text-slate-500 mt-1">Kategorilere gore SEO uretimi ve Ikas'a gonderme</p>
+        </div>
+        <Button size="sm" variant="outline" onClick={syncProductsCategories} disabled={syncing} data-testid="sync-seo-products-btn" className="border-blue-300 text-blue-700 bg-blue-50 hover:bg-blue-100">
+          {syncing ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5 mr-1.5" />}
+          {syncing ? "Güncelleniyor..." : "Ürün ve Kategorileri Güncelle"}
+        </Button>
       </div>
 
       {/* Summary Stats */}
