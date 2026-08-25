@@ -733,9 +733,14 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         existing_prices = variant.get("prices", [])
 
         target_plid = target_currency = None
+        has_default_price = False
         for p in existing_prices:
             plid = p.get("priceListId") or ""
             if plid.startswith("b8f60257"):
+                continue
+            if not plid:
+                # Default price (no priceListId) — treat as TRY
+                has_default_price = True
                 continue
             if plid == price_lists.get("EUR"):
                 target_plid, target_currency = plid, "EUR"
@@ -744,6 +749,27 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                 target_plid, target_currency = plid, "USD"
             elif plid == price_lists.get("TRY") and not target_plid:
                 target_plid, target_currency = plid, "TRY"
+
+        # For products with only default price (no price list), update variant sellPrice directly
+        if not target_plid and has_default_price:
+            new_price = new_price_tl
+            if floor_price and new_price < floor_price:
+                return False
+            mutation = """mutation SaveVariantPrices($input: SaveVariantPricesInput!) {
+                saveVariantPrices(input: $input) { __typename }
+            }"""
+            variables = {"input": {
+                "productId": ikas_id,
+                "variantId": variant["id"],
+                "prices": [{"sellPrice": new_price}]
+            }}
+            try:
+                await loop.run_in_executor(None, ikas_fn, mutation, variables)
+                return True
+            except Exception as e:
+                logger.error(f"SaveVariantPrices failed for {ikas_id}: {e}")
+                return False
+
         if not target_plid:
             return False
 
@@ -2014,9 +2040,13 @@ async def _apply_price_to_ikas(loop, ikas_graphql, db, slug, ikas_id, new_price_
     existing_prices = variant.get("prices", [])
 
     target_plid = target_currency = None
+    has_default_price = False
     for p in existing_prices:
         plid = p.get("priceListId") or ""
         if plid.startswith("b8f60257"):
+            continue
+        if not plid:
+            has_default_price = True
             continue
         if plid == price_lists.get("EUR"):
             target_plid, target_currency = plid, "EUR"
@@ -2025,6 +2055,26 @@ async def _apply_price_to_ikas(loop, ikas_graphql, db, slug, ikas_id, new_price_
             target_plid, target_currency = plid, "USD"
         elif plid == price_lists.get("TRY") and not target_plid:
             target_plid, target_currency = plid, "TRY"
+
+    # For products with only default price (no price list), update variant sellPrice directly
+    if not target_plid and has_default_price:
+        new_price = new_price_tl
+        if floor_price and new_price < floor_price:
+            return False
+        mutation = """mutation SaveVariantPrices($input: SaveVariantPricesInput!) {
+            saveVariantPrices(input: $input) { __typename }
+        }"""
+        variables = {"input": {
+            "productId": ikas_id,
+            "variantId": variant["id"],
+            "prices": [{"sellPrice": new_price}]
+        }}
+        try:
+            await loop.run_in_executor(None, ikas_graphql, mutation, variables)
+            await db.products.update_one({"ikas_product_id": ikas_id}, {"$set": {"price_updated_at": datetime.now(timezone.utc).isoformat()}})
+            return True
+        except Exception:
+            return False
 
     if not target_plid:
         return False
