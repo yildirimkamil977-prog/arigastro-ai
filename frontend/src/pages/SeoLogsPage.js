@@ -10,6 +10,7 @@ import { toast } from "sonner";
 
 export default function SeoLogsPage() {
   const [categories, setCategories] = useState([]);
+  const [uniqueTotals, setUniqueTotals] = useState({});
   const [logs, setLogs] = useState([]);
   const [logStats, setLogStats] = useState({});
   const [logPage, setLogPage] = useState(1);
@@ -31,6 +32,12 @@ export default function SeoLogsPage() {
         axios.get(`${API}/seo/generate-all-status`, { headers: getAuthHeaders(), withCredentials: true }).catch(() => ({ data: {} })),
       ]);
       setCategories(catRes.data.categories || []);
+      setUniqueTotals({
+        total: catRes.data.unique_total || 0,
+        seo: catRes.data.unique_seo || 0,
+        pushed: catRes.data.unique_pushed || 0,
+        remaining: catRes.data.unique_remaining || 0,
+      });
       setLogs(logRes.data.logs || []);
       setLogStats(logRes.data.stats || {});
       setLogPages(logRes.data.pages || 1);
@@ -126,10 +133,10 @@ export default function SeoLogsPage() {
     try { return new Date(iso).toLocaleString("tr-TR"); } catch { return iso; }
   };
 
-  const totalProducts = categories.reduce((sum, c) => sum + c.total, 0);
-  const totalSeo = categories.reduce((sum, c) => sum + c.seo_generated, 0);
-  const totalPushed = categories.reduce((sum, c) => sum + c.ikas_pushed, 0);
-  const totalRemaining = categories.reduce((sum, c) => sum + c.remaining, 0);
+  const totalProducts = uniqueTotals.total || 0;
+  const totalSeo = uniqueTotals.seo || 0;
+  const totalPushed = uniqueTotals.pushed || 0;
+  const totalRemaining = uniqueTotals.remaining || 0;
 
   return (
     <div className="space-y-6" data-testid="seo-logs-page">

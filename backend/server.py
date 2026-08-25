@@ -2045,7 +2045,20 @@ async def seo_category_stats(user: dict = Depends(get_current_user)):
             "running": False, "paused": False, "task_status": None,
         })
 
-    return {"categories": categories}
+    # Calculate unique totals (a product in 3 categories should be counted once)
+    unique_total = await db.products.count_documents({"inactive": {"$ne": True}})
+    unique_seo = await db.seo_content.count_documents({
+        "product_slug": {"$in": [p["slug"] async for p in db.products.find({"inactive": {"$ne": True}}, {"slug": 1, "_id": 0})]}
+    })
+    unique_pushed = await db.products.count_documents({"inactive": {"$ne": True}, "ikas_seo_pushed": True})
+
+    return {
+        "categories": categories,
+        "unique_total": unique_total,
+        "unique_seo": unique_seo,
+        "unique_pushed": unique_pushed,
+        "unique_remaining": unique_total - unique_seo,
+    }
 
 @api_router.post("/seo/bulk-generate-push")
 async def bulk_seo_generate_push(category: str = "", user: dict = Depends(get_current_user)):
@@ -3701,10 +3714,12 @@ from brand_category_seo import analyze_competitors, generate_content, build_imag
 
 @api_router.get("/ikas/categories")
 async def list_ikas_categories(user: dict = Depends(get_current_user)):
-    """List all İkas categories with hierarchy."""
+    """List all İkas categories with hierarchy (excludes deleted)."""
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, ikas_graphql, '{ listCategory { id name parentId categoryPath description metaData { pageTitle description } } }', None)
-    categories = result.get("listCategory", [])
+    result = await loop.run_in_executor(None, ikas_graphql, '{ listCategory { id name parentId deleted categoryPath description metaData { pageTitle description } } }', None)
+    all_categories = result.get("listCategory", [])
+    # Filter out deleted categories
+    categories = [c for c in all_categories if not c.get("deleted")]
     
     # Build hierarchy info
     cat_map = {c["id"]: c for c in categories}
