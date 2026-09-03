@@ -1,33 +1,26 @@
 # ARI AI - Ürün Gereksinimleri Belgesi (PRD)
 
 ## Orijinal Problem
-E-ticaret rakip fiyat takip uygulaması (Arıgastro vs rakipler: Akakçe, Mutfak10, Mutbex, Cafemarkt, Hakbilenler, Oğuz Mutfak). Sistem rakip fiyatlarını ScraperAPI ile takip eder, ürünleri eşleştirir ve İkas e-ticaret platformu fiyatını rakiplerden ucuz olacak şekilde günceller.
+E-ticaret rakip fiyat takip uygulaması (Arıgastro vs rakipler). Sistem rakip fiyatlarını ScraperAPI ile takip eder, ürünleri eşleştirir ve İkas fiyatını rakiplerden ucuz olacak şekilde günceller.
 
 ## Teknoloji Stack
-- **Frontend**: React 19, Tailwind CSS, Shadcn/UI
-- **Backend**: FastAPI (Python 3.11)
-- **Veritabanı**: MongoDB
-- **Entegrasyonlar**: İkas GraphQL API, ScraperAPI, OpenAI GPT-4o, CurrencyAPI
+- Frontend: React 19, Tailwind CSS, Shadcn/UI
+- Backend: FastAPI (Python 3.11)
+- Veritabanı: MongoDB
+- Entegrasyonlar: İkas GraphQL, ScraperAPI, OpenAI GPT-4o, CurrencyAPI
 
 ## Tamamlanan Özellikler ✅
-- Multi-currency desteği (EUR/USD/TL) - CurrencyAPI entegrasyonu
-- 5 rakip sitesi sistemi (Mutfak10, Cafemarkt, Mutbex, Hakbilenler, Oğuz Mutfak)
-- SKU tabanlı eşleştirme
-- İkas feed senkronizasyonu
-- saveVariantPrices + variant sellPrice dual güncelleme
+- Multi-currency (EUR/USD/TL), 5 rakip sitesi, SKU eşleştirme
+- İkas feed senkronizasyonu, saveVariantPrices dual güncelleme
 - Dip fiyat koruması + 23-saat duplicate koruma
-- Manuel eşleştirme koruma (manual: true flag)
-- Kategori filtresi düzeltmesi ($or:[] bug) — 21 Ağustos 2026
-- Auto-pricing ikas_categories uyumluluğu — 21 Ağustos 2026
-- AI Filter Yönetimi (İkas Özel Alanlar + Teknik Özellikler HTML tablosu) — 22 Ağustos 2026
-- Hiyerarşik kategori senkronizasyonu (İkas'tan 229 kategori) — 22 Ağustos 2026
-- Filtre + Teknik Özellikler eşitleme (specs = filters) — 22 Ağustos 2026
-- Toplu SEO otomatik gece üretimi (03:00 TR scheduler) — 25 Ağustos 2026
-- TRY fiyat güncelleme düzeltmesi (priceListId=None) — 25 Ağustos 2026
-- Toplu SEO benzersiz ürün sayısı düzeltmesi (6392→2805) — 25 Ağustos 2026
-- Marka/Kategori SEO silinmiş kategori filtresi — 25 Ağustos 2026
-- Eşleşme kaldırma koruması (rejected flag) — Eylül 2026
-- Manuel eşleştirme overwrite koruması güçlendirildi — Eylül 2026
+- Kategori filtresi ($or:[] bug fix), ikas_categories uyumluluğu
+- AI Filter Yönetimi (Teknik Özellikler HTML tablosu + filtre eşitleme)
+- Hiyerarşik kategori senkronizasyonu (229 kategori)
+- Toplu SEO otomatik gece üretimi (03:00 TR)
+- TRY fiyat güncelleme (priceListId=None saveVariantPrices)
+- Benzersiz ürün sayısı düzeltmesi, silinmiş kategori filtresi
+- Eşleşme kaldırma koruması (rejected flag) + manuel eşleştirme koruması
+- Oğuz Mutfak fiyat düzeltmesi (CSS selector + render-only + 10M sanity check)
 
 ## Nightly Scheduler
 | Saat (TR) | İşlem |
@@ -38,12 +31,12 @@ E-ticaret rakip fiyat takip uygulaması (Arıgastro vs rakipler: Akakçe, Mutfak
 | 01:00 | Rakip tarama + otomatik fiyatlama |
 | 03:00 | Otomatik SEO üretimi + İkas'a gönderme |
 
-## Bilinen Sorunlar / İncelenmesi Gereken
-- Oğuz Mutfak sitesinden bazı fiyatlar yanlış çekiliyor (CSS selector güncelleme gerekebilir)
-- Otomatik fiyat güncelleme sisteminin çalışıp çalışmadığı doğrulanmalı (deploy sonrası)
+## Bekleyen / Gelecek Görevler
+- P1: Haftalık/aylık fiyat değişim raporu
+- P2: server.py refactoring (4400+ satır → modüler yapı)
+- P2: competitor_routes.py refactoring (2100+ satır)
 
 ## Deploy
-- Sunucu IP: 161.97.122.111
-- Domain: arigastro-ai.com
+- Sunucu: 161.97.122.111, Domain: arigastro-ai.com
 - Docker Compose: MongoDB + Backend + Frontend (Nginx SSL)
-- Hızlı güncelleme: `./update.sh`
+- Güncelleme: `cd ~/arigastro-ai && git pull origin main && docker compose build --no-cache && docker compose up -d`

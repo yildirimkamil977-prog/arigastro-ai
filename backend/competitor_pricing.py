@@ -339,21 +339,25 @@ def scrape_competitor_price(url: str, competitor_key: str, retries: int = 2) -> 
     if not SCRAPERAPI_KEY:
         return {"success": False, "error": "ScraperAPI key missing"}
     
-    # Phase 1: Fast scrape without render (3-5 seconds)
-    try:
-        resp = req_sync.get("http://api.scraperapi.com", params={
-            "api_key": SCRAPERAPI_KEY,
-            "url": url,
-        }, timeout=25)
-        
-        if resp.status_code == 200:
-            soup = BeautifulSoup(resp.text, "html.parser")
-            price = _extract_price(soup, competitor_key)
-            if price and price > 100:
-                logger.info(f"Scraped {competitor_key} price: {price} TL (no-render) from {url[:60]}")
-                return {"success": True, "price": price, "currency": "TRY", "scraped_at": datetime.now(timezone.utc).isoformat()}
-    except Exception:
-        pass
+    # Sites that require JS rendering (prices loaded dynamically)
+    render_required = {"oguzmutfak"}
+    
+    # Phase 1: Fast scrape without render (skip for render-required sites)
+    if competitor_key not in render_required:
+        try:
+            resp = req_sync.get("http://api.scraperapi.com", params={
+                "api_key": SCRAPERAPI_KEY,
+                "url": url,
+            }, timeout=25)
+            
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                price = _extract_price(soup, competitor_key)
+                if price and price > 100:
+                    logger.info(f"Scraped {competitor_key} price: {price} TL (no-render) from {url[:60]}")
+                    return {"success": True, "price": price, "currency": "TRY", "scraped_at": datetime.now(timezone.utc).isoformat()}
+        except Exception:
+            pass
     
     # Phase 2: Retry with JS render (for sites that need it)
     import time; time.sleep(1)
@@ -422,6 +426,7 @@ def _extract_price(soup: BeautifulSoup, competitor_key: str) -> float:
             ".ty-price-num", "span.price", ".product_price",
         ],
         "oguzmutfak": [
+            ".pb-bar__price-current", ".pb-bar__prices",
             ".product-price", ".current-price", ".discountedPrice",
             ".currentPrice", "span.price",
         ],
@@ -481,6 +486,13 @@ def _extract_price(soup: BeautifulSoup, competitor_key: str) -> float:
     if not candidates:
         return None
     
+    # Sanity check: filter out unreasonable prices (> 10,000,000 TL is likely a parsing error)
+    MAX_REASONABLE_PRICE = 10_000_000
+    candidates = [(src, p) for src, p in candidates if p < MAX_REASONABLE_PRICE]
+
+    if not candidates:
+        return None
+
     # Pick the best price: prefer JSON-LD/meta > CSS > regex
     # Among same source, prefer higher price (main product price is typically the largest)
     priority = {"jsonld": 0, "itemprop": 1, "meta": 2, "css_content": 3, "css": 4, "data_attr": 5, "regex": 6}
