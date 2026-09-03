@@ -132,7 +132,7 @@ def _extract_gtin_from_page(html_text: str, soup: BeautifulSoup) -> str:
                 val = data.get(field)
                 if val and re.match(r'^\d{8,14}$', str(val).strip()):
                     return str(val).strip()
-        except:
+        except Exception:
             pass
     # 2. Meta tags
     for meta in soup.find_all("meta"):
@@ -221,7 +221,7 @@ def _search_on_google(query: str, competitor_key: str) -> list:
         if resp.status_code != 200:
             return []
         return [{"url": r["link"], "title": r.get("title", "")} for r in resp.json().get("organic_results", []) if _is_valid_product_url(r.get("link", ""), competitor_key)]
-    except:
+    except Exception:
         return []
 
 
@@ -324,7 +324,7 @@ def search_competitor_product(product_name: str, competitor_key: str, brand: str
                     elif pg and pg != gtin:
                         cand["score"] = 0
                         continue
-            except:
+            except Exception:
                 pass
             import time; time.sleep(0.3)
 
@@ -532,7 +532,7 @@ def _parse_price_smart(text: str) -> float:
             return float(clean.replace(",", "."))
         
         return float(clean)
-    except:
+    except Exception:
         return None
 
 
@@ -606,7 +606,7 @@ def scrape_all_competitor_prices(matches: dict) -> dict:
                         "competitor_name": COMPETITORS[key]["name"],
                         "scraped_at": result["scraped_at"],
                     }
-            except:
+            except Exception:
                 pass
     return prices
 

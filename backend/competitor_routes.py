@@ -47,6 +47,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
             "competitor_name": COMPETITORS.get(req.competitor_key, {}).get("name", ""),
             "matched_at": datetime.now(timezone.utc).isoformat(),
             "manual": True,
+            "rejected": False,
         }
         
         await db.competitor_matches.update_one(
@@ -58,8 +59,12 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
     
     @router.delete("/match/{slug}/{competitor_key}")
     async def remove_match(slug: str, competitor_key: str, user: dict = Depends(get_current_user)):
-        """Remove a competitor match."""
-        await db.competitor_matches.delete_one({"product_slug": slug, "competitor_key": competitor_key})
+        """Remove a competitor match — marks as rejected so auto-match won't recreate it."""
+        await db.competitor_matches.update_one(
+            {"product_slug": slug, "competitor_key": competitor_key},
+            {"$set": {"rejected": True, "rejected_at": datetime.now(timezone.utc).isoformat(), "url": "", "title": ""}},
+            upsert=True
+        )
         return {"success": True}
     
     @router.post("/auto-match/{slug}")
@@ -82,19 +87,20 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
     async def _run_single_product_match(db, slug, product_name, brand, gtin, sku, task_key, competitors, match_fn, scrape_fn):
         loop = asyncio.get_event_loop()
         try:
-            # Get existing manual matches to protect them
+            # Get existing manual/rejected matches to protect them
             existing_matches = await db.competitor_matches.find(
                 {"product_slug": slug},
-                {"_id": 0, "competitor_key": 1, "manual": 1}
+                {"_id": 0, "competitor_key": 1, "manual": 1, "rejected": 1}
             ).to_list(10)
             manual_keys = {m["competitor_key"] for m in existing_matches if m.get("manual")}
+            rejected_keys = {m["competitor_key"] for m in existing_matches if m.get("rejected")}
             
             results = await loop.run_in_executor(None, match_fn, product_name, brand, gtin, sku)
             
             saved = 0
             for comp_key, result in results.items():
-                # NEVER overwrite manual matches
-                if comp_key in manual_keys:
+                # NEVER overwrite manual matches or rejected matches
+                if comp_key in manual_keys or comp_key in rejected_keys:
                     continue
                 if result.get("matched"):
                     await db.competitor_matches.update_one(
@@ -115,7 +121,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
             
             # Auto-scrape prices after matching
             if saved > 0:
-                all_matches = await db.competitor_matches.find({"product_slug": slug}).to_list(10)
+                all_matches = await db.competitor_matches.find({"product_slug": slug, "rejected": {"$ne": True}}).to_list(10)
                 match_dict = {m["competitor_key"]: m for m in all_matches}
                 prices = await loop.run_in_executor(None, scrape_fn, match_dict)
                 if prices:
@@ -188,25 +194,26 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                 if status and status.get("stop_requested"):
                     break
                 
-                existing = await db.competitor_matches.count_documents({"product_slug": prod["slug"]})
+                existing = await db.competitor_matches.count_documents({"product_slug": prod["slug"], "rejected": {"$ne": True}})
                 if existing >= len(COMPETITORS):
                     products_matched += 1
                     matched_slugs.append(prod["slug"])
                     await db.system_status.update_one({"task": task_key}, {"$set": {"progress": i + 1, "products_matched": products_matched, "total_matches": total_matches}})
                     continue
                 
-                # Get existing manual matches to protect them
+                # Get existing manual/rejected matches to protect them
                 existing_matches = await db.competitor_matches.find(
                     {"product_slug": prod["slug"]},
-                    {"_id": 0, "competitor_key": 1, "manual": 1}
+                    {"_id": 0, "competitor_key": 1, "manual": 1, "rejected": 1}
                 ).to_list(10)
                 manual_keys = {m["competitor_key"] for m in existing_matches if m.get("manual")}
+                rejected_keys = {m["competitor_key"] for m in existing_matches if m.get("rejected")}
                 
                 results = await loop.run_in_executor(None, match_all_competitors_for_product, prod["name"], prod.get("brand", ""), prod.get("gtin", ""), prod.get("sku", ""))
                 prod_found = False
                 for comp_key, result in results.items():
-                    # NEVER overwrite manual matches
-                    if comp_key in manual_keys:
+                    # NEVER overwrite manual matches or rejected matches
+                    if comp_key in manual_keys or comp_key in rejected_keys:
                         continue
                     if result.get("matched"):
                         await db.competitor_matches.update_one(
@@ -238,7 +245,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         scan_progress = 0
         for slug in matched_slugs:
             try:
-                matches = await db.competitor_matches.find({"product_slug": slug}).to_list(10)
+                matches = await db.competitor_matches.find({"product_slug": slug, "rejected": {"$ne": True}}).to_list(10)
                 match_dict = {m["competitor_key"]: m for m in matches}
                 prices = await loop.run_in_executor(None, scrape_all_competitor_prices, match_dict)
                 if prices:
@@ -363,7 +370,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         progress = 0
         for slug in slugs:
             try:
-                matches = await db.competitor_matches.find({"product_slug": slug}).to_list(10)
+                matches = await db.competitor_matches.find({"product_slug": slug, "rejected": {"$ne": True}}).to_list(10)
                 prod = await db.products.find_one({"slug": slug}, {"competitor_prices": 1})
                 existing = (prod or {}).get("competitor_prices", {})
                 
@@ -583,7 +590,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                     if not product:
                         continue
 
-                    matches = await db.competitor_matches.find({"product_slug": slug}).to_list(10)
+                    matches = await db.competitor_matches.find({"product_slug": slug, "rejected": {"$ne": True}}).to_list(10)
                     match_dict = {m["competitor_key"]: m for m in matches}
 
                     # Scrape prices
@@ -796,7 +803,10 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
     # --- Get matches for a product ---
     @router.get("/matches/{slug}")
     async def get_product_matches(slug: str, user: dict = Depends(get_current_user)):
-        matches = await db.competitor_matches.find({"product_slug": slug}, {"_id": 0}).to_list(10)
+        matches = await db.competitor_matches.find(
+            {"product_slug": slug, "rejected": {"$ne": True}},
+            {"_id": 0}
+        ).to_list(10)
         return {"matches": matches}
     
     # --- Price history ---
@@ -1139,9 +1149,12 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         ]
         products = await db.products.aggregate(pipeline).to_list(limit)
         
-        # Enrich with competitor matches
+        # Enrich with competitor matches (exclude rejected)
         slugs = [p["slug"] for p in products]
-        matches = await db.competitor_matches.find({"product_slug": {"$in": slugs}}, {"_id": 0}).to_list(1000)
+        matches = await db.competitor_matches.find(
+            {"product_slug": {"$in": slugs}, "rejected": {"$ne": True}},
+            {"_id": 0}
+        ).to_list(1000)
         match_map = {}
         for m in matches:
             if m["product_slug"] not in match_map:
@@ -1328,7 +1341,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                         {"$set": {"current_product": (product.get("name") or slug)[:50], "scanned": scanned}}
                     )
 
-                    matches = await db.competitor_matches.find({"product_slug": slug}).to_list(10)
+                    matches = await db.competitor_matches.find({"product_slug": slug, "rejected": {"$ne": True}}).to_list(10)
                     match_dict = {m["competitor_key"]: m for m in matches}
                     prices = await loop.run_in_executor(None, scrape_fn, match_dict)
 
@@ -1885,7 +1898,7 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
                 base_currency = product.get("base_currency", "TRY")
                 floor_price = product.get("floor_price")
 
-                matches = await db.competitor_matches.find({"product_slug": slug}).to_list(10)
+                matches = await db.competitor_matches.find({"product_slug": slug, "rejected": {"$ne": True}}).to_list(10)
                 match_dict = {m["competitor_key"]: m for m in matches}
                 prices = await loop.run_in_executor(None, scrape_all_competitor_prices, match_dict)
 

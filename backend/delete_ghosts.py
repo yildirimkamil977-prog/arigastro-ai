@@ -82,5 +82,5 @@ try:
     cats2 = gql("{ listCategory { id name } }", t=30).get("listCategory", [])
     slinecek = [c for c in cats2 if c["name"].startswith("_SLINECEK_")]
     print(f"Kalan toplam: {len(cats2)}, _SLINECEK_: {len(slinecek)}")
-except:
+except Exception:
     print("Final kontrol timeout")

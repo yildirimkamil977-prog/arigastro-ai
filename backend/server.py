@@ -1977,12 +1977,6 @@ JSON formatında yanıt ver."""
     logger.info(f"SEO generated for {slug}: {word_count} words, {keyword_density}% density")
     return seo_record
 
-@api_router.get("/seo/{slug}")
-async def get_seo_content(slug: str, user: dict = Depends(get_current_user)):
-    """Get existing SEO content for a product."""
-    seo = await db.seo_content.find_one({"product_slug": slug}, {"_id": 0})
-    return seo or {}
-
 # ============ BULK SEO GENERATION + IKAS PUSH ============
 
 @api_router.get("/seo/categories/stats")
@@ -2278,6 +2272,14 @@ async def get_seo_logs(page: int = 1, limit: int = 50, user: dict = Depends(get_
         "logs": logs, "total": total, "page": page, "pages": (total + limit - 1) // limit,
         "stats": {"generated": total_generated, "pushed": total_pushed, "failed": total_failed}
     }
+
+
+@api_router.get("/seo/{slug}")
+async def get_seo_content(slug: str, user: dict = Depends(get_current_user)):
+    """Get existing SEO content for a product."""
+    seo = await db.seo_content.find_one({"product_slug": slug}, {"_id": 0})
+    return seo or {}
+
 
 # ============ DASHBOARD ============
 

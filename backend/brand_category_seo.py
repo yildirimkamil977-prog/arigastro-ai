@@ -415,7 +415,7 @@ Yapı:
         if match:
             try:
                 result = json.loads(match.group())
-            except:
+            except Exception:
                 result = {"title": f"{name} Modelleri ve Fiyatları | Arıgastro", "description": "", "content": clean}
         else:
             result = {"title": f"{name} Modelleri ve Fiyatları | Arıgastro", "description": "", "content": clean}
