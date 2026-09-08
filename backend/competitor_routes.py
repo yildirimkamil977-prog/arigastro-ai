@@ -850,6 +850,20 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         }}
         await loop.run_in_executor(None, ikas_fn, mutation1, variables1)
 
+        # 2. Also update variant sellPrice (the main "Satış Fiyatı" field)
+        try:
+            mutation2 = """mutation SaveVariantPrices($input: SaveVariantPricesInput!) {
+                saveVariantPrices(input: $input) { __typename }
+            }"""
+            variables2 = {"input": {
+                "productId": ikas_id,
+                "variantId": variant["id"],
+                "prices": [{"sellPrice": new_price}]
+            }}
+            await loop.run_in_executor(None, ikas_fn, mutation2, variables2)
+        except Exception as e:
+            logger.warning(f"saveVariantPrices failed for {ikas_id} (price list updated ok): {e}")
+
         return True
     
     # --- Get matches for a product ---
@@ -2187,6 +2201,20 @@ async def _apply_price_to_ikas(loop, ikas_graphql, db, slug, ikas_id, new_price_
         }]
     }}
     await loop.run_in_executor(None, ikas_graphql, mutation1, variables1)
+
+    # 2. Also update variant sellPrice (the main "Satış Fiyatı" field)
+    try:
+        mutation2 = """mutation SaveVariantPrices($input: SaveVariantPricesInput!) {
+            saveVariantPrices(input: $input) { __typename }
+        }"""
+        variables2 = {"input": {
+            "productId": ikas_id,
+            "variantId": variant["id"],
+            "prices": [{"sellPrice": new_price}]
+        }}
+        await loop.run_in_executor(None, ikas_graphql, mutation2, variables2)
+    except Exception as e:
+        logger.warning(f"saveVariantPrices failed for {ikas_id}: {e}")
 
     # Update price_updated_at for 23-hour protection
     await db.products.update_one({"ikas_product_id": ikas_id}, {"$set": {"price_updated_at": datetime.now(timezone.utc).isoformat()}})
