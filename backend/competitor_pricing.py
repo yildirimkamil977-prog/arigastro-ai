@@ -373,7 +373,7 @@ def scrape_competitor_price(url: str, competitor_key: str, retries: int = 2) -> 
             "api_key": SCRAPERAPI_KEY,
             "url": url,
             "render": "true",
-        }, timeout=50)
+        }, timeout=30)
         
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, "html.parser")
@@ -613,7 +613,7 @@ def scrape_all_competitor_prices(matches: dict) -> dict:
     jobs = {k: m for k, m in matches.items() if m.get("url")}
     if not jobs:
         return prices
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=6) as executor:
         futures = {
             executor.submit(scrape_competitor_price, m["url"], k): k
             for k, m in jobs.items()

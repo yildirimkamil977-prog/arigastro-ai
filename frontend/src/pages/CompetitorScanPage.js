@@ -22,21 +22,31 @@ export default function CompetitorScanPage() {
         axios.get(`${API}/competitor/category-rules`, { headers: getAuthHeaders() }),
         axios.get(`${API}/filters/categories`, { headers: getAuthHeaders() }),
       ]);
-      setRules(rulesRes.data.rules || []);
+      const fetchedRules = rulesRes.data.rules || [];
+      setRules(fetchedRules);
       setCategories(catsRes.data.categories || []);
+      // Check if any task is still running
+      const anyRunning = fetchedRules.some(r => r.task_running);
+      if (anyRunning) {
+        setRunningTasks(prev => {
+          const next = { ...prev };
+          fetchedRules.forEach(r => { if (r.task_running) next[r.category_name] = true; else delete next[r.category_name]; });
+          return next;
+        });
+      }
     } catch { toast.error("Veri yüklenemedi"); }
     setLoading(false);
   }, []);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  // Poll running tasks
+  // Poll running tasks every 5s
   useEffect(() => {
-    const running = rules.filter(r => r.task_running);
-    if (running.length === 0) return;
+    const hasRunning = rules.some(r => r.task_running) || Object.values(runningTasks).some(Boolean);
+    if (!hasRunning) return;
     const interval = setInterval(fetchData, 5000);
     return () => clearInterval(interval);
-  }, [rules, fetchData]);
+  }, [rules, runningTasks, fetchData]);
 
   const addRule = async () => {
     if (!newCategory) return;
