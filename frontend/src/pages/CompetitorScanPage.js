@@ -44,9 +44,29 @@ export default function CompetitorScanPage() {
   useEffect(() => {
     const hasRunning = rules.some(r => r.task_running) || Object.values(runningTasks).some(Boolean);
     if (!hasRunning) return;
-    const interval = setInterval(fetchData, 5000);
+    const interval = setInterval(async () => {
+      try {
+        const { data } = await axios.get(`${API}/competitor/category-rules`, { headers: getAuthHeaders() });
+        const newRules = data.rules || [];
+        // Check if any previously running task has completed
+        newRules.forEach(r => {
+          const wasRunning = runningTasks[r.category_name] || rules.find(old => old.category_name === r.category_name)?.task_running;
+          if (wasRunning && !r.task_running) {
+            const ts = r.task_status;
+            toast.success(`"${r.category_name}" tamamlandi: ${ts?.updated || 0} guncellendi, ${ts?.skipped || 0} atlandi`);
+          }
+        });
+        setRules(newRules);
+        // Clear finished tasks from runningTasks
+        setRunningTasks(prev => {
+          const next = { ...prev };
+          newRules.forEach(r => { if (!r.task_running) delete next[r.category_name]; });
+          return next;
+        });
+      } catch {}
+    }, 4000);
     return () => clearInterval(interval);
-  }, [rules, runningTasks, fetchData]);
+  }, [rules, runningTasks]);
 
   const addRule = async () => {
     if (!newCategory) return;
@@ -235,10 +255,11 @@ function RuleCard({ rule, onToggle, onRun, onDelete, running }) {
           <div className="mt-2 flex items-center gap-4 text-xs text-slate-500">
             <span className="flex items-center gap-1">
               <CheckCircle2 className="h-3 w-3 text-emerald-500" />
-              Son: {new Date(lastRun).toLocaleString("tr-TR")}
+              Tamamlandi — {new Date(lastRun).toLocaleString("tr-TR")}
             </span>
             {taskStatus?.updated > 0 && <span className="text-emerald-600 font-medium">{taskStatus.updated} guncellendi</span>}
             {taskStatus?.skipped > 0 && <span className="text-amber-600">{taskStatus.skipped} atlandi</span>}
+            {taskStatus?.scanned > 0 && <span className="text-slate-400">{taskStatus.scanned} tarandi</span>}
           </div>
         )}
       </div>
