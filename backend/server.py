@@ -4200,14 +4200,19 @@ async def startup():
         f.write(f"## Admin\n- Username: {admin_username}\n- Password: {admin_password}\n- Role: admin\n\n")
         f.write(f"## Auth Endpoints\n- POST /api/auth/login\n- GET /api/auth/me\n- POST /api/auth/logout\n")
     
-    # Start scheduler — TR saatleri: 00:00 Feed, 00:15 İkas Kur, 01:00 Rakip Tarama+Oto Fiyat, 03:00 Oto SEO
-    scheduler.add_job(scheduled_feed_sync, CronTrigger(hour=21, minute=0), id="feed_sync", name="Feed Guncelleme (Her gece 00:00 TR)", replace_existing=True)
-    scheduler.add_job(scheduled_price_check, CronTrigger(hour=21, minute=30), id="price_check_cron", name="Akakce Fiyat (Her gece 00:30 TR)", replace_existing=True)
-    scheduler.add_job(lambda: asyncio.ensure_future(scheduled_ikas_currency_sync()), CronTrigger(hour=21, minute=15), id="ikas_currency_sync_cron", name="Ikas Urun/Kategori Senk (Her gece 00:15 TR)", replace_existing=True)
-    scheduler.add_job(lambda: asyncio.ensure_future(run_scheduled_competitor_scan(db, ikas_graphql)), CronTrigger(hour=22, minute=0), id="competitor_scan_cron", name="Rakip Tarama + Oto Fiyat (Her gece 01:00 TR)", replace_existing=True)
-    scheduler.add_job(lambda: asyncio.ensure_future(scheduled_auto_seo()), CronTrigger(hour=0, minute=0), id="auto_seo_cron", name="Otomatik SEO Uretimi (Her gece 03:00 TR)", replace_existing=True)
+    # Start scheduler — TR saatleri
+    # Akakçe akışı (ayrı):
+    scheduler.add_job(scheduled_feed_sync, CronTrigger(hour=21, minute=0), id="feed_sync", name="Feed Guncelleme (00:00 TR)", replace_existing=True)
+    scheduler.add_job(scheduled_price_check, CronTrigger(hour=21, minute=30), id="price_check_cron", name="Akakce Fiyat (00:30 TR)", replace_existing=True)
+    # Rakip fiyat takip akışı:
+    # 00:00 TR (21:00 UTC) → İkas'tan güncel fiyatları çek
+    scheduler.add_job(lambda: asyncio.ensure_future(scheduled_ikas_currency_sync()), CronTrigger(hour=21, minute=0), id="ikas_currency_sync_cron", name="Ikas Fiyat Guncelle (00:00 TR)", replace_existing=True)
+    # 00:30 TR (21:30 UTC) → Rakip sitelerden fiyat tara
+    scheduler.add_job(lambda: asyncio.ensure_future(run_scheduled_competitor_scan(db, ikas_graphql)), CronTrigger(hour=21, minute=30), id="competitor_scan_cron", name="Rakip Fiyat Tara (00:30 TR)", replace_existing=True)
+    # 03:00 TR (00:00 UTC) → Otomatik SEO
+    scheduler.add_job(lambda: asyncio.ensure_future(scheduled_auto_seo()), CronTrigger(hour=0, minute=0), id="auto_seo_cron", name="Oto SEO (03:00 TR)", replace_existing=True)
     scheduler.start()
-    logger.info("Scheduler basladi: Feed (00:00 TR), Ikas Senk (00:15 TR), Akakce (00:30 TR), Rakip (01:00 TR), Oto SEO (03:00 TR)")
+    logger.info("Scheduler basladi: Feed(00:00), Akakce(00:30), Ikas(00:00), Rakip(00:30), SEO(03:00)")
 
 
 async def scheduled_auto_seo():

@@ -9,11 +9,10 @@ import {
 
 const navItems = [
   { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { path: "/products", label: "Urunler & Eslestirme", icon: Package },
+  { path: "/competitor-scan", label: "Otomasyon", icon: Radar },
+  { path: "/price-changes", label: "Islem Loglari", icon: History },
   { path: "/categories", label: "Kategoriler", icon: Tags },
-  { path: "/price-tracking", label: "Fiyat Takip", icon: TrendingDown },
-  { path: "/products", label: "Urunler & Fiyat Takibi", icon: Package },
-  { path: "/competitor-scan", label: "Rakip Tarama", icon: Radar },
-  { path: "/price-changes", label: "Fiyat Logları", icon: History },
   { path: "/seo", label: "SEO Uretici", icon: FileText },
   { path: "/seo-logs", label: "Toplu SEO", icon: Send },
   { path: "/brand-category-seo", label: "Marka/Kategori SEO", icon: Building2 },

@@ -1,173 +1,218 @@
 import { useState, useEffect, useCallback } from "react";
-import { API, getAuthHeaders } from "../context/AuthContext";
 import axios from "axios";
-import { toast } from "sonner";
-import {
-  Search, ChevronLeft, ChevronRight, Loader2, RefreshCw, ArrowRight,
-  CheckCircle2, Clock, AlertTriangle, ShieldX, ShieldCheck
-} from "lucide-react";
 import { Button } from "../components/ui/button";
-import { Input } from "../components/ui/input";
+import { Loader2, ChevronDown, ChevronUp, CheckCircle2, XCircle, AlertTriangle, Clock, ArrowDown } from "lucide-react";
+
+const API = process.env.REACT_APP_BACKEND_URL + "/api";
+const getAuthHeaders = () => ({ Authorization: `Bearer ${localStorage.getItem("token")}` });
+
+const formatPrice = (p) => p ? new Intl.NumberFormat("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(p) : "-";
+const formatDate = (d) => d ? new Date(d).toLocaleString("tr-TR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "-";
 
 export default function PriceChangesPage() {
-  const [changes, setChanges] = useState([]);
-  const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [pages, setPages] = useState(0);
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
+  const [operations, setOperations] = useState([]);
+  const [selectedOp, setSelectedOp] = useState(null);
+  const [opDetails, setOpDetails] = useState(null);
+  const [recentChanges, setRecentChanges] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [view, setView] = useState("operations"); // "operations" or "all"
 
-  const fetchChanges = useCallback(async () => {
-    setLoading(true);
+  const fetchOps = useCallback(async () => {
     try {
-      const params = new URLSearchParams({ page, limit: 50 });
-      if (search) params.set("search", search);
-      if (statusFilter) params.set("status_filter", statusFilter);
-      const { data } = await axios.get(`${API}/competitor/price-changes-full?${params}`, { headers: getAuthHeaders(), withCredentials: true });
-      setChanges(data.changes || []);
-      setTotal(data.total || 0);
-      setPages(data.pages || 0);
-    } catch {
-      toast.error("Fiyat değişiklikleri yüklenemedi");
-    }
+      const { data } = await axios.get(`${API}/competitor/operations?page=${page}&limit=15`, { headers: getAuthHeaders() });
+      setOperations(data.operations || []);
+      setTotalPages(data.pages || 1);
+    } catch {}
     setLoading(false);
-  }, [page, search, statusFilter]);
+  }, [page]);
 
-  useEffect(() => { fetchChanges(); }, [fetchChanges]);
+  const fetchAllChanges = useCallback(async () => {
+    try {
+      const { data } = await axios.get(`${API}/competitor/price-changes?page=${page}&limit=30`, { headers: getAuthHeaders() });
+      setRecentChanges(data.changes || []);
+      setTotalPages(data.pages || 1);
+    } catch {}
+    setLoading(false);
+  }, [page]);
 
-  const formatPrice = (price) => {
-    if (!price && price !== 0) return "-";
-    return new Intl.NumberFormat("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(price);
+  useEffect(() => {
+    setLoading(true);
+    if (view === "operations") fetchOps();
+    else fetchAllChanges();
+  }, [view, page, fetchOps, fetchAllChanges]);
+
+  const loadOpDetail = async (opId) => {
+    if (selectedOp === opId) { setSelectedOp(null); return; }
+    setSelectedOp(opId);
+    setDetailLoading(true);
+    try {
+      const { data } = await axios.get(`${API}/competitor/operations/${opId}`, { headers: getAuthHeaders() });
+      setOpDetails(data);
+    } catch { setOpDetails(null); }
+    setDetailLoading(false);
   };
 
-  const formatDate = (d) => {
-    if (!d) return "-";
-    const dt = new Date(d);
-    return dt.toLocaleDateString("tr-TR") + " " + dt.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
-  };
-
-  const getStatusBadge = (ch) => {
-    if (ch.applied) {
-      return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-100 text-emerald-700"><CheckCircle2 className="h-3 w-3" /> Uygulandı</span>;
-    }
-    if (ch.action === "floor_hit") {
-      return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-orange-100 text-orange-700"><ShieldCheck className="h-3 w-3" /> Dip Fiyat Koruması</span>;
-    }
-    if (ch.apply_error) {
-      return (
-        <div className="text-center">
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-red-100 text-red-700"><ShieldX className="h-3 w-3" /> Hata</span>
-          <div className="text-[10px] text-red-500 mt-0.5 max-w-[140px] truncate" title={ch.apply_error}>{ch.apply_error}</div>
-        </div>
-      );
-    }
-    return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-100 text-amber-700"><Clock className="h-3 w-3" /> Bekliyor</span>;
-  };
+  if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-slate-400" /></div>;
 
   return (
     <div className="space-y-4" data-testid="price-changes-page">
-      <div className="flex items-center justify-between flex-wrap gap-2">
+      {/* Header */}
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-slate-900" data-testid="page-title">Fiyat Değişiklik Logları</h1>
-          <p className="text-sm text-slate-500">{total} kayıt</p>
+          <h1 className="text-xl font-bold text-slate-900">Islem Loglari</h1>
+          <p className="text-sm text-slate-500">Fiyat tarama ve guncelleme islemlerinin kayitlari</p>
         </div>
-        <Button size="sm" variant="outline" onClick={fetchChanges} data-testid="refresh-btn">
-          <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Yenile
-        </Button>
+        <div className="flex gap-2">
+          <Button size="sm" variant={view === "operations" ? "default" : "outline"} onClick={() => { setView("operations"); setPage(1); }} data-testid="view-operations">
+            Islemler
+          </Button>
+          <Button size="sm" variant={view === "all" ? "default" : "outline"} onClick={() => { setView("all"); setPage(1); }} data-testid="view-all">
+            Tum Degisiklikler
+          </Button>
+        </div>
       </div>
 
-      <div className="bg-white rounded-xl border p-3 shadow-sm flex gap-2 flex-wrap items-center" data-testid="filters">
-        <div className="relative flex-1 min-w-[200px]">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-          <Input placeholder="Ürün ara..." value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} className="pl-9 h-9" data-testid="search-input" />
-        </div>
-        <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1); }} className="border rounded-lg px-3 h-9 text-sm bg-white min-w-[160px] focus:ring-2 focus:ring-violet-200 focus:border-violet-400 outline-none" data-testid="status-filter">
-          <option value="">Tüm Durum</option>
-          <option value="applied">Uygulanmış</option>
-          <option value="pending">Bekliyor</option>
-          <option value="floor_hit">Dip Fiyat Koruması</option>
-          <option value="error">Hatalı</option>
-        </select>
-      </div>
-
-      <div className="bg-white rounded-xl border shadow-sm overflow-hidden" data-testid="changes-table">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 border-b">
-              <tr>
-                <th className="text-left px-4 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Ürün</th>
-                <th className="text-center px-3 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Eski Fiyat</th>
-                <th className="text-center px-1 py-3"></th>
-                <th className="text-center px-3 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Yeni Fiyat</th>
-                <th className="text-center px-3 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">En Ucuz Rakip</th>
-                <th className="text-center px-3 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Dip Fiyat</th>
-                <th className="text-center px-3 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Durum</th>
-                <th className="text-center px-3 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Tarih</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {loading ? (
-                <tr><td colSpan={8} className="text-center py-16"><Loader2 className="h-6 w-6 animate-spin mx-auto text-slate-400" /></td></tr>
-              ) : changes.length === 0 ? (
-                <tr><td colSpan={8} className="text-center py-16 text-slate-400">Fiyat değişikliği bulunamadı</td></tr>
-              ) : changes.map((ch, i) => {
-                const oldTl = ch.old_price_tl || ch.old_price || 0;
-                const newTl = ch.new_price_tl || ch.new_price || 0;
-                const curLabel = ch.base_currency && ch.base_currency !== "TRY" ? ch.base_currency : "TL";
-                return (
-                <tr key={i} className={`hover:bg-slate-50/70 transition-colors ${ch.action === "floor_hit" ? "bg-orange-50/30" : ch.apply_error ? "bg-red-50/30" : ""}`}>
-                  <td className="px-4 py-3">
-                    <div className="font-medium text-slate-900 text-sm truncate max-w-[220px]">{ch.product_name}</div>
-                    {ch.reason && <div className="text-[11px] text-slate-400 mt-0.5 truncate max-w-[220px]">{ch.reason}</div>}
-                  </td>
-                  <td className="text-center px-3 py-3">
-                    <span className="text-slate-500">{formatPrice(oldTl)} ₺</span>
-                  </td>
-                  <td className="text-center px-1 py-3"><ArrowRight className="h-3.5 w-3.5 text-slate-300 mx-auto" /></td>
-                  <td className="text-center px-3 py-3">
-                    {newTl ? (
-                      <>
-                        <span className="font-bold text-blue-700">{formatPrice(newTl)} ₺</span>
-                        {ch.new_price_base && curLabel !== "TL" && (
-                          <div className="text-[11px] text-violet-600 font-medium">{formatPrice(ch.new_price_base)} {curLabel}</div>
-                        )}
-                        {oldTl && newTl && <div className="text-[11px] text-emerald-600 font-medium">-{formatPrice(oldTl - newTl)} ₺</div>}
-                      </>
-                    ) : (
-                      <span className="text-xs text-slate-400">—</span>
-                    )}
-                  </td>
-                  <td className="text-center px-3 py-3">
-                    <div className="text-sm">{formatPrice(ch.cheapest_price)} ₺</div>
-                    <div className="text-[11px] text-slate-400">{ch.cheapest_competitor}</div>
-                  </td>
-                  <td className="text-center px-3 py-3">
-                    {ch.floor_price ? (
-                      <span className="text-xs font-medium text-orange-700">{formatPrice(ch.floor_price)} {curLabel}</span>
-                    ) : (
-                      <span className="text-[11px] text-red-400 font-medium flex items-center justify-center gap-0.5"><AlertTriangle className="h-3 w-3" /> Yok</span>
-                    )}
-                  </td>
-                  <td className="text-center px-3 py-3">{getStatusBadge(ch)}</td>
-                  <td className="text-center px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{formatDate(ch.changed_at)}</td>
-                </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-
-        {pages > 1 && (
-          <div className="flex items-center justify-between px-4 py-3 border-t bg-slate-50">
-            <span className="text-sm text-slate-500">Sayfa {page}/{pages} ({total} kayıt)</span>
-            <div className="flex gap-1">
-              <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage(p => p - 1)} data-testid="prev-page"><ChevronLeft className="h-4 w-4" /></Button>
-              <Button size="sm" variant="outline" disabled={page >= pages} onClick={() => setPage(p => p + 1)} data-testid="next-page"><ChevronRight className="h-4 w-4" /></Button>
+      {view === "operations" ? (
+        /* Operations View */
+        <div className="space-y-3">
+          {operations.length === 0 ? (
+            <div className="bg-white border rounded-xl p-12 text-center">
+              <Clock className="h-10 w-10 text-slate-300 mx-auto mb-3" />
+              <p className="text-slate-500">Henuz islem kaydi yok</p>
+              <p className="text-slate-400 text-sm mt-1">Otomasyon sayfasindan bir kategori calistirdiginizda burada gorunecek</p>
             </div>
+          ) : operations.map(op => (
+            <div key={op.operation_id} className="bg-white border rounded-xl overflow-hidden" data-testid={`op-${op.operation_id}`}>
+              {/* Operation Summary */}
+              <button onClick={() => loadOpDetail(op.operation_id)} className="w-full p-4 text-left hover:bg-slate-50 transition-colors">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    {op.status === "completed" ? <CheckCircle2 className="h-5 w-5 text-emerald-500" /> :
+                     op.status === "running" ? <Loader2 className="h-5 w-5 text-blue-500 animate-spin" /> :
+                     <XCircle className="h-5 w-5 text-red-500" />}
+                    <div>
+                      <h3 className="font-semibold text-slate-800">{op.category}</h3>
+                      <p className="text-xs text-slate-500">
+                        {formatDate(op.started_at)} | {op.triggered_by === "manual" ? "Manuel" : "Otomatik"} | {op.total_products} urun
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    {op.updated > 0 && <span className="text-sm font-medium text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded">{op.updated} guncellendi</span>}
+                    {op.skipped > 0 && <span className="text-sm text-amber-600 bg-amber-50 px-2 py-0.5 rounded">{op.skipped} atlandi</span>}
+                    {selectedOp === op.operation_id ? <ChevronUp className="h-4 w-4 text-slate-400" /> : <ChevronDown className="h-4 w-4 text-slate-400" />}
+                  </div>
+                </div>
+              </button>
+
+              {/* Operation Detail (expanded) */}
+              {selectedOp === op.operation_id && (
+                <div className="border-t bg-slate-50 p-4">
+                  {detailLoading ? (
+                    <div className="flex items-center justify-center py-6"><Loader2 className="h-5 w-5 animate-spin text-slate-400" /></div>
+                  ) : opDetails?.changes?.length > 0 ? (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b text-left text-xs text-slate-500">
+                            <th className="pb-2 pr-3">Durum</th>
+                            <th className="pb-2 pr-3">Urun</th>
+                            <th className="pb-2 pr-3 text-right">Eski Fiyat</th>
+                            <th className="pb-2 pr-3 text-right">Yeni Fiyat</th>
+                            <th className="pb-2 pr-3 text-right">Rakip Fiyat</th>
+                            <th className="pb-2 pr-3">Rakip</th>
+                            <th className="pb-2 pr-3 text-right">Dip Fiyat</th>
+                            <th className="pb-2">Sebep</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-200">
+                          {opDetails.changes.map((ch, i) => (
+                            <tr key={i} className="hover:bg-white">
+                              <td className="py-2 pr-3">
+                                {ch.applied ? <CheckCircle2 className="h-4 w-4 text-emerald-500" /> :
+                                 ch.action === "floor_hit" ? <AlertTriangle className="h-4 w-4 text-amber-500" /> :
+                                 <XCircle className="h-4 w-4 text-red-400" />}
+                              </td>
+                              <td className="py-2 pr-3 font-medium text-slate-700 max-w-[200px] truncate">{ch.product_name}</td>
+                              <td className="py-2 pr-3 text-right text-slate-500">{formatPrice(ch.old_price_tl)} TL</td>
+                              <td className="py-2 pr-3 text-right font-medium text-slate-800">{ch.new_price_tl ? `${formatPrice(ch.new_price_tl)} TL` : "-"}</td>
+                              <td className="py-2 pr-3 text-right text-blue-600">{formatPrice(ch.cheapest_price)} TL</td>
+                              <td className="py-2 pr-3 text-xs text-slate-500">{ch.cheapest_competitor || "-"}</td>
+                              <td className="py-2 pr-3 text-right text-orange-600">{formatPrice(ch.floor_price)} {ch.base_currency || "TL"}</td>
+                              <td className="py-2 text-xs text-slate-500 max-w-[150px] truncate">
+                                {ch.action === "floor_hit" ? "Dip fiyat korumasi" :
+                                 ch.apply_error ? ch.apply_error :
+                                 ch.applied ? "Basarili" :
+                                 ch.reason || "Bekliyor"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <p className="text-center text-slate-400 py-4 text-sm">Bu islem icin detay bulunamadi</p>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : (
+        /* All Changes View */
+        <div className="bg-white border rounded-xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50">
+                <tr className="border-b text-left text-xs text-slate-500">
+                  <th className="p-3">Durum</th>
+                  <th className="p-3">Tarih</th>
+                  <th className="p-3">Urun</th>
+                  <th className="p-3 text-right">Eski</th>
+                  <th className="p-3 text-center"><ArrowDown className="h-3 w-3 inline" /></th>
+                  <th className="p-3 text-right">Yeni</th>
+                  <th className="p-3 text-right">Rakip</th>
+                  <th className="p-3">Kaynak</th>
+                  <th className="p-3">Sebep</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {recentChanges.map((ch, i) => (
+                  <tr key={i} className="hover:bg-slate-50">
+                    <td className="p-3">
+                      {ch.applied ? <CheckCircle2 className="h-4 w-4 text-emerald-500" /> :
+                       ch.action === "floor_hit" ? <AlertTriangle className="h-4 w-4 text-amber-500" /> :
+                       <XCircle className="h-4 w-4 text-red-400" />}
+                    </td>
+                    <td className="p-3 text-xs text-slate-500 whitespace-nowrap">{formatDate(ch.changed_at)}</td>
+                    <td className="p-3 font-medium text-slate-700 max-w-[180px] truncate">{ch.product_name}</td>
+                    <td className="p-3 text-right text-slate-500">{formatPrice(ch.old_price_tl)}</td>
+                    <td className="p-3 text-center text-slate-300">→</td>
+                    <td className="p-3 text-right font-medium text-slate-800">{ch.new_price_tl ? formatPrice(ch.new_price_tl) : "-"}</td>
+                    <td className="p-3 text-right text-blue-600">{formatPrice(ch.cheapest_price)}</td>
+                    <td className="p-3 text-xs text-slate-500">{ch.triggered_by === "manual_category" ? "Manuel" : ch.triggered_by === "scheduled" ? "Otomatik" : ch.triggered_by || "-"}</td>
+                    <td className="p-3 text-xs text-slate-500 max-w-[120px] truncate">
+                      {ch.action === "floor_hit" ? "Dip fiyat" : ch.applied ? "Uygulandi" : ch.apply_error || "Bekliyor"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-        )}
-      </div>
+        </div>
+      )}
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-2">
+          <Button size="sm" variant="outline" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}>Onceki</Button>
+          <span className="text-sm text-slate-500">{page} / {totalPages}</span>
+          <Button size="sm" variant="outline" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}>Sonraki</Button>
+        </div>
+      )}
     </div>
   );
 }

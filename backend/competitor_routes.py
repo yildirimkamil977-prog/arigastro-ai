@@ -2,6 +2,7 @@
 import os
 import asyncio
 import logging
+import uuid
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -444,6 +445,23 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
     @router.get("/category-rules")
     async def list_category_rules(user: dict = Depends(get_current_user)):
         rules = await db.pricing_rules.find({}, {"_id": 0}).to_list(200)
+        # Enrich with product counts and task status
+        for rule in rules:
+            cat_name = rule.get("category_name", "")
+            # Product count for this category
+            count = await db.products.count_documents({
+                "inactive": {"$ne": True},
+                "$or": [
+                    {"ikas_categories.name": cat_name},
+                    {"category_path": {"$regex": cat_name, "$options": "i"}},
+                ]
+            })
+            rule["product_count"] = count
+            # Task status
+            task_key = f"category_pricing_{cat_name}"
+            status = await db.system_status.find_one({"task": task_key}, {"_id": 0})
+            rule["task_running"] = status.get("running", False) if status else False
+            rule["task_status"] = status
         return {"rules": rules}
     
     @router.delete("/category-rules/{category_name}")
@@ -501,7 +519,20 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
     async def _run_category_full_pricing(db, ikas_fn, products, rule, category_name, task_key):
         """Background: Full pricing cycle for a category."""
         loop = asyncio.get_event_loop()
-        undercut = rule.get("undercut_amount", 100)
+        undercut = rule.get("undercut_amount", 200)
+
+        # Create operation record for detailed logging
+        operation_id = f"op_{uuid.uuid4().hex[:8]}"
+        await db.pricing_operations.insert_one({
+            "operation_id": operation_id,
+            "category": category_name,
+            "triggered_by": "manual",
+            "undercut_amount": undercut,
+            "total_products": len(products),
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "status": "running",
+            "results": [],
+        })
 
         PRICE_LISTS_MAP = {
             "db850a77-bfd6-43de-8892-78d16dc01e0e": "EUR",
@@ -642,6 +673,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                             log_entry = {
                                 "product_slug": slug,
                                 "product_name": product.get("name", ""),
+                                "operation_id": operation_id,
                                 "action": "update",
                                 "old_price_tl": result.get("old_price_tl"),
                                 "new_price_tl": new_tl,
@@ -684,6 +716,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                             await db.price_changes.insert_one({
                                 "product_slug": slug,
                                 "product_name": product.get("name", ""),
+                                "operation_id": operation_id,
                                 "action": "floor_hit",
                                 "old_price_tl": product.get("our_price"),
                                 "base_currency": base_currency,
@@ -720,11 +753,19 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                 "matched_total": len(matched_slugs),
                 "completed_at": datetime.now(timezone.utc).isoformat(),
             }})
+            # Update operation record
+            await db.pricing_operations.update_one({"operation_id": operation_id}, {"$set": {
+                "status": "completed",
+                "ikas_refreshed": ikas_refreshed, "scanned": scanned,
+                "updated": updated_count, "skipped": skipped,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            }})
             logger.info(f"Category pricing [{category_name}] done: {ikas_refreshed} ikas, {scanned} scanned, {updated_count} updated, {skipped} skipped")
 
         except Exception as e:
             logger.error(f"Category pricing [{category_name}] error: {e}")
             await db.system_status.update_one({"task": task_key}, {"$set": {"running": False, "error": str(e)}})
+            await db.pricing_operations.update_one({"operation_id": operation_id}, {"$set": {"status": "error", "error": str(e)}})
 
     async def _apply_price_to_ikas_inline(loop, ikas_fn, ikas_id, new_price_tl, floor_price, base_currency, price_lists):
         """Apply price to İkas — updates BOTH price list AND variant sellPrice."""
@@ -821,11 +862,31 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
     
     # --- Price change log ---
     @router.get("/price-changes")
-    async def list_price_changes(page: int = 1, limit: int = 50, user: dict = Depends(get_current_user)):
+    async def list_price_changes(page: int = 1, limit: int = 50, operation_id: str = None, user: dict = Depends(get_current_user)):
         skip = (page - 1) * limit
-        total = await db.price_changes.count_documents({})
-        changes = await db.price_changes.find({}, {"_id": 0}).sort("changed_at", -1).skip(skip).limit(limit).to_list(limit)
+        query = {}
+        if operation_id:
+            query["operation_id"] = operation_id
+        total = await db.price_changes.count_documents(query)
+        changes = await db.price_changes.find(query, {"_id": 0}).sort("changed_at", -1).skip(skip).limit(limit).to_list(limit)
         return {"changes": changes, "total": total, "page": page, "pages": (total + limit - 1) // limit}
+
+    @router.get("/operations")
+    async def list_operations(page: int = 1, limit: int = 20, user: dict = Depends(get_current_user)):
+        """List pricing operations with summary stats."""
+        skip = (page - 1) * limit
+        total = await db.pricing_operations.count_documents({})
+        ops = await db.pricing_operations.find({}, {"_id": 0}).sort("started_at", -1).skip(skip).limit(limit).to_list(limit)
+        return {"operations": ops, "total": total, "page": page, "pages": (total + limit - 1) // limit}
+
+    @router.get("/operations/{operation_id}")
+    async def get_operation_detail(operation_id: str, user: dict = Depends(get_current_user)):
+        """Get detailed results for a specific pricing operation."""
+        op = await db.pricing_operations.find_one({"operation_id": operation_id}, {"_id": 0})
+        if not op:
+            raise HTTPException(404, "İşlem bulunamadı")
+        changes = await db.price_changes.find({"operation_id": operation_id}, {"_id": 0}).sort("changed_at", -1).to_list(1000)
+        return {"operation": op, "changes": changes}
     
     # --- TCMB Exchange Rates ---
     @router.get("/exchange-rates")

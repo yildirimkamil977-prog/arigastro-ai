@@ -1,397 +1,253 @@
 import { useState, useEffect, useCallback } from "react";
-import { API, getAuthHeaders } from "../context/AuthContext";
 import axios from "axios";
 import { toast } from "sonner";
-import {
-  Play, Square, Loader2, RefreshCw, TrendingDown, AlertTriangle,
-  CheckCircle2, BarChart3, Settings2, Save, Trash2, Plus
-} from "lucide-react";
 import { Button } from "../components/ui/button";
-import { Input } from "../components/ui/input";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
+import { Switch } from "../components/ui/switch";
+import { Loader2, Play, Pause, RefreshCw, Clock, CheckCircle2, XCircle, AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
+
+const API = process.env.REACT_APP_BACKEND_URL + "/api";
+const getAuthHeaders = () => ({ Authorization: `Bearer ${localStorage.getItem("token")}` });
 
 export default function CompetitorScanPage() {
-  const [dashboard, setDashboard] = useState(null);
-  const [scanStatus, setScanStatus] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [showRuleDialog, setShowRuleDialog] = useState(false);
+  const [rules, setRules] = useState([]);
   const [categories, setCategories] = useState([]);
-  const [newRule, setNewRule] = useState({ category_name: "", undercut_amount: 100, enabled: true, auto_update_ikas: false });
-  const [runningCategory, setRunningCategory] = useState(null);
-  const [categoryProgress, setCategoryProgress] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [newCategory, setNewCategory] = useState("");
+  const [runningTasks, setRunningTasks] = useState({});
+  const [showAddForm, setShowAddForm] = useState(false);
 
-  const fetchDashboard = useCallback(async () => {
+  const fetchData = useCallback(async () => {
     try {
-      const { data } = await axios.get(`${API}/competitor/dashboard`, { headers: getAuthHeaders(), withCredentials: true });
-      setDashboard(data);
-    } catch (err) {
-      toast.error("Dashboard yüklenemedi");
-    }
+      const [rulesRes, catsRes] = await Promise.all([
+        axios.get(`${API}/competitor/category-rules`, { headers: getAuthHeaders() }),
+        axios.get(`${API}/filters/categories`, { headers: getAuthHeaders() }),
+      ]);
+      setRules(rulesRes.data.rules || []);
+      setCategories(catsRes.data.categories || []);
+    } catch { toast.error("Veri yüklenemedi"); }
     setLoading(false);
   }, []);
 
-  const fetchScanStatus = useCallback(async () => {
-    try {
-      const { data } = await axios.get(`${API}/competitor/scan-status`, { headers: getAuthHeaders(), withCredentials: true });
-      setScanStatus(data);
-      return data;
-    } catch { return null; }
-  }, []);
+  useEffect(() => { fetchData(); }, [fetchData]);
 
-  const fetchCategories = async () => {
-    try {
-      const { data } = await axios.get(`${API}/competitor/products?page=1&limit=1`, { headers: getAuthHeaders(), withCredentials: true });
-      setCategories(data.categories || []);
-    } catch {}
-  };
-
+  // Poll running tasks
   useEffect(() => {
-    fetchDashboard();
-    fetchScanStatus();
-    fetchCategories();
-  }, []);
-
-  useEffect(() => {
-    if (!scanStatus?.running) return;
-    const interval = setInterval(async () => {
-      const data = await fetchScanStatus();
-      if (data && !data.running) {
-        clearInterval(interval);
-        fetchDashboard();
-        toast.success("Fiyat taraması tamamlandı");
-      }
-    }, 3000);
+    const running = rules.filter(r => r.task_running);
+    if (running.length === 0) return;
+    const interval = setInterval(fetchData, 5000);
     return () => clearInterval(interval);
-  }, [scanStatus?.running]);
+  }, [rules, fetchData]);
 
-  const startScan = async () => {
+  const addRule = async () => {
+    if (!newCategory) return;
     try {
-      const { data } = await axios.post(`${API}/competitor/scan-all`, {}, { headers: getAuthHeaders(), withCredentials: true });
-      if (data.started) {
-        toast.success(data.message);
-        fetchScanStatus();
-      } else {
-        toast.error(data.message);
-      }
-    } catch (err) {
-      toast.error("Tarama başlatılamadı");
-    }
+      await axios.post(`${API}/competitor/category-rules`, {
+        category_name: newCategory,
+        undercut_amount: 200,
+        auto_update_ikas: false,
+        enabled: true,
+      }, { headers: getAuthHeaders() });
+      toast.success(`"${newCategory}" kategorisi eklendi`);
+      setNewCategory("");
+      setShowAddForm(false);
+      fetchData();
+    } catch (e) { toast.error(e.response?.data?.detail || "Eklenemedi"); }
   };
 
-  const stopScan = async () => {
+  const deleteRule = async (categoryName) => {
+    if (!window.confirm("Bu kategori kuralını silmek istediğinize emin misiniz?")) return;
     try {
-      await axios.post(`${API}/competitor/scan-stop`, {}, { headers: getAuthHeaders(), withCredentials: true });
-      toast.info("Tarama durduruluyor...");
-    } catch {}
-  };
-
-  const saveRule = async () => {
-    if (!newRule.category_name) { toast.error("Kategori seçin"); return; }
-    try {
-      await axios.post(`${API}/competitor/category-rules`, newRule, { headers: getAuthHeaders(), withCredentials: true });
-      toast.success("Kategori kuralı kaydedildi");
-      setShowRuleDialog(false);
-      setNewRule({ category_name: "", undercut_amount: 100, enabled: true, auto_update_ikas: false });
-      fetchDashboard();
-    } catch { toast.error("Kaydetme başarısız"); }
-  };
-
-  const deleteRule = async (catName) => {
-    try {
-      await axios.delete(`${API}/competitor/category-rules/${encodeURIComponent(catName)}`, { headers: getAuthHeaders(), withCredentials: true });
+      await axios.delete(`${API}/competitor/category-rules/${encodeURIComponent(categoryName)}`, { headers: getAuthHeaders() });
       toast.success("Kural silindi");
-      fetchDashboard();
-    } catch { toast.error("Silme başarısız"); }
+      fetchData();
+    } catch { toast.error("Silinemedi"); }
   };
 
-  const runCategoryPricing = async (catName) => {
-    setRunningCategory(catName);
-    setCategoryProgress(null);
+  const toggleAutoUpdate = async (rule) => {
     try {
-      const { data } = await axios.post(`${API}/competitor/run-category-pricing/${encodeURIComponent(catName)}`, {}, { headers: getAuthHeaders(), withCredentials: true });
-      if (data.started) {
-        toast.success(`${catName}: ${data.total} ürün için tam tarama başlatıldı`);
-        const poll = setInterval(async () => {
-          try {
-            const { data: st } = await axios.get(`${API}/competitor/category-pricing-status/${data.task_key}`, { headers: getAuthHeaders(), withCredentials: true });
-            setCategoryProgress(st);
-            if (!st.running) {
-              clearInterval(poll);
-              setRunningCategory(null);
-              toast.success(`${catName}: ${st.updated || 0} ürün güncellendi, ${st.scanned || 0} tarandı`);
-              fetchDashboard();
-            }
-          } catch { clearInterval(poll); setRunningCategory(null); }
-        }, 3000);
-      } else {
-        toast.info(data.message);
-        setRunningCategory(null);
-      }
-    } catch (err) {
-      toast.error(err.response?.data?.detail || "Tarama başlatılamadı");
-      setRunningCategory(null);
+      await axios.post(`${API}/competitor/category-rules`, {
+        category_name: rule.category_name,
+        enabled: rule.enabled !== false,
+        undercut_amount: rule.undercut_amount || 200,
+        auto_update_ikas: !rule.auto_update_ikas,
+      }, { headers: getAuthHeaders() });
+      fetchData();
+    } catch { toast.error("Güncellenemedi"); }
+  };
+
+  const runNow = async (categoryName) => {
+    try {
+      setRunningTasks(prev => ({ ...prev, [categoryName]: true }));
+      const { data } = await axios.post(`${API}/competitor/run-category-pricing/${categoryName}`, {}, { headers: getAuthHeaders() });
+      toast.success(data.message || `"${categoryName}" tarama ve fiyat güncellemesi başlatıldı`);
+      fetchData();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Başlatılamadı");
+      setRunningTasks(prev => ({ ...prev, [categoryName]: false }));
     }
   };
 
-  const formatPrice = (price) => {
-    if (!price && price !== 0) return "-";
-    return new Intl.NumberFormat("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(price);
-  };
+  const totalProducts = rules.reduce((s, r) => s + (r.product_count || 0), 0);
+  const autoEnabled = rules.filter(r => r.auto_update_ikas).length;
 
-  if (loading) {
-    return <div className="flex items-center justify-center py-20"><Loader2 className="h-8 w-8 animate-spin text-slate-400" /></div>;
-  }
+  if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-slate-400" /></div>;
 
   return (
-    <div className="space-y-6" data-testid="competitor-scan-page">
-      <div className="flex items-center justify-between flex-wrap gap-3">
+    <div className="space-y-6" data-testid="automation-page">
+      {/* Header */}
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-slate-900" data-testid="page-title">Rakip Fiyat Tarama</h1>
-          <p className="text-sm text-slate-500">Rakip fiyat taraması, karşılaştırma ve otomatik fiyatlama kuralları</p>
+          <h1 className="text-xl font-bold text-slate-900">Otomasyon Yonetimi</h1>
+          <p className="text-sm text-slate-500">Kategorilerin otomatik fiyat takibi ve guncelleme ayarlari</p>
         </div>
-        <div className="flex gap-2">
-          <Button size="sm" variant="outline" onClick={() => { fetchDashboard(); fetchScanStatus(); }} data-testid="refresh-btn">
-            <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Yenile
-          </Button>
-          {scanStatus?.running ? (
-            <Button size="sm" onClick={stopScan} className="bg-red-600 hover:bg-red-700 text-white" data-testid="stop-scan-btn">
-              <Square className="h-3.5 w-3.5 mr-1.5" /> Taramayı Durdur
-            </Button>
-          ) : (
-            <Button size="sm" onClick={startScan} className="bg-violet-600 hover:bg-violet-700 text-white" data-testid="start-scan-btn">
-              <Play className="h-3.5 w-3.5 mr-1.5" /> Tüm Fiyatları Tara
-            </Button>
-          )}
+        <Button size="sm" onClick={() => setShowAddForm(!showAddForm)} data-testid="add-rule-btn" className="bg-slate-800 text-white hover:bg-slate-700">
+          + Kategori Ekle
+        </Button>
+      </div>
+
+      {/* Summary Cards */}
+      <div className="grid grid-cols-3 gap-4">
+        <div className="bg-white border rounded-xl p-4">
+          <p className="text-xs text-slate-500 mb-1">Toplam Kategori</p>
+          <p className="text-2xl font-bold text-slate-900">{rules.length}</p>
+        </div>
+        <div className="bg-white border rounded-xl p-4">
+          <p className="text-xs text-slate-500 mb-1">Otomatik Aktif</p>
+          <p className="text-2xl font-bold text-emerald-600">{autoEnabled}</p>
+        </div>
+        <div className="bg-white border rounded-xl p-4">
+          <p className="text-xs text-slate-500 mb-1">Takip Edilen Urun</p>
+          <p className="text-2xl font-bold text-blue-600">{totalProducts}</p>
         </div>
       </div>
 
-      {scanStatus?.running && (
-        <div className="bg-violet-50 border border-violet-200 rounded-xl p-4" data-testid="scan-progress">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-2">
-              <Loader2 className="h-4 w-4 animate-spin text-violet-600" />
-              <span className="font-medium text-violet-900">Fiyat taraması devam ediyor...</span>
-            </div>
-            <span className="text-sm text-violet-700 font-mono">{scanStatus.scanned || 0}/{scanStatus.total || 0}</span>
+      {/* Info Box */}
+      <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-800">
+        <div className="flex items-start gap-2">
+          <Clock className="h-4 w-4 mt-0.5 flex-shrink-0" />
+          <div>
+            <p className="font-medium">Gece Otomatik Akis</p>
+            <p className="text-blue-600 mt-1">00:00 Ikas fiyat guncelle → 00:30 Rakiplerden fiyat tara → Dip fiyata gore en ucuz rakibin 200 TL altina guncelle ve Ikas'a kaydet</p>
+            <p className="text-blue-500 text-xs mt-1">Sadece "Otomatik" acik olan kategoriler icin calisir.</p>
           </div>
-          <div className="w-full bg-violet-200 rounded-full h-2">
-            <div className="bg-violet-600 h-2 rounded-full transition-all duration-500" style={{ width: `${scanStatus.total ? (scanStatus.scanned / scanStatus.total * 100) : 0}%` }} />
+        </div>
+      </div>
+
+      {/* Add Form */}
+      {showAddForm && (
+        <div className="bg-white border rounded-xl p-4">
+          <h3 className="font-medium text-slate-800 mb-3">Yeni Kategori Ekle</h3>
+          <div className="flex gap-3">
+            <select value={newCategory} onChange={e => setNewCategory(e.target.value)} className="flex-1 h-10 px-3 border rounded-lg text-sm" data-testid="new-category-select">
+              <option value="">Kategori secin...</option>
+              {categories.filter(c => !rules.some(r => r.category_name === c.name)).map(c => (
+                <option key={c.name} value={c.name}>
+                  {c.depth > 0 ? "\u00A0\u00A0".repeat(c.depth) + "└ " : ""}{c.name} ({c.product_count || 0} urun)
+                </option>
+              ))}
+            </select>
+            <Button onClick={addRule} disabled={!newCategory} data-testid="confirm-add-btn" className="bg-slate-800 text-white hover:bg-slate-700">Ekle</Button>
+            <Button variant="outline" onClick={() => setShowAddForm(false)}>Iptal</Button>
           </div>
-          {scanStatus.current_product && <p className="text-xs text-violet-600 mt-1.5 truncate">Taranan: {scanStatus.current_product}</p>}
         </div>
       )}
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <StatCard icon={<BarChart3 className="h-5 w-5" />} label="Toplam Ürün" value={dashboard?.total_products || 0} color="bg-slate-100 text-slate-700" />
-        <StatCard icon={<CheckCircle2 className="h-5 w-5" />} label="Eşleşmiş" value={dashboard?.matched_products || 0} color="bg-emerald-100 text-emerald-700" />
-        <StatCard icon={<AlertTriangle className="h-5 w-5" />} label="Rakip Daha Ucuz" value={dashboard?.cheaper_count || 0} color="bg-red-100 text-red-700" />
-        <StatCard icon={<TrendingDown className="h-5 w-5" />} label="Fiyat Önerisi" value={dashboard?.recommend_count || 0} color="bg-blue-100 text-blue-700" />
-      </div>
-
-      {dashboard?.scan_status?.completed_at && !scanStatus?.running && (
-        <div className="bg-white rounded-xl border p-4 text-sm" data-testid="last-scan-info">
-          <div className="flex items-center justify-between">
-            <span className="text-slate-600">Son Tarama:</span>
-            <span className="font-medium">{new Date(dashboard.scan_status.completed_at).toLocaleDateString("tr-TR")} {new Date(dashboard.scan_status.completed_at).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}</span>
-          </div>
-          <div className="flex gap-4 mt-2 text-xs text-slate-500">
-            <span>Taranan: <strong>{dashboard.scan_status.scanned || 0}</strong></span>
-            <span>Başarılı: <strong className="text-emerald-600">{dashboard.scan_status.success || 0}</strong></span>
-            <span>Başarısız: <strong className="text-red-600">{dashboard.scan_status.failed || 0}</strong></span>
-          </div>
+      {/* Rules List */}
+      {rules.length === 0 ? (
+        <div className="bg-white border rounded-xl p-12 text-center">
+          <AlertTriangle className="h-10 w-10 text-slate-300 mx-auto mb-3" />
+          <p className="text-slate-500">Henuz kategori eklenmemis</p>
+          <p className="text-slate-400 text-sm mt-1">Yukaridaki "Kategori Ekle" butonuyla baslayın</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {rules.map(rule => (
+            <RuleCard key={rule.category_name} rule={rule} onToggle={toggleAutoUpdate} onRun={runNow} onDelete={deleteRule} running={runningTasks[rule.category_name] || rule.task_running} />
+          ))}
         </div>
       )}
-
-      {/* Scheduled Scan Info */}
-      <div className="bg-white rounded-xl border p-4" data-testid="schedule-info">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="font-medium text-sm text-slate-800">Gece Otomatik Akış</span>
-          </div>
-          <div className="flex gap-2 text-xs">
-            <span className="bg-slate-100 text-slate-600 px-2 py-1 rounded-lg font-medium">00:00 Feed</span>
-            <span className="bg-violet-100 text-violet-700 px-2 py-1 rounded-lg font-medium">01:00 Rakip Tarama</span>
-            <span className="bg-emerald-100 text-emerald-700 px-2 py-1 rounded-lg font-medium">+İkas Oto Güncelleme</span>
-          </div>
-        </div>
-        <p className="text-xs text-slate-500 mt-2">Her gece 00:00&apos;da feed güncellenir, 01:00&apos;da eşleşmiş ürünlerin rakip fiyatları taranır ve TCMB kurları ile karşılaştırılır. <strong>&ldquo;İkas Oto&rdquo;</strong> açık olan kategorilerdeki ürünlerin fiyatları dip fiyat koruması altında otomatik güncellenir.</p>
-        {dashboard?.scheduled_scan?.last_run && (
-          <p className="text-xs text-slate-400 mt-1">Son zamanlanmış tarama: {new Date(dashboard.scheduled_scan.last_run).toLocaleDateString("tr-TR")} {new Date(dashboard.scheduled_scan.last_run).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })} — Güncellenen: {dashboard.scheduled_scan.auto_updated || 0} ürün</p>
-        )}
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white rounded-xl border shadow-sm" data-testid="category-rules-section">
-          <div className="flex items-center justify-between px-4 py-3 border-b">
-            <h2 className="font-semibold text-sm text-slate-800 flex items-center gap-1.5"><Settings2 className="h-4 w-4" /> Kategori Fiyatlama Kuralları</h2>
-            <Button size="sm" variant="outline" onClick={() => { setShowRuleDialog(true); fetchCategories(); }} data-testid="add-rule-btn"><Plus className="h-3.5 w-3.5 mr-1" /> Kural Ekle</Button>
-          </div>
-          <div className="p-3">
-            {(dashboard?.category_rules || []).length === 0 ? (
-              <div className="text-center py-8">
-                <Settings2 className="h-8 w-8 text-slate-300 mx-auto mb-2" />
-                <p className="text-sm text-slate-400">Henüz kategori kuralı tanımlanmadı</p>
-                <p className="text-xs text-slate-400 mt-1">Kural ekleyerek otomatik fiyatlama başlatın</p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {(dashboard?.category_rules || []).map(rule => {
-                  const isRunning = runningCategory === rule.category_name;
-                  const progress = isRunning ? categoryProgress : null;
-                  return (
-                  <div key={rule.category_name} className={`p-3 rounded-lg border ${rule.enabled ? "bg-white border-slate-200" : "bg-slate-50 border-slate-100 opacity-60"}`} data-testid={`rule-${rule.category_name}`}>
-                    <div className="flex items-center justify-between">
-                      <div className="flex-1">
-                        <div className="font-medium text-sm text-slate-800">{rule.category_name}</div>
-                        <div className="flex gap-3 text-xs text-slate-500 mt-1">
-                          <span>Kırma: <strong className="text-blue-600">{rule.undercut_amount || 100} ₺</strong></span>
-                          <span className={`font-medium ${rule.enabled ? "text-emerald-600" : "text-red-500"}`}>{rule.enabled ? "Aktif" : "Pasif"}</span>
-                          {rule.auto_update_ikas && <span className="font-medium text-violet-600 bg-violet-50 px-1.5 py-0.5 rounded">İkas Oto</span>}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className={`h-7 text-xs ${isRunning ? "text-violet-600 border-violet-300" : "text-emerald-700 border-emerald-300 hover:bg-emerald-50"}`}
-                          disabled={isRunning || !!runningCategory}
-                          onClick={() => runCategoryPricing(rule.category_name)}
-                          data-testid={`run-category-${rule.category_name}`}
-                        >
-                          {isRunning ? (
-                            <><Loader2 className="h-3 w-3 mr-1 animate-spin" />Çalışıyor</>
-                          ) : (
-                            <><Play className="h-3 w-3 mr-1" />Çalıştır</>
-                          )}
-                        </Button>
-                        <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-red-400 hover:text-red-600 hover:bg-red-50" onClick={() => deleteRule(rule.category_name)} disabled={isRunning}><Trash2 className="h-3.5 w-3.5" /></Button>
-                      </div>
-                    </div>
-                    {/* Progress bar */}
-                    {isRunning && progress && (
-                      <div className="mt-2 pt-2 border-t border-slate-100">
-                        <div className="flex items-center justify-between text-xs mb-1">
-                          <span className="text-slate-500">
-                            {progress.phase === "ikas_refresh" ? "İkas fiyatları güncelleniyor..." :
-                             progress.phase === "competitor_scan" ? "Rakip fiyatlar taranıyor & güncelleniyor..." :
-                             "İşlem devam ediyor..."}
-                          </span>
-                          <span className="text-slate-600 font-mono">
-                            {progress.phase === "ikas_refresh" ? `${progress.ikas_refreshed || 0}/${progress.total}` :
-                             `${progress.scanned || 0}/${progress.matched_total || progress.total}`}
-                          </span>
-                        </div>
-                        <div className="w-full bg-slate-200 rounded-full h-1.5">
-                          <div className={`h-1.5 rounded-full transition-all duration-500 ${progress.phase === "ikas_refresh" ? "bg-blue-500" : "bg-emerald-500"}`}
-                            style={{ width: `${progress.total ? ((progress.phase === "ikas_refresh" ? (progress.progress || 0) : (progress.scanned || 0)) / progress.total * 100) : 0}%` }} />
-                        </div>
-                        {progress.phase === "competitor_scan" && (
-                          <div className="flex gap-3 text-[11px] text-slate-400 mt-1">
-                            <span>Güncellenen: <strong className="text-emerald-600">{progress.updated || 0}</strong></span>
-                            <span>Atlanan: <strong className="text-amber-600">{progress.skipped || 0}</strong></span>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="bg-white rounded-xl border shadow-sm" data-testid="recent-changes-section">
-          <div className="px-4 py-3 border-b">
-            <h2 className="font-semibold text-sm text-slate-800 flex items-center gap-1.5"><TrendingDown className="h-4 w-4" /> Son Fiyat Önerileri</h2>
-          </div>
-          <div className="p-3">
-            {(dashboard?.recent_changes || []).length === 0 ? (
-              <div className="text-center py-8">
-                <TrendingDown className="h-8 w-8 text-slate-300 mx-auto mb-2" />
-                <p className="text-sm text-slate-400">Henüz fiyat değişikliği önerisi yok</p>
-                <p className="text-xs text-slate-400 mt-1">Fiyat taraması çalıştıktan sonra öneriler burada görünecek</p>
-              </div>
-            ) : (
-              <div className="space-y-2 max-h-[360px] overflow-y-auto">
-                {(dashboard?.recent_changes || []).map((ch, i) => {
-                  const oldTl = ch.old_price_tl || ch.old_price || 0;
-                  const newTl = ch.new_price_tl || ch.new_price || 0;
-                  return (
-                    <div key={i} className="p-3 bg-slate-50 rounded-lg text-sm border">
-                      <div className="font-medium text-slate-800 truncate">{ch.product_name}</div>
-                      <div className="flex items-center gap-2 mt-1.5 text-xs">
-                        <span className="text-slate-500 line-through">{formatPrice(oldTl)} ₺</span>
-                        <span className="text-slate-400">&rarr;</span>
-                        <span className="font-bold text-blue-700">{formatPrice(newTl)} ₺</span>
-                        {ch.base_currency && ch.base_currency !== "TRY" && ch.new_price_base && (
-                          <span className="text-violet-600 font-medium">({formatPrice(ch.new_price_base)} {ch.base_currency})</span>
-                        )}
-                        <span className={`ml-auto px-1.5 py-0.5 rounded text-[10px] font-medium ${ch.applied ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>{ch.applied ? "Uygulandı" : "Bekliyor"}</span>
-                      </div>
-                      <div className="text-[11px] text-slate-400 mt-1">{ch.reason}</div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      <Dialog open={showRuleDialog} onOpenChange={setShowRuleDialog}>
-        <DialogContent className="max-w-md">
-          <DialogHeader><DialogTitle>Kategori Fiyatlama Kuralı</DialogTitle></DialogHeader>
-          <div className="space-y-4 pt-2">
-            <div>
-              <label className="text-sm font-medium text-slate-700 mb-1 block">Kategori</label>
-              <select value={newRule.category_name} onChange={e => setNewRule(r => ({ ...r, category_name: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-violet-200 focus:border-violet-400 outline-none" data-testid="rule-category-select">
-                <option value="">Kategori seçin</option>
-                {categories.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="text-sm font-medium text-slate-700 mb-1 block">Fiyat Kırma (₺)</label>
-              <p className="text-[11px] text-slate-400 mb-1">En ucuz rakibin altına düşülecek TL tutar</p>
-              <Input type="number" value={newRule.undercut_amount} onChange={e => setNewRule(r => ({ ...r, undercut_amount: parseFloat(e.target.value) || 0 }))} data-testid="rule-undercut-input" />
-            </div>
-            <div className="flex items-center gap-3">
-              <label className="text-sm font-medium text-slate-700">Aktif</label>
-              <button onClick={() => setNewRule(r => ({ ...r, enabled: !r.enabled }))} className={`w-10 h-5 rounded-full transition-colors ${newRule.enabled ? "bg-violet-600" : "bg-slate-300"}`} data-testid="rule-enabled-toggle">
-                <div className={`w-4 h-4 bg-white rounded-full shadow transition-transform ${newRule.enabled ? "translate-x-5" : "translate-x-0.5"}`} />
-              </button>
-            </div>
-            <div className="flex items-center gap-3">
-              <label className="text-sm font-medium text-slate-700">Otomatik İkas Güncelleme</label>
-              <button onClick={() => setNewRule(r => ({ ...r, auto_update_ikas: !r.auto_update_ikas }))} className={`w-10 h-5 rounded-full transition-colors ${newRule.auto_update_ikas ? "bg-emerald-600" : "bg-slate-300"}`} data-testid="rule-auto-update-toggle">
-                <div className={`w-4 h-4 bg-white rounded-full shadow transition-transform ${newRule.auto_update_ikas ? "translate-x-5" : "translate-x-0.5"}`} />
-              </button>
-            </div>
-            {newRule.auto_update_ikas && (
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-700">
-                <strong>Dikkat:</strong> Bu kategori için fiyatlar tarama sonrası otomatik olarak İkas'a gönderilir. Dip Fiyat koruması aktiftir.
-              </div>
-            )}
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs text-blue-700">
-              <strong>Kural mantığı:</strong> Sistem rakip fiyatlarını TCMB kuru ile ürünün orijinal para birimine çevirir. En ucuz rakipten Kırma tutarı (TL) kadar düşük fiyat hesaplar, ancak ürünün Dip Fiyatının altına inmez.
-            </div>
-            <div className="flex gap-2 justify-end pt-2">
-              <Button variant="outline" onClick={() => setShowRuleDialog(false)}>İptal</Button>
-              <Button onClick={saveRule} className="bg-violet-600 hover:bg-violet-700 text-white" data-testid="save-rule-btn"><Save className="h-3.5 w-3.5 mr-1.5" /> Kaydet</Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
 
-function StatCard({ icon, label, value, color }) {
+function RuleCard({ rule, onToggle, onRun, onDelete, running }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const taskStatus = rule.task_status;
+  const isRunning = running || taskStatus?.running;
+  const lastRun = taskStatus?.completed_at;
+
   return (
-    <div className={`rounded-xl border p-4 ${color}`} data-testid={`stat-${label}`}>
-      <div className="flex items-center gap-2 mb-1 opacity-70">{icon}<span className="text-xs font-medium uppercase tracking-wide">{label}</span></div>
-      <div className="text-2xl font-bold">{typeof value === "number" ? value.toLocaleString("tr-TR") : value}</div>
+    <div className={`bg-white border rounded-xl overflow-hidden transition-all ${rule.auto_update_ikas ? "border-emerald-200" : "border-slate-200"}`} data-testid={`rule-${rule.category_name}`}>
+      <div className="p-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className={`w-2 h-2 rounded-full ${rule.auto_update_ikas ? "bg-emerald-500" : "bg-slate-300"}`} />
+            <div>
+              <h3 className="font-semibold text-slate-800">{rule.category_name}</h3>
+              <p className="text-xs text-slate-500">{rule.product_count || 0} urun | Kirma: {rule.undercut_amount || 200} TL</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            {/* Auto toggle */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-500">Otomatik</span>
+              <Switch checked={rule.auto_update_ikas} onCheckedChange={() => onToggle(rule)} data-testid={`toggle-${rule.category_name}`} />
+            </div>
+            {/* Run Now */}
+            <Button size="sm" variant="outline" onClick={() => onRun(rule.category_name)} disabled={isRunning} data-testid={`run-${rule.category_name}`}
+              className="border-blue-300 text-blue-700 hover:bg-blue-50">
+              {isRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+              <span className="ml-1.5">{isRunning ? "Calisiyor..." : "Simdi Calistir"}</span>
+            </Button>
+            {/* Expand */}
+            <button onClick={() => setExpanded(!expanded)} className="p-1.5 rounded hover:bg-slate-100">
+              {expanded ? <ChevronUp className="h-4 w-4 text-slate-400" /> : <ChevronDown className="h-4 w-4 text-slate-400" />}
+            </button>
+          </div>
+        </div>
+
+        {/* Progress bar when running */}
+        {isRunning && taskStatus && (
+          <div className="mt-3">
+            <div className="flex items-center justify-between text-xs text-blue-700 mb-1">
+              <span>{taskStatus.phase === "ikas_refresh" ? "Ikas fiyat guncelleniyor..." : taskStatus.phase === "scanning" ? "Rakipler taraniyor..." : "Isleniyor..."}</span>
+              <span>{taskStatus.progress || 0} / {taskStatus.total || rule.product_count || 0}</span>
+            </div>
+            <div className="w-full h-1.5 bg-blue-100 rounded-full">
+              <div className="h-full bg-blue-500 rounded-full transition-all" style={{ width: `${Math.min(100, ((taskStatus.progress || 0) / Math.max(1, taskStatus.total || rule.product_count || 1)) * 100)}%` }} />
+            </div>
+          </div>
+        )}
+
+        {/* Last run info */}
+        {lastRun && !isRunning && (
+          <div className="mt-2 flex items-center gap-4 text-xs text-slate-500">
+            <span className="flex items-center gap-1">
+              <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+              Son: {new Date(lastRun).toLocaleString("tr-TR")}
+            </span>
+            {taskStatus?.updated > 0 && <span className="text-emerald-600 font-medium">{taskStatus.updated} guncellendi</span>}
+            {taskStatus?.skipped > 0 && <span className="text-amber-600">{taskStatus.skipped} atlandi</span>}
+          </div>
+        )}
+      </div>
+
+      {/* Expanded details */}
+      {expanded && (
+        <div className="border-t bg-slate-50 p-4">
+          <div className="flex items-center justify-between">
+            <div className="text-xs text-slate-500 space-y-1">
+              <p>Fiyat kirma tutari: <span className="font-medium text-slate-700">{rule.undercut_amount || 200} TL</span></p>
+              <p>Otomatik guncelleme: <span className={`font-medium ${rule.auto_update_ikas ? "text-emerald-600" : "text-slate-400"}`}>{rule.auto_update_ikas ? "Aktif" : "Kapali"}</span></p>
+              {taskStatus?.matched_total > 0 && <p>Eslesmis urun: <span className="font-medium text-slate-700">{taskStatus.matched_total}</span></p>}
+            </div>
+            <Button size="sm" variant="outline" onClick={() => onDelete(rule.category_name)} className="text-red-500 border-red-200 hover:bg-red-50 text-xs">
+              Kurali Sil
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

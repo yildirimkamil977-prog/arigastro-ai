@@ -304,15 +304,6 @@ export default function CompetitorProductsPage() {
           }} data-testid="retry-prices-btn">
             <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Eksik Fiyatları Tara
           </Button>
-          {category && (
-            <Button size="sm" onClick={autoMatchCategory} disabled={categoryMatchStatus?.running} data-testid="match-category-btn" className="bg-violet-600 hover:bg-violet-700 text-white">
-              {categoryMatchStatus?.running ? (
-                <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />{categoryMatchStatus.progress}/{categoryMatchStatus.total}</>
-              ) : (
-                <><Link2 className="h-3.5 w-3.5 mr-1.5" />Kategoriyi Eşleştir</>
-              )}
-            </Button>
-          )}
         </div>
       </div>
 
