@@ -4237,16 +4237,27 @@ async def startup():
     from datetime import datetime as dt_now
     now_tr = dt_now.now(TR)
     logger.info(f"Scheduler baslatiliyor. Sunucu TR saati: {now_tr.strftime('%H:%M:%S %d.%m.%Y')}")
+
+    # Async wrapper functions for scheduler
+    async def _sched_ikas_sync():
+        await scheduled_ikas_currency_sync()
+
+    async def _sched_competitor_scan():
+        await run_scheduled_competitor_scan(db, ikas_graphql)
+
+    async def _sched_auto_seo():
+        await scheduled_auto_seo()
+
     # 00:00 TR → Feed sync (yeni/silinen ürünler)
     scheduler.add_job(scheduled_feed_sync, CronTrigger(hour=0, minute=0, timezone=TR), id="feed_sync", name="Feed Guncelleme (00:00 TR)", replace_existing=True, misfire_grace_time=3600)
     # 00:15 TR → İkas sync (fiyat + kategori + marka güncelleme)
-    scheduler.add_job(lambda: asyncio.ensure_future(scheduled_ikas_currency_sync()), CronTrigger(hour=0, minute=15, timezone=TR), id="ikas_currency_sync_cron", name="Ikas Fiyat+Kategori Guncelle (00:15 TR)", replace_existing=True, misfire_grace_time=3600)
+    scheduler.add_job(_sched_ikas_sync, CronTrigger(hour=0, minute=15, timezone=TR), id="ikas_currency_sync_cron", name="Ikas Fiyat+Kategori Guncelle (00:15 TR)", replace_existing=True, misfire_grace_time=3600)
     # 00:30 TR → Akakçe fiyat kontrolü (ayrı akış)
     scheduler.add_job(scheduled_price_check, CronTrigger(hour=0, minute=30, timezone=TR), id="price_check_cron", name="Akakce Fiyat (00:30 TR)", replace_existing=True, misfire_grace_time=3600)
     # 00:45 TR → Rakip fiyat tara + en ucuz rakibin 200 TL altına güncelle
-    scheduler.add_job(lambda: asyncio.ensure_future(run_scheduled_competitor_scan(db, ikas_graphql)), CronTrigger(hour=2, minute=32, timezone=TR), id="competitor_scan_cron", name="Rakip Tara+Fiyat Guncelle (TEST 02:32 TR)", replace_existing=True, misfire_grace_time=3600)
+    scheduler.add_job(_sched_competitor_scan, CronTrigger(hour=2, minute=45, timezone=TR), id="competitor_scan_cron", name="Rakip Tara+Fiyat Guncelle (TEST 02:45 TR)", replace_existing=True, misfire_grace_time=3600)
     # 03:00 TR → Otomatik SEO
-    scheduler.add_job(lambda: asyncio.ensure_future(scheduled_auto_seo()), CronTrigger(hour=3, minute=0, timezone=TR), id="auto_seo_cron", name="Oto SEO (03:00 TR)", replace_existing=True, misfire_grace_time=3600)
+    scheduler.add_job(_sched_auto_seo, CronTrigger(hour=3, minute=0, timezone=TR), id="auto_seo_cron", name="Oto SEO (03:00 TR)", replace_existing=True, misfire_grace_time=3600)
     scheduler.start()
     # Log next fire times
     for job in scheduler.get_jobs():
