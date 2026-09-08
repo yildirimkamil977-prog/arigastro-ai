@@ -205,7 +205,7 @@ function RuleCard({ rule, onToggle, onRun, onDelete, running }) {
 
   const taskStatus = rule.task_status;
   const isRunning = running || taskStatus?.running;
-  const lastRun = taskStatus?.completed_at;
+  const lastRun = rule.last_scan_at || taskStatus?.completed_at;
 
   return (
     <div className={`bg-white border rounded-xl overflow-hidden transition-all ${rule.auto_update_ikas ? "border-emerald-200" : "border-slate-200"}`} data-testid={`rule-${rule.category_name}`}>

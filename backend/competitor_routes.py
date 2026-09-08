@@ -2023,6 +2023,13 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
                     await db.products.update_one({"slug": slug}, {"$set": update_fields})
 
                     if result.get("action") == "update":
+                        # Update the category rule's last_run timestamp
+                        for cat in product_cats:
+                            if cat in rules_map:
+                                await db.pricing_rules.update_one(
+                                    {"category_name": cat},
+                                    {"$set": {"last_scan_at": datetime.now(timezone.utc).isoformat()}}
+                                )
                         log_entry = {
                             "product_slug": slug,
                             "product_name": product.get("name", ""),
@@ -2078,6 +2085,12 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
 
                         await db.price_changes.insert_one(log_entry)
                     elif result.get("action") == "floor_hit":
+                        for cat in product_cats:
+                            if cat in rules_map:
+                                await db.pricing_rules.update_one(
+                                    {"category_name": cat},
+                                    {"$set": {"last_scan_at": datetime.now(timezone.utc).isoformat()}}
+                                )
                         await db.price_changes.insert_one({
                             "product_slug": slug,
                             "product_name": product.get("name", ""),
