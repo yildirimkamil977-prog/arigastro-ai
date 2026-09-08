@@ -45,10 +45,10 @@ COMPETITORS = {
         "search_needs_render": True,
     },
     "globalmutfak": {
-        "domain": "www.globalmutfak.com", "name": "Global Mutfak",
-        "base_url": "https://www.globalmutfak.com",
-        "search_url": "https://www.globalmutfak.com/arama?q={query}",
-        "search_needs_render": False,
+        "domain": "www.kariyermutfak.com", "name": "Kariyer Mutfak",
+        "base_url": "https://www.kariyermutfak.com",
+        "search_url": "https://www.kariyermutfak.com/arama?k={query}",
+        "search_needs_render": True,
     },
 }
 
@@ -79,7 +79,7 @@ _PRODUCT_URL_PATTERNS = {
     "mutbex":      [],  # mutbex uses direct slugs like /product-name
     "hakbilenler": ["/urun/"],
     "oguzmutfak":  [],  # oguzmutfakonline.com uses direct slugs
-    "globalmutfak": ["-pmu"],  # globalmutfak.com uses -pmu{id} suffix
+    "globalmutfak": [],  # kariyermutfak.com
 }
 
 # URL patterns to REJECT (category, search, homepage, pagination)
@@ -438,8 +438,8 @@ def _extract_price(soup: BeautifulSoup, competitor_key: str) -> float:
             ".currentPrice", "span.price",
         ],
         "globalmutfak": [
-            ".urunDetay_satisFiyat", ".urun-fiyat", ".productPrice",
-            ".product-price", ".current-price", "span.price",
+            ".discountPrice", ".product-price-new", ".productDetailPrice .price",
+            "#productPrice", ".product-price", "span.price",
         ],
     }
     
