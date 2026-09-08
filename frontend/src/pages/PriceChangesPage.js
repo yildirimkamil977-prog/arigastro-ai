@@ -140,8 +140,22 @@ export default function PriceChangesPage() {
                                 <div className="font-medium text-slate-700 truncate">{ch.product_name}</div>
                                 {ch.sku && <div className="text-xs text-slate-400">{ch.sku}</div>}
                               </td>
-                              <td className="py-2 pr-3 text-right text-slate-500">{formatPrice(ch.old_price_tl)} TL</td>
-                              <td className="py-2 pr-3 text-right font-medium text-slate-800">{ch.new_price_tl ? `${formatPrice(ch.new_price_tl)} TL` : "-"}</td>
+                              <td className="py-2 pr-3 text-right">
+                                <div className="text-slate-500">{formatPrice(ch.old_price_tl)} TL</div>
+                                {ch.base_currency && ch.base_currency !== "TRY" && ch.old_price_base && (
+                                  <div className="text-xs text-slate-400">{formatPrice(ch.old_price_base)} {ch.base_currency}</div>
+                                )}
+                              </td>
+                              <td className="py-2 pr-3 text-right">
+                                {ch.new_price_tl ? (
+                                  <>
+                                    <div className="font-medium text-slate-800">{formatPrice(ch.new_price_tl)} TL</div>
+                                    {ch.new_price_base && ch.base_currency && ch.base_currency !== "TRY" && (
+                                      <div className="text-xs text-slate-400">{formatPrice(ch.new_price_base)} {ch.base_currency}</div>
+                                    )}
+                                  </>
+                                ) : <span className="text-slate-300">-</span>}
+                              </td>
                               <td className="py-2 pr-3 text-right text-blue-600">{formatPrice(ch.cheapest_price)} TL</td>
                               <td className="py-2 pr-3 text-xs text-slate-500">{ch.cheapest_competitor || "-"}</td>
                               <td className="py-2 pr-3 text-right">
@@ -201,9 +215,23 @@ export default function PriceChangesPage() {
                       <div className="font-medium text-slate-700 truncate">{ch.product_name}</div>
                       {ch.sku && <div className="text-xs text-slate-400">{ch.sku}</div>}
                     </td>
-                    <td className="p-3 text-right text-slate-500">{formatPrice(ch.old_price_tl)}</td>
+                    <td className="p-3 text-right">
+                      <div className="text-slate-500">{formatPrice(ch.old_price_tl)}</div>
+                      {ch.base_currency && ch.base_currency !== "TRY" && ch.old_price_base && (
+                        <div className="text-xs text-slate-400">{formatPrice(ch.old_price_base)} {ch.base_currency}</div>
+                      )}
+                    </td>
                     <td className="p-3 text-center text-slate-300">→</td>
-                    <td className="p-3 text-right font-medium text-slate-800">{ch.new_price_tl ? formatPrice(ch.new_price_tl) : "-"}</td>
+                    <td className="p-3 text-right">
+                      {ch.new_price_tl ? (
+                        <>
+                          <div className="font-medium text-slate-800">{formatPrice(ch.new_price_tl)}</div>
+                          {ch.new_price_base && ch.base_currency && ch.base_currency !== "TRY" && (
+                            <div className="text-xs text-slate-400">{formatPrice(ch.new_price_base)} {ch.base_currency}</div>
+                          )}
+                        </>
+                      ) : <span className="text-slate-300">-</span>}
+                    </td>
                     <td className="p-3 text-right text-blue-600">{formatPrice(ch.cheapest_price)}</td>
                     <td className="p-3 text-right">
                       <div className="text-orange-600">{ch.floor_price ? `${formatPrice(ch.floor_price)} ${ch.base_currency || "TL"}` : "-"}</div>
