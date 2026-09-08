@@ -1437,7 +1437,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                         for cat in product_cats:
                             rule = await db.pricing_rules.find_one({"category_name": cat})
                             if rule:
-                                undercut = rule.get("undercut_amount", 100)
+                                undercut = rule.get("undercut_amount", 200)
                                 break
 
                         result = calc_fn(
@@ -1973,7 +1973,7 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
                     cheapest = min(prices.values(), key=lambda x: x["price"])
                     can_update_price = floor_price is not None and floor_price > 0
 
-                    undercut = rule.get("undercut_amount", 100)
+                    undercut = rule.get("undercut_amount", 200)
                     result = calculate_optimal_price(
                         prices,
                         product.get("our_price", 0),

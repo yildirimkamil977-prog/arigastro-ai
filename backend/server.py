@@ -2739,7 +2739,7 @@ JSON yanıt: {"match_index": 0, "confidence": "high/medium/low"} veya {"match_in
 scheduler = AsyncIOScheduler()
 
 async def scheduled_feed_sync():
-    """Scheduled task: sync prices from feed every 12 hours."""
+    """Scheduled task: sync products from feed — update existing, add new, deactivate removed."""
     logger.info("CRON: Feed sync basladi")
     try:
         feed_items = await fetch_and_parse_feed()
@@ -2747,11 +2747,12 @@ async def scheduled_feed_sync():
             logger.warning("CRON: Feed bos veya okunamadi")
             return
         updated = 0
+        new_products = 0
         for item in feed_items:
             slug = item.get("slug", "")
             if not slug:
                 continue
-            update_data = {"updated_at": datetime.now(timezone.utc).isoformat()}
+            update_data = {"updated_at": datetime.now(timezone.utc).isoformat(), "feed_active": True}
             if item.get("price"):
                 update_data["our_price"] = item["price"]
             if item.get("title"):
@@ -2764,20 +2765,50 @@ async def scheduled_feed_sync():
                 update_data["gtin"] = item["gtin"]
             if item.get("image_url"):
                 update_data["image_url"] = item["image_url"]
+            if item.get("sku"):
+                update_data["sku"] = item["sku"]
+
             existing = await db.products.find_one({"slug": slug})
             if existing:
-                await db.products.update_one({"slug": slug}, {"$set": update_data})
+                await db.products.update_one({"slug": slug}, {"$set": update_data, "$unset": {"inactive": ""}})
                 updated += 1
+            else:
+                # Add new product
+                new_product = {
+                    "slug": slug,
+                    "name": item.get("title", ""),
+                    "brand": item.get("brand", ""),
+                    "category_path": item.get("category", ""),
+                    "gtin": item.get("gtin", ""),
+                    "sku": item.get("sku", ""),
+                    "our_price": item.get("price"),
+                    "url": item.get("link", ""),
+                    "image_url": item.get("image_url", ""),
+                    "feed_active": True,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                await db.products.insert_one(new_product)
+                new_products += 1
+
+        # Mark products NOT in feed as inactive
+        feed_slugs = set(item.get("slug", "") for item in feed_items if item.get("slug"))
+        inactive_result = await db.products.update_many(
+            {"slug": {"$nin": list(feed_slugs)}, "inactive": {"$ne": True}},
+            {"$set": {"feed_active": False, "inactive": True}}
+        )
+        inactive_count = inactive_result.modified_count
+
         await db.system_status.update_one(
             {"task": "scheduled_feed_sync"},
-            {"$set": {"last_run": datetime.now(timezone.utc).isoformat(), "updated": updated, "feed_items": len(feed_items)}},
+            {"$set": {
+                "last_run": datetime.now(timezone.utc).isoformat(),
+                "updated": updated, "new_products": new_products,
+                "inactive_count": inactive_count, "feed_items": len(feed_items)
+            }},
             upsert=True
         )
-        # Mark inactive products
-        feed_slugs = set(item.get("slug", "") for item in feed_items if item.get("slug"))
-        await db.products.update_many({"slug": {"$nin": list(feed_slugs)}}, {"$set": {"feed_active": False, "inactive": True}})
-        await db.products.update_many({"slug": {"$in": list(feed_slugs)}}, {"$set": {"feed_active": True}, "$unset": {"inactive": ""}})
-        logger.info(f"CRON: Feed sync tamamlandi. {updated} urun guncellendi.")
+        logger.info(f"CRON: Feed sync tamamlandi. {updated} guncellendi, {new_products} yeni eklendi, {inactive_count} pasif yapildi")
     except Exception as e:
         logger.error(f"CRON: Feed sync hatasi: {e}")
 
@@ -4201,18 +4232,18 @@ async def startup():
         f.write(f"## Auth Endpoints\n- POST /api/auth/login\n- GET /api/auth/me\n- POST /api/auth/logout\n")
     
     # Start scheduler — TR saatleri
-    # Akakçe akışı (ayrı):
+    # 00:00 TR → Feed sync (yeni/silinen ürünler)
     scheduler.add_job(scheduled_feed_sync, CronTrigger(hour=21, minute=0), id="feed_sync", name="Feed Guncelleme (00:00 TR)", replace_existing=True)
+    # 00:15 TR → İkas sync (fiyat + kategori + marka güncelleme)
+    scheduler.add_job(lambda: asyncio.ensure_future(scheduled_ikas_currency_sync()), CronTrigger(hour=21, minute=15), id="ikas_currency_sync_cron", name="Ikas Fiyat+Kategori Guncelle (00:15 TR)", replace_existing=True)
+    # 00:30 TR → Akakçe fiyat kontrolü (ayrı akış)
     scheduler.add_job(scheduled_price_check, CronTrigger(hour=21, minute=30), id="price_check_cron", name="Akakce Fiyat (00:30 TR)", replace_existing=True)
-    # Rakip fiyat takip akışı:
-    # 00:00 TR (21:00 UTC) → İkas'tan güncel fiyatları çek
-    scheduler.add_job(lambda: asyncio.ensure_future(scheduled_ikas_currency_sync()), CronTrigger(hour=21, minute=0), id="ikas_currency_sync_cron", name="Ikas Fiyat Guncelle (00:00 TR)", replace_existing=True)
-    # 00:30 TR (21:30 UTC) → Rakip sitelerden fiyat tara
-    scheduler.add_job(lambda: asyncio.ensure_future(run_scheduled_competitor_scan(db, ikas_graphql)), CronTrigger(hour=21, minute=30), id="competitor_scan_cron", name="Rakip Fiyat Tara (00:30 TR)", replace_existing=True)
-    # 03:00 TR (00:00 UTC) → Otomatik SEO
+    # 00:45 TR → Rakip fiyat tara + en ucuz rakibin 200 TL altına güncelle
+    scheduler.add_job(lambda: asyncio.ensure_future(run_scheduled_competitor_scan(db, ikas_graphql)), CronTrigger(hour=21, minute=45), id="competitor_scan_cron", name="Rakip Tara+Fiyat Guncelle (00:45 TR)", replace_existing=True)
+    # 03:00 TR → Otomatik SEO
     scheduler.add_job(lambda: asyncio.ensure_future(scheduled_auto_seo()), CronTrigger(hour=0, minute=0), id="auto_seo_cron", name="Oto SEO (03:00 TR)", replace_existing=True)
     scheduler.start()
-    logger.info("Scheduler basladi: Feed(00:00), Akakce(00:30), Ikas(00:00), Rakip(00:30), SEO(03:00)")
+    logger.info("Scheduler: Feed(00:00), Ikas(00:15), Akakce(00:30), Rakip(00:45), SEO(03:00)")
 
 
 async def scheduled_auto_seo():

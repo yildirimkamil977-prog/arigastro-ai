@@ -347,7 +347,7 @@ def scrape_competitor_price(url: str, competitor_key: str, retries: int = 2) -> 
         return {"success": False, "error": "ScraperAPI key missing"}
     
     # Sites that require JS rendering (prices loaded dynamically)
-    render_required = {"oguzmutfak"}
+    render_required = {"oguzmutfak", "globalmutfak"}
     
     # Phase 1: Fast scrape without render (skip for render-required sites)
     if competitor_key not in render_required:

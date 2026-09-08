@@ -159,29 +159,6 @@ export default function CompetitorProductsPage() {
     }
   };
 
-  const autoMatchCategory = async () => {
-    if (!category) { toast.error("Önce bir kategori seçin"); return; }
-    try {
-      const { data } = await axios.post(`${API}/competitor/auto-match-category/${encodeURIComponent(category)}`, {}, { headers: getAuthHeaders(), withCredentials: true });
-      toast.success(`${data.total} ürün için eşleştirme başlatıldı`);
-      setCategoryMatchStatus({ task_key: data.task_key, running: true, total: data.total, progress: 0 });
-    } catch (err) {
-      toast.error(err.response?.data?.detail || "Kategori eşleştirme başarısız");
-    }
-  };
-
-  useEffect(() => {
-    if (!categoryMatchStatus?.running) return;
-    const interval = setInterval(async () => {
-      try {
-        const { data } = await axios.get(`${API}/competitor/match-status/${categoryMatchStatus.task_key}`, { headers: getAuthHeaders(), withCredentials: true });
-        setCategoryMatchStatus(prev => ({ ...prev, ...data }));
-        if (!data.running) { clearInterval(interval); fetchProducts(); toast.success("Kategori eşleştirme tamamlandı"); }
-      } catch {}
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [categoryMatchStatus?.running]);
-
   const startEditing = (p) => {
     setEditingSlug(p.slug);
     setEditFloor(p.floor_price || "");
