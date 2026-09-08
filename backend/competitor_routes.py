@@ -599,8 +599,11 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                 except Exception as e:
                     logger.error(f"İkas refresh error for {slug}: {e}")
 
-                if (i + 1) % 10 == 0:
-                    await db.system_status.update_one({"task": task_key}, {"$set": {"progress": i + 1, "ikas_refreshed": ikas_refreshed}})
+                # Update progress after EACH product (not every 10)
+                await db.system_status.update_one({"task": task_key}, {"$set": {
+                    "progress": i + 1, "ikas_refreshed": ikas_refreshed,
+                    "current_product": prod.get("name", slug)[:50],
+                }})
                 await asyncio.sleep(0.15)
 
             # ===== PHASE 2: Scrape competitor prices =====
@@ -610,7 +613,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
             product_slugs = [p["slug"] for p in products]
             # Get products with competitor matches
             matched_slugs_cursor = db.competitor_matches.aggregate([
-                {"$match": {"product_slug": {"$in": product_slugs}}},
+                {"$match": {"product_slug": {"$in": product_slugs}, "rejected": {"$ne": True}}},
                 {"$group": {"_id": "$product_slug"}}
             ])
             matched_slugs = [doc["_id"] async for doc in matched_slugs_cursor]
@@ -740,9 +743,11 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                     logger.error(f"Category pricing scan error for {slug}: {e}")
                     scanned += 1
 
-                if (i + 1) % 5 == 0:
+                if (i + 1) % 2 == 0 or i == len(matched_slugs) - 1:
                     await db.system_status.update_one({"task": task_key}, {"$set": {
-                        "progress": i + 1, "scanned": scanned, "updated": updated_count, "skipped": skipped,
+                        "progress": i + 1, "total": len(matched_slugs),
+                        "scanned": scanned, "updated": updated_count, "skipped": skipped,
+                        "current_product": product.get("name", slug)[:50] if product else slug,
                     }})
                 await asyncio.sleep(0.3)
 
@@ -1894,7 +1899,10 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
         rules_map = {r["category_name"]: r for r in rules_list}
         auto_update_cats = {r["category_name"] for r in rules_list if r.get("auto_update_ikas")}
 
-        slugs_cursor = db.competitor_matches.aggregate([{"$group": {"_id": "$product_slug"}}])
+        slugs_cursor = db.competitor_matches.aggregate([
+            {"$match": {"rejected": {"$ne": True}}},
+            {"$group": {"_id": "$product_slug"}}
+        ])
         slugs = [doc["_id"] async for doc in slugs_cursor]
         if not slugs:
             logger.info("CRON: Eslesmis urun yok, atlanıyor")
