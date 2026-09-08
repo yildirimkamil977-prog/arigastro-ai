@@ -58,6 +58,7 @@ export default function CompetitorProductsPage() {
   const [editFloor, setEditFloor] = useState("");
   const [editingMatchKey, setEditingMatchKey] = useState(null);
   const [exchangeRates, setExchangeRates] = useState({});
+  const [ratesUpdatedAt, setRatesUpdatedAt] = useState(null);
   const [syncingCurrencies, setSyncingCurrencies] = useState(false);
   const [syncProgress, setSyncProgress] = useState(null);
   const searchTimer = useRef(null);
@@ -91,6 +92,7 @@ export default function CompetitorProductsPage() {
       try {
         const { data } = await axios.get(`${API}/competitor/exchange-rates`, { headers: getAuthHeaders(), withCredentials: true });
         setExchangeRates(data.rates || {});
+        setRatesUpdatedAt(data.updated_at || null);
       } catch {}
       // Check if sync is already running
       try {
@@ -266,6 +268,7 @@ export default function CompetitorProductsPage() {
           <p className="text-sm text-slate-500">{total} ürün listeleniyor
             {exchangeRates.EUR && <span className="ml-2 text-xs text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">€1 = {formatPrice(exchangeRates.EUR)} ₺</span>}
             {exchangeRates.USD && <span className="ml-1 text-xs text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">$1 = {formatPrice(exchangeRates.USD)} ₺</span>}
+            {ratesUpdatedAt && <span className="ml-1 text-xs text-slate-400">({new Date(ratesUpdatedAt).toLocaleString("tr-TR", {day:"2-digit",month:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit"})})</span>}
           </p>
         </div>
         <div className="flex gap-2">

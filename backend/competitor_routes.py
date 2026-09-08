@@ -893,7 +893,10 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
     async def get_tcmb_rates(user: dict = Depends(get_current_user)):
         """Get current TCMB exchange rates."""
         rates = get_exchange_rates()
-        return {"rates": rates, "source": "CurrencyAPI"}
+        from tcmb_exchange import _cache
+        fetched_at = _cache.get("fetched_at", 0)
+        updated_at = datetime.fromtimestamp(fetched_at, tz=timezone.utc).isoformat() if fetched_at else None
+        return {"rates": rates, "source": "CurrencyAPI", "updated_at": updated_at}
 
     # --- İkas Currency Sync: fetch original prices for products ---
     @router.post("/sync-ikas-currencies")
