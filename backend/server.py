@@ -4241,7 +4241,7 @@ async def startup():
     # 00:30 TR → Akakçe fiyat kontrolü (ayrı akış)
     scheduler.add_job(scheduled_price_check, CronTrigger(hour=0, minute=30, timezone=TR), id="price_check_cron", name="Akakce Fiyat (00:30 TR)", replace_existing=True)
     # 00:45 TR → Rakip fiyat tara + en ucuz rakibin 200 TL altına güncelle
-    scheduler.add_job(lambda: asyncio.ensure_future(run_scheduled_competitor_scan(db, ikas_graphql)), CronTrigger(hour=0, minute=45, timezone=TR), id="competitor_scan_cron", name="Rakip Tara+Fiyat Guncelle (00:45 TR)", replace_existing=True)
+    scheduler.add_job(lambda: asyncio.ensure_future(run_scheduled_competitor_scan(db, ikas_graphql)), CronTrigger(hour=2, minute=15, timezone=TR), id="competitor_scan_cron", name="Rakip Tara+Fiyat Guncelle (TEST 02:15 TR)", replace_existing=True)
     # 03:00 TR → Otomatik SEO
     scheduler.add_job(lambda: asyncio.ensure_future(scheduled_auto_seo()), CronTrigger(hour=3, minute=0, timezone=TR), id="auto_seo_cron", name="Oto SEO (03:00 TR)", replace_existing=True)
     scheduler.start()
