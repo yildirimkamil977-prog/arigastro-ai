@@ -44,6 +44,12 @@ COMPETITORS = {
         "search_url": "https://oguzmutfakonline.com/arama?q={query}",
         "search_needs_render": True,
     },
+    "globalmutfak": {
+        "domain": "www.globalmutfak.com", "name": "Global Mutfak",
+        "base_url": "https://www.globalmutfak.com",
+        "search_url": "https://www.globalmutfak.com/arama?q={query}",
+        "search_needs_render": False,
+    },
 }
 
 
@@ -73,6 +79,7 @@ _PRODUCT_URL_PATTERNS = {
     "mutbex":      [],  # mutbex uses direct slugs like /product-name
     "hakbilenler": ["/urun/"],
     "oguzmutfak":  [],  # oguzmutfakonline.com uses direct slugs
+    "globalmutfak": ["-pmu"],  # globalmutfak.com uses -pmu{id} suffix
 }
 
 # URL patterns to REJECT (category, search, homepage, pagination)
@@ -112,8 +119,8 @@ def _is_valid_product_url(url: str, competitor_key: str) -> bool:
         if not any(p in url_lower for p in required_patterns):
             return False
 
-    # For cafemarkt/mutbex/oguzmutfak: URL should have a meaningful slug (at least 10 chars after domain)
-    if competitor_key in ("cafemarkt", "mutbex", "oguzmutfak"):
+    # For cafemarkt/mutbex/oguzmutfak/globalmutfak: URL should have a meaningful slug (at least 10 chars after domain)
+    if competitor_key in ("cafemarkt", "mutbex", "oguzmutfak", "globalmutfak"):
         if len(path) < 10:
             return False
 
@@ -429,6 +436,10 @@ def _extract_price(soup: BeautifulSoup, competitor_key: str) -> float:
             ".pb-bar__price-current", ".pb-bar__prices",
             ".product-price", ".current-price", ".discountedPrice",
             ".currentPrice", "span.price",
+        ],
+        "globalmutfak": [
+            ".urunDetay_satisFiyat", ".urun-fiyat", ".productPrice",
+            ".product-price", ".current-price", "span.price",
         ],
     }
     
