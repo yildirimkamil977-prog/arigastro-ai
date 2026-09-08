@@ -814,19 +814,21 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
             new_price = new_price_tl
             if floor_price and new_price < floor_price:
                 return False
-            mutation = """mutation SaveVariantPrices($input: SaveVariantPricesInput!) {
-                saveVariantPrices(input: $input) { __typename }
+            mutation = """mutation UpdateVariantPrices($input: UpdateVariantPricesInput!) {
+                updateVariantPrices(input: $input) { __typename }
             }"""
             variables = {"input": {
-                "productId": ikas_id,
-                "variantId": variant["id"],
-                "prices": [{"sellPrice": new_price}]
+                "variantPriceInputs": [{
+                    "productId": ikas_id,
+                    "variantId": variant["id"],
+                    "price": {"sellPrice": new_price}
+                }]
             }}
             try:
                 await loop.run_in_executor(None, ikas_fn, mutation, variables)
                 return True
             except Exception as e:
-                logger.error(f"SaveVariantPrices failed for {ikas_id}: {e}")
+                logger.error(f"Default price update failed for {ikas_id}: {e}")
                 return False
 
         if not target_plid:
@@ -850,19 +852,21 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         }}
         await loop.run_in_executor(None, ikas_fn, mutation1, variables1)
 
-        # 2. Also update variant sellPrice (the main "Satış Fiyatı" field)
+        # 2. Also update variant default sellPrice (the main "Satış Fiyatı" field)
         try:
-            mutation2 = """mutation SaveVariantPrices($input: SaveVariantPricesInput!) {
-                saveVariantPrices(input: $input) { __typename }
+            mutation2 = """mutation UpdateVariantPrices($input: UpdateVariantPricesInput!) {
+                updateVariantPrices(input: $input) { __typename }
             }"""
             variables2 = {"input": {
-                "productId": ikas_id,
-                "variantId": variant["id"],
-                "prices": [{"sellPrice": new_price}]
+                "variantPriceInputs": [{
+                    "productId": ikas_id,
+                    "variantId": variant["id"],
+                    "price": {"sellPrice": new_price}
+                }]
             }}
             await loop.run_in_executor(None, ikas_fn, mutation2, variables2)
         except Exception as e:
-            logger.warning(f"saveVariantPrices failed for {ikas_id} (price list updated ok): {e}")
+            logger.warning(f"Default sellPrice update failed for {ikas_id}: {e}")
 
         return True
     
@@ -2179,13 +2183,15 @@ async def _apply_price_to_ikas(loop, ikas_graphql, db, slug, ikas_id, new_price_
         new_price = new_price_tl
         if floor_price and new_price < floor_price:
             return False
-        mutation = """mutation SaveVariantPrices($input: SaveVariantPricesInput!) {
-            saveVariantPrices(input: $input) { __typename }
+        mutation = """mutation UpdateVariantPrices($input: UpdateVariantPricesInput!) {
+            updateVariantPrices(input: $input) { __typename }
         }"""
         variables = {"input": {
-            "productId": ikas_id,
-            "variantId": variant["id"],
-            "prices": [{"sellPrice": new_price}]
+            "variantPriceInputs": [{
+                "productId": ikas_id,
+                "variantId": variant["id"],
+                "price": {"sellPrice": new_price}
+            }]
         }}
         try:
             await loop.run_in_executor(None, ikas_graphql, mutation, variables)
@@ -2215,19 +2221,21 @@ async def _apply_price_to_ikas(loop, ikas_graphql, db, slug, ikas_id, new_price_
     }}
     await loop.run_in_executor(None, ikas_graphql, mutation1, variables1)
 
-    # 2. Also update variant sellPrice (the main "Satış Fiyatı" field)
+    # 2. Also update variant default sellPrice (the main "Satış Fiyatı" field)
     try:
-        mutation2 = """mutation SaveVariantPrices($input: SaveVariantPricesInput!) {
-            saveVariantPrices(input: $input) { __typename }
+        mutation2 = """mutation UpdateVariantPrices($input: UpdateVariantPricesInput!) {
+            updateVariantPrices(input: $input) { __typename }
         }"""
         variables2 = {"input": {
-            "productId": ikas_id,
-            "variantId": variant["id"],
-            "prices": [{"sellPrice": new_price}]
+            "variantPriceInputs": [{
+                "productId": ikas_id,
+                "variantId": variant["id"],
+                "price": {"sellPrice": new_price}
+            }]
         }}
         await loop.run_in_executor(None, ikas_graphql, mutation2, variables2)
     except Exception as e:
-        logger.warning(f"saveVariantPrices failed for {ikas_id}: {e}")
+        logger.warning(f"Default sellPrice update failed for {ikas_id}: {e}")
 
     # Update price_updated_at for 23-hour protection
     await db.products.update_one({"ikas_product_id": ikas_id}, {"$set": {"price_updated_at": datetime.now(timezone.utc).isoformat()}})
