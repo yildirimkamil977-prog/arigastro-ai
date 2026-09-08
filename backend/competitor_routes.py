@@ -676,6 +676,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                             log_entry = {
                                 "product_slug": slug,
                                 "product_name": product.get("name", ""),
+                                "sku": product.get("sku", ""),
                                 "operation_id": operation_id,
                                 "action": "update",
                                 "old_price_tl": result.get("old_price_tl"),
@@ -685,6 +686,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                                 "cheapest_competitor": result.get("cheapest_competitor"),
                                 "cheapest_price": result.get("cheapest_price"),
                                 "floor_price": floor_price,
+                                "floor_price_tl": convert_to_tl(floor_price, base_currency) if floor_price and base_currency != "TRY" else floor_price,
                                 "reason": result.get("reason", ""),
                                 "applied": False,
                                 "auto_update": True,
@@ -719,6 +721,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                             await db.price_changes.insert_one({
                                 "product_slug": slug,
                                 "product_name": product.get("name", ""),
+                                "sku": product.get("sku", ""),
                                 "operation_id": operation_id,
                                 "action": "floor_hit",
                                 "old_price_tl": product.get("our_price"),
@@ -726,6 +729,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                                 "cheapest_competitor": result.get("cheapest_competitor"),
                                 "cheapest_price": result.get("cheapest_price"),
                                 "floor_price": floor_price,
+                                "floor_price_tl": convert_to_tl(floor_price, base_currency) if floor_price and base_currency != "TRY" else floor_price,
                                 "reason": result.get("reason", ""),
                                 "applied": False,
                                 "triggered_by": "manual_category",

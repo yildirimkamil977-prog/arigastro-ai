@@ -136,12 +136,20 @@ export default function PriceChangesPage() {
                                  ch.action === "floor_hit" ? <AlertTriangle className="h-4 w-4 text-amber-500" /> :
                                  <XCircle className="h-4 w-4 text-red-400" />}
                               </td>
-                              <td className="py-2 pr-3 font-medium text-slate-700 max-w-[200px] truncate">{ch.product_name}</td>
+                              <td className="py-2 pr-3 max-w-[220px]">
+                                <div className="font-medium text-slate-700 truncate">{ch.product_name}</div>
+                                {ch.sku && <div className="text-xs text-slate-400">{ch.sku}</div>}
+                              </td>
                               <td className="py-2 pr-3 text-right text-slate-500">{formatPrice(ch.old_price_tl)} TL</td>
                               <td className="py-2 pr-3 text-right font-medium text-slate-800">{ch.new_price_tl ? `${formatPrice(ch.new_price_tl)} TL` : "-"}</td>
                               <td className="py-2 pr-3 text-right text-blue-600">{formatPrice(ch.cheapest_price)} TL</td>
                               <td className="py-2 pr-3 text-xs text-slate-500">{ch.cheapest_competitor || "-"}</td>
-                              <td className="py-2 pr-3 text-right text-orange-600">{formatPrice(ch.floor_price)} {ch.base_currency || "TL"}</td>
+                              <td className="py-2 pr-3 text-right">
+                                <div className="text-orange-600">{formatPrice(ch.floor_price)} {ch.base_currency || "TL"}</div>
+                                {ch.base_currency && ch.base_currency !== "TRY" && ch.floor_price_tl && (
+                                  <div className="text-xs text-slate-400">{formatPrice(ch.floor_price_tl)} TL</div>
+                                )}
+                              </td>
                               <td className="py-2 text-xs text-slate-500 max-w-[150px] truncate">
                                 {ch.action === "floor_hit" ? "Dip fiyat korumasi" :
                                  ch.apply_error ? ch.apply_error :
@@ -175,6 +183,7 @@ export default function PriceChangesPage() {
                   <th className="p-3 text-center"><ArrowDown className="h-3 w-3 inline" /></th>
                   <th className="p-3 text-right">Yeni</th>
                   <th className="p-3 text-right">Rakip</th>
+                  <th className="p-3 text-right">Dip Fiyat</th>
                   <th className="p-3">Kaynak</th>
                   <th className="p-3">Sebep</th>
                 </tr>
@@ -188,11 +197,20 @@ export default function PriceChangesPage() {
                        <XCircle className="h-4 w-4 text-red-400" />}
                     </td>
                     <td className="p-3 text-xs text-slate-500 whitespace-nowrap">{formatDate(ch.changed_at)}</td>
-                    <td className="p-3 font-medium text-slate-700 max-w-[180px] truncate">{ch.product_name}</td>
+                    <td className="p-3 max-w-[200px]">
+                      <div className="font-medium text-slate-700 truncate">{ch.product_name}</div>
+                      {ch.sku && <div className="text-xs text-slate-400">{ch.sku}</div>}
+                    </td>
                     <td className="p-3 text-right text-slate-500">{formatPrice(ch.old_price_tl)}</td>
                     <td className="p-3 text-center text-slate-300">→</td>
                     <td className="p-3 text-right font-medium text-slate-800">{ch.new_price_tl ? formatPrice(ch.new_price_tl) : "-"}</td>
                     <td className="p-3 text-right text-blue-600">{formatPrice(ch.cheapest_price)}</td>
+                    <td className="p-3 text-right">
+                      <div className="text-orange-600">{ch.floor_price ? `${formatPrice(ch.floor_price)} ${ch.base_currency || "TL"}` : "-"}</div>
+                      {ch.base_currency && ch.base_currency !== "TRY" && ch.floor_price_tl && (
+                        <div className="text-xs text-slate-400">{formatPrice(ch.floor_price_tl)} TL</div>
+                      )}
+                    </td>
                     <td className="p-3 text-xs text-slate-500">{ch.triggered_by === "manual_category" ? "Manuel" : ch.triggered_by === "scheduled" ? "Otomatik" : ch.triggered_by || "-"}</td>
                     <td className="p-3 text-xs text-slate-500 max-w-[120px] truncate">
                       {ch.action === "floor_hit" ? "Dip fiyat" : ch.applied ? "Uygulandi" : ch.apply_error || "Bekliyor"}
