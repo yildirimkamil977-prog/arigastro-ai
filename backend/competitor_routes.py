@@ -1923,14 +1923,40 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
         rules_map = {r["category_name"]: r for r in rules_list}
         auto_update_cats = {r["category_name"] for r in rules_list if r.get("auto_update_ikas")}
 
+        if not rules_list:
+            logger.info("CRON: Aktif kural yok, atlanıyor")
+            return
+
+        # Only scan products in auto_update categories
+        if not auto_update_cats:
+            logger.info("CRON: Otomatik güncelleme açık kategori yok, atlanıyor")
+            return
+
+        # Find matched products in auto-update categories
+        cat_query = {"$or": [{"ikas_categories.name": {"$in": list(auto_update_cats)}}, {"category_path": {"$regex": "|".join(auto_update_cats), "$options": "i"}}]}
+        cat_products = await db.products.find({**cat_query, "inactive": {"$ne": True}}, {"_id": 0, "slug": 1}).to_list(10000)
+        cat_slugs = set(p["slug"] for p in cat_products)
+
         slugs_cursor = db.competitor_matches.aggregate([
-            {"$match": {"rejected": {"$ne": True}}},
+            {"$match": {"rejected": {"$ne": True}, "product_slug": {"$in": list(cat_slugs)}}},
             {"$group": {"_id": "$product_slug"}}
         ])
         slugs = [doc["_id"] async for doc in slugs_cursor]
         if not slugs:
-            logger.info("CRON: Eslesmis urun yok, atlanıyor")
+            logger.info(f"CRON: Otomatik kategorilerde eslesmis urun yok ({len(auto_update_cats)} kategori kontrol edildi)")
             return
+
+        # Create operation record
+        operation_id = f"nightly_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+        await db.pricing_operations.insert_one({
+            "operation_id": operation_id,
+            "category": "Otomatik Gece Taramasi",
+            "triggered_by": "scheduled",
+            "total_products": len(slugs),
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "status": "running",
+        })
+        logger.info(f"CRON: {len(slugs)} eslesmis urun taranacak ({len(auto_update_cats)} kategori)")
 
         await db.system_status.update_one(
             {"task": "competitor_scan"},
@@ -2037,17 +2063,22 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
                         log_entry = {
                             "product_slug": slug,
                             "product_name": product.get("name", ""),
+                            "sku": product.get("sku", ""),
+                            "operation_id": operation_id,
                             "action": "update",
                             "old_price_tl": result.get("old_price_tl"),
+                            "old_price_base": product.get("base_price"),
                             "new_price_tl": result.get("new_price_tl"),
                             "new_price_base": result.get("new_price_base"),
                             "base_currency": base_currency,
                             "cheapest_competitor": result.get("cheapest_competitor"),
                             "cheapest_price": result.get("cheapest_price"),
                             "floor_price": floor_price,
+                            "floor_price_tl": convert_to_tl(floor_price, base_currency) if floor_price and base_currency and base_currency != "TRY" else floor_price,
                             "reason": result.get("reason", ""),
                             "applied": False,
                             "auto_update": should_auto,
+                            "triggered_by": "scheduled",
                             "changed_at": datetime.now(timezone.utc).isoformat(),
                         }
 
@@ -2098,15 +2129,20 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
                         await db.price_changes.insert_one({
                             "product_slug": slug,
                             "product_name": product.get("name", ""),
+                            "sku": product.get("sku", ""),
+                            "operation_id": operation_id,
                             "action": "floor_hit",
                             "old_price_tl": product.get("our_price"),
+                            "old_price_base": product.get("base_price"),
                             "new_price_tl": None,
                             "base_currency": base_currency,
                             "cheapest_competitor": result.get("cheapest_competitor"),
                             "cheapest_price": result.get("cheapest_price"),
                             "floor_price": floor_price,
+                            "floor_price_tl": convert_to_tl(floor_price, base_currency) if floor_price and base_currency and base_currency != "TRY" else floor_price,
                             "reason": result.get("reason", ""),
                             "applied": False,
+                            "triggered_by": "scheduled",
                             "changed_at": datetime.now(timezone.utc).isoformat(),
                         })
 
@@ -2136,6 +2172,18 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
             {"$set": {"last_run": datetime.now(timezone.utc).isoformat(), "scanned": scanned, "success": success, "failed": failed, "auto_updated": auto_updated}},
             upsert=True,
         )
+        # Update operation record
+        await db.pricing_operations.update_one({"operation_id": operation_id}, {"$set": {
+            "status": "completed",
+            "scanned": scanned, "updated": auto_updated, "skipped": success - auto_updated, "failed": failed,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }})
+        # Update last_scan_at for ALL auto-update categories
+        for cat_name in auto_update_cats:
+            await db.pricing_rules.update_one(
+                {"category_name": cat_name},
+                {"$set": {"last_scan_at": datetime.now(timezone.utc).isoformat()}}
+            )
         logger.info(f"CRON: Rakip tarama tamamlandi. {scanned} urun, {success} basarili, {failed} basarisiz, {auto_updated} ikas guncellendi")
     except Exception as e:
         logger.error(f"CRON: Rakip tarama hatasi: {e}")
@@ -2143,6 +2191,10 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
             {"task": "competitor_scan"},
             {"$set": {"running": False, "error": str(e)}},
         )
+        try:
+            await db.pricing_operations.update_one({"operation_id": operation_id}, {"$set": {"status": "error", "error": str(e)}})
+        except Exception:
+            pass
 
 
 async def _apply_price_to_ikas(loop, ikas_graphql, db, slug, ikas_id, new_price_tl, floor_price, base_currency, price_lists):
