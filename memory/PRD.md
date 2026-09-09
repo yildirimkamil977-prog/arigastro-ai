@@ -47,4 +47,28 @@ Mutfak10, Cafemarkt, Mutbex, Hakbilenler, Oğuz Mutfak (render-only), Kariyer Mu
 - P2: competitor_routes.py refactoring (2000+ satır)
 
 ## Deploy
-`cd ~/arigastro-ai && git pull origin main && docker compose build --no-cache && docker compose up -d`
+
+**Canlı Site:** https://arigastro-ai.com  
+**Sunucu:** Contabo VPS — IP: `161.97.122.111`
+
+### Windows PowerShell ile Bağlantı:
+```powershell
+ssh root@161.97.122.111
+```
+
+### Sunucuda Güncelleme (deploy.sh ile — ÖNERİLEN):
+```bash
+cd ~/arigastro-ai && ./deploy.sh
+```
+
+### Manuel Güncelleme:
+```bash
+cd ~/arigastro-ai && git pull origin main && docker compose build --no-cache && docker compose up -d
+```
+
+### Sadece Backend Güncellemek İçin:
+```bash
+cd ~/arigastro-ai && git pull origin main && docker compose build backend && docker compose up -d backend
+```
+
+> **Not:** `.env` dosyası git'e commit edilmez, sunucuda manuel tutulur. Detaylar: `/app/memory/deployment_info.md`
