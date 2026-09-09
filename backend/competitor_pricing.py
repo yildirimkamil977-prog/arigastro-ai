@@ -438,8 +438,8 @@ def _extract_price(soup: BeautifulSoup, competitor_key: str) -> float:
             ".currentPrice", "span.price",
         ],
         "kariyermutfak": [
-            ".discountPrice", ".product-price-new", ".productDetailPrice .price",
-            "#productPrice", ".product-price", "span.price",
+            "#kdvliFiyat .spanFiyat", "#kdvliFiyat", "#divKDVDahilFiyat .spanFiyat",
+            ".discountPrice", ".product-price-new",
         ],
     }
     
