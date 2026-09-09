@@ -455,11 +455,12 @@ def scrape_competitor_price(url: str, competitor_key: str, retries: int = 2) -> 
     # Phase 2: Retry with JS render (for sites that need it)
     import time; time.sleep(1)
     try:
+        render_timeout = 60 if competitor_key in render_required else 30
         resp = req_sync.get("http://api.scraperapi.com", params={
             "api_key": SCRAPERAPI_KEY,
             "url": url,
             "render": "true",
-        }, timeout=30)
+        }, timeout=render_timeout)
         
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, "html.parser")

@@ -47,7 +47,7 @@ export default function CompetitorProductsPage() {
   const [brand, setBrand] = useState("");
   const [matchStatus, setMatchStatus] = useState("");
   const [loading, setLoading] = useState(false);
-  const [matchingSlug, setMatchingSlug] = useState(null);
+
   const [checkingSlug, setCheckingSlug] = useState(null);
   const [detailProduct, setDetailProduct] = useState(null);
   const [matchDetail, setMatchDetail] = useState(null);
@@ -108,31 +108,6 @@ export default function CompetitorProductsPage() {
   const handleSearch = (val) => {
     if (searchTimer.current) clearTimeout(searchTimer.current);
     searchTimer.current = setTimeout(() => { setSearch(val); setPage(1); }, 400);
-  };
-
-  const autoMatchProduct = async (slug) => {
-    setMatchingSlug(slug);
-    try {
-      const { data } = await axios.post(`${API}/competitor/auto-match/${slug}`, {}, { headers: getAuthHeaders(), withCredentials: true });
-      toast.info(data.message || "Eşleştirme başlatıldı...");
-      if (data.task_key) {
-        const pollInterval = setInterval(async () => {
-          try {
-            const { data: status } = await axios.get(`${API}/competitor/auto-match-status/${data.task_key}`, { headers: getAuthHeaders(), withCredentials: true });
-            if (!status.running) {
-              clearInterval(pollInterval);
-              setMatchingSlug(null);
-              if (status.error) toast.error(`Eşleştirme hatası: ${status.error.substring(0, 100)}`);
-              else toast.success(`${status.matched}/${Object.keys(status.results || {}).length} rakipte eşleşme bulundu`);
-              fetchProducts();
-            }
-          } catch { clearInterval(pollInterval); setMatchingSlug(null); }
-        }, 2000);
-      } else { setMatchingSlug(null); }
-    } catch (err) {
-      toast.error(err.response?.data?.detail || "Eşleştirme başlatılamadı");
-      setMatchingSlug(null);
-    }
   };
 
   const checkPrices = async (slug) => {
@@ -432,9 +407,7 @@ export default function CompetitorProductsPage() {
                   startEditing={startEditing}
                   savePriceSettings={savePriceSettings}
                   setEditingSlug={setEditingSlug}
-                  matchingSlug={matchingSlug}
                   checkingSlug={checkingSlug}
-                  autoMatchProduct={autoMatchProduct}
                   checkPrices={checkPrices}
                   openDetail={openDetail}
                   formatPrice={formatPrice}
@@ -486,12 +459,6 @@ export default function CompetitorProductsPage() {
                   checkPrices(detailProduct.slug);
                 }} disabled={!detailProduct.match_count} data-testid="detail-scan-btn">
                   <TrendingDown className="h-3.5 w-3.5 mr-1.5" /> Rakip Fiyat Tara
-                </Button>
-                <Button size="sm" variant="outline" onClick={async () => {
-                  toast.info("Eşleştirme başlatıldı...");
-                  autoMatchProduct(detailProduct.slug);
-                }} data-testid="detail-match-btn">
-                  <Link2 className="h-3.5 w-3.5 mr-1.5" /> Eşleştir
                 </Button>
               </div>
 
@@ -710,7 +677,7 @@ function PriceCard({ label, value, suffix, color, sub }) {
 function ProductRow({
   p, editingSlug, editFloor, setEditFloor,
   startEditing, savePriceSettings, setEditingSlug,
-  matchingSlug, checkingSlug, autoMatchProduct, checkPrices, openDetail, formatPrice, getCurrencyLabel
+  checkingSlug, checkPrices, openDetail, formatPrice, getCurrencyLabel
 }) {
   const isEditing = editingSlug === p.slug;
   const baseCur = p.base_currency || "TRY";
@@ -837,9 +804,6 @@ function ProductRow({
       {/* Actions */}
       <td className="text-center px-3 py-2.5">
         <div className="flex gap-0.5 justify-center">
-          <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title="Otomatik Eşleştir" onClick={() => autoMatchProduct(p.slug)} disabled={matchingSlug === p.slug} data-testid={`match-btn-${p.slug}`}>
-            {matchingSlug === p.slug ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Link2 className="h-3.5 w-3.5" />}
-          </Button>
           <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title="Fiyat Kontrol" onClick={() => checkPrices(p.slug)} disabled={checkingSlug === p.slug || !p.match_count} data-testid={`check-btn-${p.slug}`}>
             {checkingSlug === p.slug ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <TrendingDown className="h-3.5 w-3.5" />}
           </Button>

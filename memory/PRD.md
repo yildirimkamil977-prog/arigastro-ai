@@ -24,7 +24,9 @@ Mutfak10, Cafemarkt, Mutbex, Hakbilenler, Oğuz Mutfak (render-only), Kariyer Mu
 - Navigasyon sadeleştirildi
 - APScheduler Europe/Istanbul timezone düzeltmesi ✅
 - Ikas UpdateVariantPrices mutation düzeltmesi (SaveVariantPrices → UpdateVariantPrices) ✅
-- **Kariyer Mutfak scraping düzeltmesi**: ultra_premium=true ile bot koruması aşıldı ✅ (09.09.2026)
+- **Kariyer Mutfak KDV (VAT) fiyat düzeltmesi**: JSON-LD yerine #kdvliFiyat DOM selector önceliklendirildi ✅ (09.09.2026)
+- **Otomatik Eşleştir butonu kaldırıldı**: Frontend'den tamamen silindi (tablo satırı + detay modal) ✅ (09.09.2026)
+- **Oğuz Mutfak render timeout artırıldı**: 30s → 60s (büyük ürün sayfalarında timeout sorunu çözüldü) ✅ (09.09.2026)
 - AI Filter sistemi: Teknik özellikler HTML tablo + MULTIPLE_CHOICE attributes ✅
 - Türkçe font desteği (latin-ext subset) ✅
 
