@@ -47,8 +47,9 @@ COMPETITORS = {
     "kariyermutfak": {
         "domain": "www.kariyermutfak.com", "name": "Kariyer Mutfak",
         "base_url": "https://www.kariyermutfak.com",
-        "search_url": "https://www.kariyermutfak.com/arama?k={query}",
+        "search_url": "https://www.kariyermutfak.com/Arama?src={query}",
         "search_needs_render": True,
+        "scrape_needs_ultra_premium": True,
     },
 }
 
@@ -119,7 +120,7 @@ def _is_valid_product_url(url: str, competitor_key: str) -> bool:
         if not any(p in url_lower for p in required_patterns):
             return False
 
-    # For cafemarkt/mutbex/oguzmutfak/globalmutfak: URL should have a meaningful slug (at least 10 chars after domain)
+    # For cafemarkt/mutbex/oguzmutfak/kariyermutfak: URL should have a meaningful slug (at least 10 chars after domain)
     if competitor_key in ("cafemarkt", "mutbex", "oguzmutfak", "kariyermutfak"):
         if len(path) < 10:
             return False
@@ -160,6 +161,13 @@ def _extract_gtin_from_page(html_text: str, soup: BeautifulSoup) -> str:
 def _search_on_site(query: str, competitor_key: str, use_render: bool = None) -> list:
     """Search for products on competitor's own website search. Returns [{url, title}]."""
     comp = COMPETITORS[competitor_key]
+    
+    # Sites with ultra_premium requirement: skip site search (search pages need JS rendering
+    # which doesn't work reliably with ultra_premium). Fall through to Google search.
+    if comp.get("scrape_needs_ultra_premium"):
+        logger.info(f"Skipping site search for {competitor_key} (ultra_premium site, using Google fallback)")
+        return []
+    
     from urllib.parse import quote_plus
     search_url = comp["search_url"].format(query=quote_plus(query))
     params = {"api_key": SCRAPERAPI_KEY, "url": search_url}
@@ -217,19 +225,76 @@ def _search_on_site(query: str, competitor_key: str, use_render: bool = None) ->
 
 
 def _search_on_google(query: str, competitor_key: str) -> list:
-    """Fallback: Google site: search. Returns [{url, title}]."""
+    """Fallback: Google site: search. Returns [{url, title}].
+    Uses structured API first, falls back to HTML scrape for ultra_premium sites."""
     comp = COMPETITORS[competitor_key]
+    needs_ultra = comp.get("scrape_needs_ultra_premium", False)
+    
     try:
         resp = req_sync.get("https://api.scraperapi.com/structured/google/search", params={
             "api_key": SCRAPERAPI_KEY,
             "query": f"site:{comp['domain']} {query}",
             "country_code": "tr", "tld": "com.tr", "num": "10",
         }, timeout=25)
-        if resp.status_code != 200:
-            return []
-        return [{"url": r["link"], "title": r.get("title", "")} for r in resp.json().get("organic_results", []) if _is_valid_product_url(r.get("link", ""), competitor_key)]
+        if resp.status_code == 200:
+            results = []
+            for r in resp.json().get("organic_results", []):
+                link = r.get("link", "")
+                title = r.get("title", "")
+                # Google now returns encrypted redirect URLs (google.com/goto)
+                # For these, use the title for matching but we need the real URL
+                if "google.com/goto" in link:
+                    # Extract domain-specific slug from the title for URL reconstruction
+                    # Skip these results - we can't resolve them
+                    continue
+                if _is_valid_product_url(link, competitor_key):
+                    results.append({"url": link, "title": title})
+            if results:
+                return results
     except Exception:
-        return []
+        pass
+    
+    # Fallback: Scrape Google HTML directly to get real URLs
+    try:
+        from urllib.parse import quote_plus
+        google_url = f"https://www.google.com/search?q=site:{comp['domain']}+{quote_plus(query)}&num=10&hl=tr"
+        params = {"api_key": SCRAPERAPI_KEY, "url": google_url}
+        if needs_ultra:
+            params["ultra_premium"] = "true"
+        resp = req_sync.get("http://api.scraperapi.com", params=params, timeout=60)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            domain = comp["domain"]
+            results = []
+            seen = set()
+            # Parse Google result links
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                # Google wraps URLs in /url?q= format
+                if "/url?" in href:
+                    from urllib.parse import urlparse, parse_qs
+                    parsed = urlparse(href)
+                    qs = parse_qs(parsed.query)
+                    actual_url = qs.get("q", qs.get("url", [""]))[0]
+                    if actual_url and domain in actual_url:
+                        href = actual_url
+                    else:
+                        continue
+                elif domain not in href:
+                    continue
+                clean = href.split("?")[0].rstrip("/")
+                if clean in seen or not _is_valid_product_url(href, competitor_key):
+                    continue
+                seen.add(clean)
+                title = a.get_text(strip=True)
+                if title and len(title) > 10:
+                    results.append({"url": href, "title": title})
+            if results:
+                return results[:10]
+    except Exception as e:
+        logger.warning(f"Google HTML fallback failed for {competitor_key}: {e}")
+    
+    return []
 
 
 def search_competitor_product(product_name: str, competitor_key: str, brand: str = "", gtin: str = "", sku: str = "") -> dict:
@@ -342,12 +407,33 @@ def search_competitor_product(product_name: str, competitor_key: str, brand: str
 
 
 def scrape_competitor_price(url: str, competitor_key: str, retries: int = 2) -> dict:
-    """Scrape price: first try fast (no render), then retry with JS render if needed."""
+    """Scrape price: tries standard → render → ultra_premium based on competitor requirements."""
     if not SCRAPERAPI_KEY:
         return {"success": False, "error": "ScraperAPI key missing"}
     
-    # Sites that require JS rendering (prices loaded dynamically)
-    render_required = {"oguzmutfak", "kariyermutfak"}
+    comp = COMPETITORS.get(competitor_key, {})
+    needs_ultra = comp.get("scrape_needs_ultra_premium", False)
+    render_required = {"oguzmutfak"}
+    
+    # Phase 0: Ultra-premium scrape (for sites with strong bot protection like kariyermutfak)
+    if needs_ultra:
+        try:
+            resp = req_sync.get("http://api.scraperapi.com", params={
+                "api_key": SCRAPERAPI_KEY,
+                "url": url,
+                "ultra_premium": "true",
+            }, timeout=90)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                price = _extract_price(soup, competitor_key)
+                if price and price > 100:
+                    logger.info(f"Scraped {competitor_key} price: {price} TL (ultra_premium) from {url[:60]}")
+                    return {"success": True, "price": price, "currency": "TRY", "scraped_at": datetime.now(timezone.utc).isoformat()}
+            elif resp.status_code != 200:
+                logger.warning(f"Ultra-premium scrape failed for {competitor_key}: HTTP {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"Ultra-premium scrape error for {competitor_key}: {e}")
+        return {"success": False, "error": "Ultra-premium scrape failed (price not found or HTTP error)"}
     
     # Phase 1: Fast scrape without render (skip for render-required sites)
     if competitor_key not in render_required:
@@ -438,8 +524,9 @@ def _extract_price(soup: BeautifulSoup, competitor_key: str) -> float:
             ".currentPrice", "span.price",
         ],
         "kariyermutfak": [
-            "#kdvliFiyat .spanFiyat", "#kdvliFiyat", "#divKDVDahilFiyat .spanFiyat",
-            ".discountPrice", ".product-price-new",
+            ".discountPriceSpan", ".discountPrice", "#kdvliFiyat .spanFiyat",
+            "#kdvliFiyat", "#divKDVDahilFiyat .spanFiyat", "#divKDVDahilFiyat",
+            ".productPrice", ".product-price-new",
         ],
     }
     

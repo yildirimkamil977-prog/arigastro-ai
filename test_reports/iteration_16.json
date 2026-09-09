@@ -1,0 +1,56 @@
+{
+  "summary": "Iteration 16 — verified all 12 review items for Kariyer Mutfak scraping fix + core endpoints + scheduler + FE page loads. Backend: 10/10 pytest tests PASS in /app/backend/tests/test_iteration16_kariyermutfak.py covering: (1) JWT login for arigastro, (2) /api/auth/me, (3) GET /api/competitor/category-rules 200, (4) GET /api/competitor/products (page/limit/total), (5) GET /api/dashboard/stats 200, (6) COMPETITORS['kariyermutfak'] has scrape_needs_ultra_premium=True and search_url uses /Arama?src=, (7) scrape_competitor_price passes ultra_premium='true' via needs_ultra branch, (8) _extract_price site_selectors for kariyermutfak include .discountPriceSpan/.discountPrice/#kdvliFiyat/.productPrice, (9) _search_on_site returns [] for ultra_premium sites (Google fallback), (10) server.py configures Europe/Istanbul timezone via pytz_tz. Verified in backend logs: 'Scheduler baslatildi (Europe/Istanbul timezone)' and 'Sunucu TR saati: 03:59:43 09.09.2026'. Frontend: login page renders correctly (ARI AI, Yönetim Paneline Giriş, Kullanıcı Adı, Şifre, Giriş Yap). Login with arigastro/Arigastro2026! → /dashboard OK (Toplam Ürün 2842). Direct nav to /competitor-scan loads CompetitorScanPage (heading 'Otomasyon Yönetimi', stats cards, empty state 'Henüz kategori eklenmemiş', + Kategori Ekle button) with no JS errors and no visible error banners. Direct nav to /price-changes loads PriceChangesPage (heading 'İşlem Logları', tabs 'İşlemler'/'Tüm Değişiklikler', empty state 'Henüz işlem kaydı yok') with no errors.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Global sidebar + all pages", "issues": ["Turkish diacritics (ç/ğ/ı/İ/ö/ş/ü) render without accents in the rendered font — text says 'Urunler', 'Otomasyon', 'Islem Loglari', 'Yonetimi', 'Kullanici Adi', 'Sifre', 'Giris Yap' instead of the proper Turkish 'Ürünler / İşlem Logları / Yönetimi / Kullanıcı Adı / Şifre / Giriş Yap'. Source strings ARE present with correct Turkish chars in the DOM, but the loaded webfont appears to not include Turkish glyphs and falls back. Recommend loading a font that covers Latin Extended-A (e.g. Inter with tr subset, or set font-display and preload the tr subset)."]}
+    ]
+  },
+  "passed_tests": [
+    "Backend TestAuth.test_login_returns_jwt (3-segment JWT)",
+    "Backend TestAuth.test_me (username=arigastro)",
+    "Backend TestReviewEndpoints.test_category_rules (200)",
+    "Backend TestReviewEndpoints.test_products_list (200, total present)",
+    "Backend TestReviewEndpoints.test_dashboard_stats (200, non-empty)",
+    "Backend TestKariyerMutfakConfig.test_competitor_dict_entry (ultra_premium=True, /Arama?src=)",
+    "Backend TestKariyerMutfakConfig.test_scrape_uses_ultra_premium (source contains ultra_premium='true' branch)",
+    "Backend TestKariyerMutfakConfig.test_price_selectors_present (.discountPriceSpan, .discountPrice, #kdvliFiyat, .productPrice)",
+    "Backend TestKariyerMutfakConfig.test_search_skips_ultra_premium_sites (_search_on_site returns [] for ultra sites)",
+    "Backend TestScheduler.test_server_configures_istanbul_tz (pytz_tz('Europe/Istanbul') found + logs confirm)",
+    "Frontend login page loads at root URL with Turkish form labels",
+    "Frontend login arigastro/Arigastro2026! → /dashboard (Toplam Ürün=2842, Eşleşmiş=1693)",
+    "Frontend /competitor-scan loads CompetitorScanPage with heading 'Otomasyon Yönetimi', no JS errors",
+    "Frontend /price-changes loads PriceChangesPage with heading 'İşlem Logları', no JS errors"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_iteration16_kariyermutfak.py",
+    "/app/test_reports/pytest/iteration16.xml"
+  ],
+  "action_items": [
+    "(LOW/DESIGN) Fix Turkish glyph rendering in sidebar/labels — either switch webfont or ensure Latin Extended-A is loaded so 'Ürünler', 'İşlem Logları', 'Otomasyon Yönetimi', 'Giriş Yap' render with proper diacritics. Text nodes contain correct chars; only the rendered glyphs are missing accents.",
+    "(NOTE) Review request mentioned a 'Rakip Ürünleri' nav item — current sidebar exposes 'Ürünler & Eşleştirme' (route /products = CompetitorProductsPage) instead. If a separate 'Rakip Ürünleri' listing is expected, it is not present in the sidebar."
+  ],
+  "critical_code_review_comments": [
+    "competitor_pricing.py — Kariyer Mutfak ultra_premium fix is clean: (a) COMPETITORS dict flag, (b) _search_on_site early-returns [] with a log line so we don't waste a premium credit on a JS-rendered search page, (c) scrape_competitor_price has an explicit Phase-0 ultra_premium branch with 90s timeout and price>100 sanity gate, (d) _search_on_google has a needs_ultra fallback path that also passes ultra_premium=true when scraping Google HTML. Selectors for the T-Soft/Ticimax-style theme (.discountPriceSpan, #kdvliFiyat) look correct.",
+    "server.py — scheduler uses pytz_tz('Europe/Istanbul') and logs the current TR time on start; timezone bug is verified fixed.",
+    "competitor_routes.py — 2000+ lines, still recommended to split (recurring since iter-11).",
+    "IKAS_PRICE_LISTS UUIDs still hardcoded (recurring since iter-14).",
+    "asyncio.get_event_loop() still used inside coroutines in a few places (recurring since iter-14)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration16_kariyermutfak.py (new)",
+    "/app/test_reports/pytest/iteration16.xml (new)"
+  ],
+  "success_rate": {"backend": "100% (10/10)", "frontend": "100% (4/4 review items — login, sidebar, /competitor-scan, /price-changes)"},
+  "test_credentials": {"username": "arigastro", "password": "Arigastro2026!", "auth_field": "token"},
+  "seed_data_creation": "None. No data was created or modified.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All 12 review items for iter-16 pass. Kariyer Mutfak scraping code path verified end-to-end at code level (did NOT hit ScraperAPI live per review note). Scheduler timezone confirmed via backend logs. FE nav labels lose Turkish diacritics due to font — cosmetic only, click/route works. CompetitorScanPage empty state shows '+ Kategori Ekle' — sidebar link is labeled 'Otomasyon' (not 'Otomasyon Yönetimi' as review said). PriceChangesPage sidebar label is 'İşlem Logları' (heading matches). Backend regression file: /app/backend/tests/test_iteration16_kariyermutfak.py (~2s).",
+  "rca of the issue": "No new bugs. Two previous fixes verified: (1) Kariyer Mutfak was blocked by aggressive bot protection — solved with ultra_premium=true which spins up residential proxy + full JS/CAPTCHA handling on ScraperAPI, plus site-native search is skipped (returns []) to save credits, deferring to Google fallback. (2) APScheduler timezone bug — fixed by constructing pytz_tz('Europe/Istanbul') object and passing to AsyncIOScheduler jobs; startup log confirms server TR time."
+}
