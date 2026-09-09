@@ -738,6 +738,48 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                                 "changed_at": datetime.now(timezone.utc).isoformat(),
                             })
                             skipped += 1
+                        elif result.get("action") == "raise":
+                            ikas_id = product.get("ikas_id") or product.get("ikas_product_id")
+                            new_tl = result["new_price_tl"]
+                            log_entry = {
+                                "product_slug": slug,
+                                "product_name": product.get("name", ""),
+                                "sku": product.get("sku", ""),
+                                "operation_id": operation_id,
+                                "action": "raise",
+                                "old_price_tl": result.get("old_price_tl"),
+                                "old_price_base": product.get("base_price"),
+                                "new_price_tl": new_tl,
+                                "new_price_base": result.get("new_price_base"),
+                                "base_currency": base_currency,
+                                "cheapest_competitor": result.get("cheapest_competitor"),
+                                "cheapest_price": result.get("cheapest_price"),
+                                "floor_price": floor_price,
+                                "reason": result.get("reason", ""),
+                                "applied": False,
+                                "auto_update": True,
+                                "triggered_by": "manual_category",
+                                "changed_at": datetime.now(timezone.utc).isoformat(),
+                            }
+                            if ikas_id:
+                                try:
+                                    applied_ok = await _apply_price_to_ikas_inline(
+                                        loop, ikas_fn, ikas_id, new_tl,
+                                        floor_price, base_currency, IKAS_PRICE_LISTS
+                                    )
+                                    if applied_ok:
+                                        log_entry["applied"] = True
+                                        log_entry["applied_at"] = datetime.now(timezone.utc).isoformat()
+                                        new_base = convert_from_tl(new_tl, base_currency)
+                                        await db.products.update_one({"slug": slug}, {"$set": {
+                                            "our_price": new_tl, "base_price": new_base,
+                                            "price_updated_at": datetime.now(timezone.utc).isoformat(),
+                                        }})
+                                        updated_count += 1
+                                except Exception as e:
+                                    logger.error(f"İkas raise error for {slug}: {e}")
+                                    log_entry["apply_error"] = str(e)
+                            await db.price_changes.insert_one(log_entry)
                         elif result.get("action") == "no_change":
                             pass
                         else:
@@ -2145,6 +2187,62 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
                             "triggered_by": "scheduled",
                             "changed_at": datetime.now(timezone.utc).isoformat(),
                         })
+                    elif result.get("action") == "raise":
+                        for cat in product_cats:
+                            if cat in rules_map:
+                                await db.pricing_rules.update_one(
+                                    {"category_name": cat},
+                                    {"$set": {"last_scan_at": datetime.now(timezone.utc).isoformat()}}
+                                )
+                        log_entry_r = {
+                            "product_slug": slug,
+                            "product_name": product.get("name", ""),
+                            "sku": product.get("sku", ""),
+                            "operation_id": operation_id,
+                            "action": "raise",
+                            "old_price_tl": result.get("old_price_tl"),
+                            "old_price_base": product.get("base_price"),
+                            "new_price_tl": result.get("new_price_tl"),
+                            "new_price_base": result.get("new_price_base"),
+                            "base_currency": base_currency,
+                            "cheapest_competitor": result.get("cheapest_competitor"),
+                            "cheapest_price": result.get("cheapest_price"),
+                            "floor_price": floor_price,
+                            "reason": result.get("reason", ""),
+                            "applied": False,
+                            "auto_update": should_auto,
+                            "triggered_by": "scheduled",
+                            "changed_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                        if should_auto and ikas_graphql and can_update_price:
+                            skip_23h = False
+                            last_update = product.get("price_updated_at")
+                            if last_update:
+                                try:
+                                    last_dt = datetime.fromisoformat(last_update.replace("Z", "+00:00")) if isinstance(last_update, str) else last_update
+                                    if (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600 < 23:
+                                        skip_23h = True
+                                except Exception:
+                                    pass
+                            if not skip_23h:
+                                try:
+                                    ikas_id = product.get("ikas_id") or product.get("ikas_product_id")
+                                    if ikas_id:
+                                        new_tl = result["new_price_tl"]
+                                        applied_ok = await _apply_price_to_ikas(
+                                            loop, ikas_graphql, db, slug, ikas_id,
+                                            new_tl, floor_price, base_currency, IKAS_PRICE_LISTS
+                                        )
+                                        if applied_ok:
+                                            log_entry_r["applied"] = True
+                                            log_entry_r["applied_at"] = datetime.now(timezone.utc).isoformat()
+                                            new_base = convert_from_tl(new_tl, base_currency)
+                                            await db.products.update_one({"slug": slug}, {"$set": {"our_price": new_tl, "base_price": new_base}})
+                                            auto_updated += 1
+                                except Exception as e:
+                                    logger.error(f"CRON raise error for {slug}: {e}")
+                                    log_entry_r["apply_error"] = str(e)
+                        await db.price_changes.insert_one(log_entry_r)
 
                     success += 1
                 else:

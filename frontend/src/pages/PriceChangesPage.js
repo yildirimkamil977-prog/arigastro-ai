@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { Button } from "../components/ui/button";
-import { Loader2, ChevronDown, ChevronUp, CheckCircle2, XCircle, AlertTriangle, Clock, ArrowDown } from "lucide-react";
+import { Loader2, ChevronDown, ChevronUp, CheckCircle2, XCircle, AlertTriangle, Clock, ArrowDown, ArrowUpRight } from "lucide-react";
 
 const API = process.env.REACT_APP_BACKEND_URL + "/api";
 const getAuthHeaders = () => ({ Authorization: `Bearer ${localStorage.getItem("token")}` });
@@ -134,6 +134,7 @@ export default function PriceChangesPage() {
                               <td className="py-2 pr-3">
                                 {ch.applied ? <CheckCircle2 className="h-4 w-4 text-emerald-500" /> :
                                  ch.action === "floor_hit" ? <AlertTriangle className="h-4 w-4 text-amber-500" /> :
+                                 ch.action === "raise" ? <ArrowUpRight className="h-4 w-4 text-blue-500" /> :
                                  <XCircle className="h-4 w-4 text-red-400" />}
                               </td>
                               <td className="py-2 pr-3 max-w-[220px]">
@@ -166,6 +167,7 @@ export default function PriceChangesPage() {
                               </td>
                               <td className="py-2 text-xs text-slate-500 max-w-[150px] truncate">
                                 {ch.action === "floor_hit" ? "Dip fiyat korumasi" :
+                                 ch.action === "raise" ? "Fiyat yukseltildi" :
                                  ch.apply_error ? ch.apply_error :
                                  ch.applied ? "Basarili" :
                                  ch.reason || "Bekliyor"}

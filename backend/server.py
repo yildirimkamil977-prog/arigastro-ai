@@ -2257,21 +2257,49 @@ async def seo_bulk_status(user: dict = Depends(get_current_user)):
     return {"tasks": tasks, "running_count": running_count, "paused_count": paused_count}
 
 @api_router.get("/seo/logs")
-async def get_seo_logs(page: int = 1, limit: int = 50, user: dict = Depends(get_current_user)):
-    """Get SEO generation logs."""
+async def get_seo_logs(page: int = 1, limit: int = 50, trigger: str = None, user: dict = Depends(get_current_user)):
+    """Get SEO generation logs. Optionally filter by trigger (auto_nightly, bulk, etc.)."""
     skip = (page - 1) * limit
-    total = await db.seo_logs.count_documents({})
-    logs = await db.seo_logs.find({}, {"_id": 0}).sort("timestamp", -1).skip(skip).limit(limit).to_list(limit)
+    query = {}
+    if trigger:
+        query["trigger"] = trigger
+    total = await db.seo_logs.count_documents(query)
+    logs = await db.seo_logs.find(query, {"_id": 0}).sort("timestamp", -1).skip(skip).limit(limit).to_list(limit)
     
     # Stats
-    total_generated = await db.seo_logs.count_documents({"seo_generated": True})
-    total_pushed = await db.seo_logs.count_documents({"ikas_pushed": True})
-    total_failed = await db.seo_logs.count_documents({"seo_generated": False})
+    total_generated = await db.seo_logs.count_documents({**query, "seo_generated": True})
+    total_pushed = await db.seo_logs.count_documents({**query, "ikas_pushed": True})
+    total_failed = await db.seo_logs.count_documents({**query, "seo_generated": False})
     
     return {
         "logs": logs, "total": total, "page": page, "pages": (total + limit - 1) // limit,
         "stats": {"generated": total_generated, "pushed": total_pushed, "failed": total_failed}
     }
+
+
+@api_router.get("/seo/nightly-runs")
+async def get_nightly_seo_runs(user: dict = Depends(get_current_user)):
+    """Get nightly SEO run summaries grouped by date."""
+    pipeline = [
+        {"$match": {"trigger": "auto_nightly"}},
+        {"$addFields": {
+            "date": {"$substr": ["$timestamp", 0, 10]}
+        }},
+        {"$group": {
+            "_id": "$date",
+            "total": {"$sum": 1},
+            "generated": {"$sum": {"$cond": ["$seo_generated", 1, 0]}},
+            "pushed": {"$sum": {"$cond": ["$ikas_pushed", 1, 0]}},
+            "failed": {"$sum": {"$cond": [{"$eq": ["$seo_generated", False]}, 1, 0]}},
+            "first_ts": {"$min": "$timestamp"},
+        }},
+        {"$sort": {"_id": -1}},
+        {"$limit": 30}
+    ]
+    runs = await db.seo_logs.aggregate(pipeline).to_list(30)
+    for r in runs:
+        r["date"] = r.pop("_id")
+    return {"runs": runs}
 
 
 @api_router.get("/seo/{slug}")
@@ -2335,21 +2363,68 @@ async def get_dashboard_stats(user: dict = Depends(get_current_user)):
         {"inactive": {"$ne": True}, "cheapest_price": {"$ne": None}, "our_price": {"$ne": None}, "price_difference": {"$gt": 0}},
         {"_id": 0, "name": 1, "our_price": 1, "cheapest_price": 1, "cheapest_competitor": 1, "price_difference": 1, "slug": 1}
     ).sort("price_difference", -1).limit(10).to_list(10)
-    
+
+    # Today's price changes
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    today_changes = await db.price_changes.count_documents({"changed_at": {"$gte": today_start}})
+    today_applied = await db.price_changes.count_documents({"changed_at": {"$gte": today_start}, "applied": True})
+    today_raise = await db.price_changes.count_documents({"changed_at": {"$gte": today_start}, "action": "raise"})
+    today_lower = await db.price_changes.count_documents({"changed_at": {"$gte": today_start}, "action": "update", "applied": True})
+
+    # Recent price changes (last 8)
+    recent_changes = await db.price_changes.find(
+        {"applied": True},
+        {"_id": 0, "product_name": 1, "action": 1, "old_price_tl": 1, "new_price_tl": 1,
+         "cheapest_competitor": 1, "base_currency": 1, "changed_at": 1, "sku": 1}
+    ).sort("changed_at", -1).limit(8).to_list(8)
+
+    # Nightly automation statuses
+    auto_seo_status = await db.system_status.find_one({"task": "auto_seo_nightly"}, {"_id": 0})
+    scan_status = await db.system_status.find_one({"task": "scheduled_competitor_scan"}, {"_id": 0})
+
+    # Competitor matches summary
+    match_pipeline = [
+        {"$group": {"_id": "$competitor_key", "count": {"$sum": 1}}},
+    ]
+    match_summary_raw = await db.competitor_matches.aggregate(match_pipeline).to_list(20)
+    match_summary = {r["_id"]: r["count"] for r in match_summary_raw if r["_id"]}
+    total_matches = sum(match_summary.values())
+
     return {
         "total_products": total_products,
         "tracked_products": tracked_products,
         "matched_products": matched_products,
+        "total_matches": total_matches,
+        "match_summary": match_summary,
         "unmatched_products": unmatched,
         "competitors_cheaper": competitors_cheaper,
         "we_are_cheaper": we_are_cheaper,
         "seo_generated": seo_count,
         "total_categories": total_categories,
         "tracked_categories": tracked_categories,
-        "recent_alerts": recent_alerts
+        "recent_alerts": recent_alerts,
+        "today_changes": today_changes,
+        "today_applied": today_applied,
+        "today_raise": today_raise,
+        "today_lower": today_lower,
+        "recent_changes": recent_changes,
+        "auto_seo_status": auto_seo_status,
+        "scan_status": scan_status,
     }
 
 # ============ PRICE TRACKING ============
+
+
+@api_router.get("/dashboard/exchange-rates")
+async def get_exchange_rates(user: dict = Depends(get_current_user)):
+    """Return current EUR/USD rates from TCMB cache."""
+    try:
+        from tcmb_exchange import get_rate
+        eur = get_rate("EUR")
+        usd = get_rate("USD")
+        return {"EUR": round(eur, 2), "USD": round(usd, 2), "TRY": 1.0}
+    except Exception as e:
+        return {"EUR": None, "USD": None, "error": str(e)}
 
 def build_tracked_query(cat_names: list) -> dict:
     """Build MongoDB query that matches products by category_path, brand, or url with Turkish char support."""
@@ -4319,6 +4394,7 @@ async def scheduled_auto_seo():
 
                 # Push to İkas — ONLY SEO fields
                 ikas_id = product.get("ikas_product_id")
+                ikas_pushed = False
                 if ikas_id and seo_record:
                     desc_html = markdown_to_html(seo_record.get("product_description", ""))
                     await loop.run_in_executor(
@@ -4330,9 +4406,32 @@ async def scheduled_auto_seo():
                         "ikas_pushed_at": datetime.now(timezone.utc).isoformat(),
                     }})
                     pushed += 1
+                    ikas_pushed = True
+
+                await db.seo_logs.insert_one({
+                    "product_slug": slug,
+                    "product_name": product.get("name", ""),
+                    "category": product.get("category_path", ""),
+                    "seo_generated": True,
+                    "ikas_pushed": ikas_pushed,
+                    "trigger": "auto_nightly",
+                    "word_count": len(seo_record.get("product_description", "").split()) if seo_record else 0,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
             except Exception as e:
                 logger.warning(f"CRON: Oto SEO failed for {slug}: {e}")
                 failed += 1
+                await db.seo_logs.insert_one({
+                    "product_slug": slug,
+                    "product_name": product.get("name", ""),
+                    "category": product.get("category_path", ""),
+                    "seo_generated": False,
+                    "ikas_pushed": False,
+                    "trigger": "auto_nightly",
+                    "error": str(e)[:300],
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+                continue
 
             if (i + 1) % 10 == 0:
                 await db.system_status.update_one({"task": task_key}, {"$set": {"progress": i + 1, "generated": generated, "pushed": pushed, "failed": failed}})
