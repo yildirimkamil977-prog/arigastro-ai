@@ -44,7 +44,7 @@ COMPETITORS = {
         "search_url": "https://oguzmutfakonline.com/arama?q={query}",
         "search_needs_render": True,
     },
-    "globalmutfak": {
+    "kariyermutfak": {
         "domain": "www.kariyermutfak.com", "name": "Kariyer Mutfak",
         "base_url": "https://www.kariyermutfak.com",
         "search_url": "https://www.kariyermutfak.com/arama?k={query}",
@@ -79,7 +79,7 @@ _PRODUCT_URL_PATTERNS = {
     "mutbex":      [],  # mutbex uses direct slugs like /product-name
     "hakbilenler": ["/urun/"],
     "oguzmutfak":  [],  # oguzmutfakonline.com uses direct slugs
-    "globalmutfak": [],  # kariyermutfak.com
+    "kariyermutfak": [],  # kariyermutfak.com
 }
 
 # URL patterns to REJECT (category, search, homepage, pagination)
@@ -120,7 +120,7 @@ def _is_valid_product_url(url: str, competitor_key: str) -> bool:
             return False
 
     # For cafemarkt/mutbex/oguzmutfak/globalmutfak: URL should have a meaningful slug (at least 10 chars after domain)
-    if competitor_key in ("cafemarkt", "mutbex", "oguzmutfak", "globalmutfak"):
+    if competitor_key in ("cafemarkt", "mutbex", "oguzmutfak", "kariyermutfak"):
         if len(path) < 10:
             return False
 
@@ -347,7 +347,7 @@ def scrape_competitor_price(url: str, competitor_key: str, retries: int = 2) -> 
         return {"success": False, "error": "ScraperAPI key missing"}
     
     # Sites that require JS rendering (prices loaded dynamically)
-    render_required = {"oguzmutfak", "globalmutfak"}
+    render_required = {"oguzmutfak", "kariyermutfak"}
     
     # Phase 1: Fast scrape without render (skip for render-required sites)
     if competitor_key not in render_required:
@@ -437,7 +437,7 @@ def _extract_price(soup: BeautifulSoup, competitor_key: str) -> float:
             ".product-price", ".current-price", ".discountedPrice",
             ".currentPrice", "span.price",
         ],
-        "globalmutfak": [
+        "kariyermutfak": [
             ".discountPrice", ".product-price-new", ".productDetailPrice .price",
             "#productPrice", ".product-price", "span.price",
         ],

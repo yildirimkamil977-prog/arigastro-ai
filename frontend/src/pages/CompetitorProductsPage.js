@@ -17,7 +17,7 @@ const COMPETITOR_ICONS = {
   mutbex: { name: "MX", color: "#22c55e", domain: "mutbex.com" },
   hakbilenler: { name: "HB", color: "#a855f7", domain: "hakbilenler.com.tr" },
   oguzmutfak: { name: "OM", color: "#ef4444", domain: "oguzmutfakonline.com" },
-  globalmutfak: { name: "KM", color: "#0ea5e9", domain: "kariyermutfak.com" },
+  kariyermutfak: { name: "KM", color: "#0ea5e9", domain: "kariyermutfak.com" },
 };
 
 const CURRENCY_SYMBOLS = {
