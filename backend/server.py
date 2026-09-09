@@ -4330,9 +4330,9 @@ async def startup():
     # 00:30 TR → Akakçe fiyat kontrolü (ayrı akış)
     scheduler.add_job(scheduled_price_check, CronTrigger(hour=0, minute=30, timezone=TR), id="price_check_cron", name="Akakce Fiyat (00:30 TR)", replace_existing=True, misfire_grace_time=3600)
     # 00:45 TR → Rakip fiyat tara + en ucuz rakibin 200 TL altına güncelle
-    scheduler.add_job(_sched_competitor_scan, CronTrigger(hour=0, minute=45, timezone=TR), id="competitor_scan_cron", name="Rakip Tara+Fiyat Guncelle (00:45 TR)", replace_existing=True, misfire_grace_time=3600)
+    scheduler.add_job(_sched_competitor_scan, CronTrigger(hour=18, minute=7, timezone=TR), id="competitor_scan_cron", name="Rakip Tara+Fiyat Guncelle TEST (18:07 TR)", replace_existing=True, misfire_grace_time=3600)
     # 03:00 TR → Otomatik SEO
-    scheduler.add_job(_sched_auto_seo, CronTrigger(hour=18, minute=5, timezone=TR), id="auto_seo_cron", name="Oto SEO TEST (18:05 TR)", replace_existing=True, misfire_grace_time=3600)
+    scheduler.add_job(_sched_auto_seo, CronTrigger(hour=3, minute=0, timezone=TR), id="auto_seo_cron", name="Oto SEO (03:00 TR)", replace_existing=True, misfire_grace_time=3600)
     scheduler.start()
     # Log next fire times
     for job in scheduler.get_jobs():

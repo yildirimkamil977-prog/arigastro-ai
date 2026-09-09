@@ -14,7 +14,7 @@ const navItems = [
   { path: "/price-changes", label: "Islem Loglari", icon: History },
   { path: "/categories", label: "Kategoriler", icon: Tags },
   { path: "/seo", label: "SEO Uretici", icon: FileText },
-  { path: "/seo-logs", label: "Toplu SEO", icon: Send },
+  { path: "/seo-logs", label: "SEO Yönetimi", icon: Send },
   { path: "/brand-category-seo", label: "Marka/Kategori SEO", icon: Building2 },
   { path: "/filter-management", label: "Filtre Yonetimi", icon: SlidersHorizontal },
   { path: "/marketing", label: "AI Pazarlama", icon: Brain },
