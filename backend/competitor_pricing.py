@@ -477,6 +477,18 @@ def _extract_price(soup: BeautifulSoup, competitor_key: str) -> float:
     """Extract price from competitor page HTML with site-specific strategies.
     Returns the HIGHEST reasonable price found to avoid picking up accessory/shipping prices."""
     
+    # Kariyer Mutfak: JSON-LD returns KDV hariç (excl. VAT) but we need KDV Dahil (incl. VAT)
+    # Check KDV Dahil selectors FIRST and return immediately if found
+    if competitor_key == "kariyermutfak":
+        kdv_dahil_selectors = ["#kdvliFiyat .spanFiyat", "#kdvliFiyat", "#divKDVDahilFiyat .spanFiyat", "#divKDVDahilFiyat"]
+        for sel in kdv_dahil_selectors:
+            for el in soup.select(sel):
+                text = el.get_text(strip=True)
+                p = _parse_turkish_price(text)
+                if p and p > 100:
+                    logger.info(f"Kariyer Mutfak KDV Dahil fiyat: {p} TL (selector: {sel})")
+                    return p
+    
     candidates = []  # Collect all found prices, pick the best one
     
     # Strategy 1: Schema.org / JSON-LD (most reliable)
