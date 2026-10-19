@@ -2066,38 +2066,24 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
                         }
 
                         if should_auto and ikas_graphql and can_update_price:
-                            # 23-hour protection
-                            last_update = product.get("price_updated_at")
-                            skip_23h = False
-                            if last_update:
-                                try:
-                                    last_dt = datetime.fromisoformat(last_update.replace("Z", "+00:00")) if isinstance(last_update, str) else last_update
-                                    hours_since = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
-                                    if hours_since < 23:
-                                        skip_23h = True
-                                        log_entry["apply_error"] = f"Son güncelleme {hours_since:.0f} saat önce — 23 saat koruması"
-                                except Exception:
-                                    pass
-                            
-                            if not skip_23h:
-                                try:
-                                    ikas_id = product.get("ikas_id") or product.get("ikas_product_id")
-                                    if ikas_id:
-                                        new_tl = result["new_price_tl"]
-                                        applied_ok = await _apply_price_to_ikas(
-                                            loop, ikas_graphql, db, slug, ikas_id,
-                                            new_tl, floor_price, base_currency,
-                                            IKAS_PRICE_LISTS
-                                        )
-                                        if applied_ok:
-                                            log_entry["applied"] = True
-                                            log_entry["applied_at"] = datetime.now(timezone.utc).isoformat()
-                                            new_base = convert_from_tl(new_tl, base_currency)
-                                            await db.products.update_one({"slug": slug}, {"$set": {"our_price": new_tl, "base_price": new_base}})
-                                            auto_updated += 1
-                                except Exception as e:
-                                    logger.error(f"CRON auto-update error for {slug}: {e}")
-                                    log_entry["apply_error"] = str(e)
+                            try:
+                                ikas_id = product.get("ikas_id") or product.get("ikas_product_id")
+                                if ikas_id:
+                                    new_tl = result["new_price_tl"]
+                                    applied_ok = await _apply_price_to_ikas(
+                                        loop, ikas_graphql, db, slug, ikas_id,
+                                        new_tl, floor_price, base_currency,
+                                        IKAS_PRICE_LISTS
+                                    )
+                                    if applied_ok:
+                                        log_entry["applied"] = True
+                                        log_entry["applied_at"] = datetime.now(timezone.utc).isoformat()
+                                        new_base = convert_from_tl(new_tl, base_currency)
+                                        await db.products.update_one({"slug": slug}, {"$set": {"our_price": new_tl, "base_price": new_base}})
+                                        auto_updated += 1
+                            except Exception as e:
+                                logger.error(f"CRON auto-update error for {slug}: {e}")
+                                log_entry["apply_error"] = str(e)
                         elif should_auto and not can_update_price:
                             log_entry["apply_error"] = "Dip fiyat girilmemiş — güncelleme atlandı"
 
@@ -2156,33 +2142,23 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
                             "changed_at": datetime.now(timezone.utc).isoformat(),
                         }
                         if should_auto and ikas_graphql and can_update_price:
-                            skip_23h = False
-                            last_update = product.get("price_updated_at")
-                            if last_update:
-                                try:
-                                    last_dt = datetime.fromisoformat(last_update.replace("Z", "+00:00")) if isinstance(last_update, str) else last_update
-                                    if (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600 < 23:
-                                        skip_23h = True
-                                except Exception:
-                                    pass
-                            if not skip_23h:
-                                try:
-                                    ikas_id = product.get("ikas_id") or product.get("ikas_product_id")
-                                    if ikas_id:
-                                        new_tl = result["new_price_tl"]
-                                        applied_ok = await _apply_price_to_ikas(
-                                            loop, ikas_graphql, db, slug, ikas_id,
-                                            new_tl, floor_price, base_currency, IKAS_PRICE_LISTS
-                                        )
-                                        if applied_ok:
-                                            log_entry_r["applied"] = True
-                                            log_entry_r["applied_at"] = datetime.now(timezone.utc).isoformat()
-                                            new_base = convert_from_tl(new_tl, base_currency)
-                                            await db.products.update_one({"slug": slug}, {"$set": {"our_price": new_tl, "base_price": new_base}})
-                                            auto_updated += 1
-                                except Exception as e:
-                                    logger.error(f"CRON raise error for {slug}: {e}")
-                                    log_entry_r["apply_error"] = str(e)
+                            try:
+                                ikas_id = product.get("ikas_id") or product.get("ikas_product_id")
+                                if ikas_id:
+                                    new_tl = result["new_price_tl"]
+                                    applied_ok = await _apply_price_to_ikas(
+                                        loop, ikas_graphql, db, slug, ikas_id,
+                                        new_tl, floor_price, base_currency, IKAS_PRICE_LISTS
+                                    )
+                                    if applied_ok:
+                                        log_entry_r["applied"] = True
+                                        log_entry_r["applied_at"] = datetime.now(timezone.utc).isoformat()
+                                        new_base = convert_from_tl(new_tl, base_currency)
+                                        await db.products.update_one({"slug": slug}, {"$set": {"our_price": new_tl, "base_price": new_base}})
+                                        auto_updated += 1
+                            except Exception as e:
+                                logger.error(f"CRON raise error for {slug}: {e}")
+                                log_entry_r["apply_error"] = str(e)
                         await db.price_changes.insert_one(log_entry_r)
 
                     success += 1

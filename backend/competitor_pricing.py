@@ -789,8 +789,8 @@ def calculate_optimal_price(
 
     # Are we already cheaper than the cheapest competitor?
     if our_price_tl <= cheapest_price_tl:
-        # Check if we are TOO cheap: more than 200 TL below cheapest competitor
-        raise_threshold = 200.0
+        # Check if we are TOO cheap: more than 300 TL below cheapest competitor → raise
+        raise_threshold = 300.0
         gap = cheapest_price_tl - our_price_tl
         if gap > raise_threshold:
             target_price_tl = cheapest_price_tl - raise_threshold
@@ -802,7 +802,7 @@ def calculate_optimal_price(
                 "old_price_tl": our_price_tl,
                 "base_currency": base_currency,
                 "raise_amount_tl": round(target_price_tl - our_price_tl, 2),
-                "reason": f"Fiyat çok düşük: Rakip {cheapest_name} ({cheapest_price_tl:,.2f} TL). Fark {gap:,.0f} TL > 200 TL. Yeni: {target_price_base:,.2f} {cur_label} ({target_price_tl:,.2f} TL)",
+                "reason": f"Fiyat çok düşük: Rakip {cheapest_name} ({cheapest_price_tl:,.2f} TL). Fark {gap:,.0f} TL > 300 TL. Yeni: {target_price_base:,.2f} {cur_label} ({target_price_tl:,.2f} TL)",
                 "cheapest_competitor": cheapest_name,
                 "cheapest_price": cheapest_price_tl,
             }
