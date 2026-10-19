@@ -180,63 +180,45 @@ export default function AutomationsPage() {
 
   return (
     <Layout>
-      <div className="p-6 max-w-5xl mx-auto space-y-6">
-        {/* Header */}
+      <div className="space-y-6">
+        {/* Stats */}
         <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-slate-800">Otomasyon Yönetimi</h1>
-            <p className="text-sm text-slate-500 mt-0.5">
-              Tüm zamanlı görevleri görüntüle, durdur veya yeni ekle
-            </p>
+          <div className="grid grid-cols-3 gap-4 flex-1">
+            <div className="bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-3">
+              <div className="w-10 h-10 rounded-lg bg-emerald-50 flex items-center justify-center">
+                <Zap className="w-5 h-5 text-emerald-600" />
+              </div>
+              <div>
+                <p className="text-xs text-slate-500">Toplam</p>
+                <p className="text-2xl font-bold text-slate-800">{jobs.length}</p>
+              </div>
+            </div>
+            <div className="bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-3">
+              <div className="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center">
+                <CheckCircle2 className="w-5 h-5 text-blue-600" />
+              </div>
+              <div>
+                <p className="text-xs text-slate-500">Aktif</p>
+                <p className="text-2xl font-bold text-slate-800">{activeCount}</p>
+              </div>
+            </div>
+            <div className="bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-3">
+              <div className="w-10 h-10 rounded-lg bg-amber-50 flex items-center justify-center">
+                <AlertCircle className="w-5 h-5 text-amber-600" />
+              </div>
+              <div>
+                <p className="text-xs text-slate-500">Duraklatıldı</p>
+                <p className="text-2xl font-bold text-slate-800">{pausedCount}</p>
+              </div>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={fetchJobs}
-              data-testid="refresh-automations-btn"
-            >
+          <div className="flex items-center gap-2 ml-4">
+            <Button variant="outline" size="sm" onClick={fetchJobs} data-testid="refresh-automations-btn">
               <RefreshCw className="w-4 h-4 mr-1" /> Yenile
             </Button>
-            <Button
-              size="sm"
-              onClick={() => setShowAddForm(true)}
-              className="bg-blue-600 hover:bg-blue-700 text-white"
-              data-testid="add-automation-btn"
-            >
+            <Button size="sm" onClick={() => setShowAddForm(true)} className="bg-blue-600 hover:bg-blue-700 text-white" data-testid="add-automation-btn">
               <Plus className="w-4 h-4 mr-1" /> Yeni Otomasyon
             </Button>
-          </div>
-        </div>
-
-        {/* Stats */}
-        <div className="grid grid-cols-3 gap-4">
-          <div className="bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-emerald-50 flex items-center justify-center">
-              <Zap className="w-5 h-5 text-emerald-600" />
-            </div>
-            <div>
-              <p className="text-xs text-slate-500">Toplam</p>
-              <p className="text-2xl font-bold text-slate-800">{jobs.length}</p>
-            </div>
-          </div>
-          <div className="bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center">
-              <CheckCircle2 className="w-5 h-5 text-blue-600" />
-            </div>
-            <div>
-              <p className="text-xs text-slate-500">Aktif</p>
-              <p className="text-2xl font-bold text-slate-800">{activeCount}</p>
-            </div>
-          </div>
-          <div className="bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-amber-50 flex items-center justify-center">
-              <AlertCircle className="w-5 h-5 text-amber-600" />
-            </div>
-            <div>
-              <p className="text-xs text-slate-500">Duraklatıldı</p>
-              <p className="text-2xl font-bold text-slate-800">{pausedCount}</p>
-            </div>
           </div>
         </div>
 
