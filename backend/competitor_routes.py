@@ -555,60 +555,11 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
             # Force refresh exchange rates before pricing
             force_refresh_rates()
             logger.info(f"Category pricing [{category_name}]: Kur verileri güncellendi")
-            # ===== PHASE 1: Refresh İkas prices for each product =====
-            await db.system_status.update_one({"task": task_key}, {"$set": {"phase": "ikas_refresh"}})
-            logger.info(f"Category pricing [{category_name}]: Phase 1 — İkas fiyat güncelleme ({len(products)} ürün)")
 
-            for i, prod in enumerate(products):
-                slug = prod["slug"]
-                ikas_id = prod.get("ikas_product_id")
-                if not ikas_id:
-                    continue
-                try:
-                    gql = f'{{ listProduct(id: {{eq: "{ikas_id}"}}) {{ data {{ variants {{ prices {{ sellPrice currency priceListId }} }} }} }} }}'
-                    result = await loop.run_in_executor(None, ikas_fn, gql, None)
-                    variants = (result.get("listProduct", {}).get("data", []) or [{}])[0].get("variants", [])
-                    if variants:
-                        prices = variants[0].get("prices", [])
-                        base_currency = base_price = price_list_id = None
-                        for p in prices:
-                            plid = p.get("priceListId") or ""
-                            if plid.startswith(NIHAI_PREFIX):
-                                continue
-                            sell = p.get("sellPrice", 0)
-                            if not sell or sell <= 0:
-                                continue
-                            cur = PRICE_LISTS_MAP.get(plid, p.get("currency") or "TRY")
-                            if cur == "EUR":
-                                base_currency, base_price, price_list_id = "EUR", sell, plid
-                                break
-                            elif cur == "USD" and base_currency != "EUR":
-                                base_currency, base_price, price_list_id = "USD", sell, plid
-                            elif cur == "TRY" and not base_currency:
-                                base_currency, base_price, price_list_id = "TRY", sell, plid
-                        if base_currency and base_price:
-                            uf = {
-                                "base_currency": base_currency,
-                                "base_price": base_price,
-                                "price_list_id": price_list_id,
-                            }
-                            if base_currency != "TRY":
-                                uf["our_price"] = convert_to_tl(base_price, base_currency)
-                            await db.products.update_one({"slug": slug}, {"$set": uf})
-                            ikas_refreshed += 1
-                except Exception as e:
-                    logger.error(f"İkas refresh error for {slug}: {e}")
-
-                # Update progress after EACH product (not every 10)
-                await db.system_status.update_one({"task": task_key}, {"$set": {
-                    "progress": i + 1, "ikas_refreshed": ikas_refreshed,
-                    "current_product": prod.get("name", slug)[:50],
-                }})
-                await asyncio.sleep(0.15)
-
-            # ===== PHASE 2: Scrape competitor prices =====
+            # Phase 1 (İkas refresh) MANUEL çalışmalarda atlanıyor — mevcut DB fiyatları kullanılıyor
+            # Nightly sync (00:15) zaten güncel fiyatları MongoDB'ye yazar
+            logger.info(f"Category pricing [{category_name}]: Phase 1 atlandı (manuel mod) — rakip taramaya geçiliyor")
             await db.system_status.update_one({"task": task_key}, {"$set": {"phase": "competitor_scan", "progress": 0}})
-            logger.info(f"Category pricing [{category_name}]: Phase 2 — Rakip fiyat tarama")
 
             product_slugs = [p["slug"] for p in products]
             # Get products with competitor matches
@@ -660,18 +611,8 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                             ikas_id = product.get("ikas_id") or product.get("ikas_product_id")
                             new_tl = result["new_price_tl"]
 
-                            # 23-hour protection: skip if already updated recently
-                            last_update = product.get("price_updated_at")
-                            if last_update:
-                                try:
-                                    last_dt = datetime.fromisoformat(last_update.replace("Z", "+00:00")) if isinstance(last_update, str) else last_update
-                                    hours_since = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
-                                    if hours_since < 23:
-                                        skipped += 1
-                                        scanned += 1
-                                        continue
-                                except Exception:
-                                    pass
+                            # Manuel çalışmalarda 23 saat koruması devre dışı
+                            # (Kullanıcı "Şimdi Çalıştır"a tıkladı, zorla güncelleme isteniyor)
 
                             log_entry = {
                                 "product_slug": slug,
@@ -797,7 +738,7 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
                         "scanned": scanned, "updated": updated_count, "skipped": skipped,
                         "current_product": product.get("name", slug)[:50] if product else slug,
                     }})
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.05)
 
             await db.system_status.update_one({"task": task_key}, {"$set": {
                 "running": False, "phase": "done",
