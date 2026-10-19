@@ -4667,12 +4667,15 @@ async def scheduled_ikas_currency_sync():
                     continue
                 prices = variants[0].get("prices", [])
                 base_currency = base_price = price_list_id = None
+                nihai_try_price = None  # İkas'ın kendi kur hesabıyla bulduğu TRY fiyatı
                 for p in prices:
                     plid = p.get("priceListId") or ""
-                    if plid.startswith(NIHAI_PREFIX):
-                        continue
                     sell = p.get("sellPrice", 0)
                     if not sell or sell <= 0:
+                        continue
+                    if plid.startswith(NIHAI_PREFIX):
+                        # Bu fiyat İkas'ın EUR→TRY dönüşüm listesi
+                        nihai_try_price = sell
                         continue
                     cur = PRICE_LISTS.get(plid, p.get("currency") or "TRY")
                     if cur == "EUR":
@@ -4686,11 +4689,61 @@ async def scheduled_ikas_currency_sync():
                     ikas_products_map[normalize_name(name)] = {
                         "ikas_id": ikas_id, "base_currency": base_currency,
                         "base_price": base_price, "price_list_id": price_list_id,
+                        "nihai_try_price": nihai_try_price,
                     }
                 total_fetched += 1
             ikas_page += 1
             await asyncio.sleep(0.2)
         
+        # ===== İkas'tan implicit EUR/USD kurunu hesapla ve cache'e yaz =====
+        eur_samples = []
+        usd_samples = []
+        for ik_data in ikas_products_map.values():
+            bp = ik_data.get("base_price", 0)
+            bc = ik_data.get("base_currency")
+            nihai = ik_data.get("nihai_try_price")
+            if bp and bp > 0 and nihai and nihai > 0:
+                implied_rate = round(nihai / bp, 4)
+                # Makul aralıkta mı kontrol et (EUR: 20-200 TL, USD: 15-150 TL)
+                if bc == "EUR" and 20 < implied_rate < 200:
+                    eur_samples.append(implied_rate)
+                elif bc == "USD" and 15 < implied_rate < 150:
+                    usd_samples.append(implied_rate)
+
+        if eur_samples or usd_samples:
+            from tcmb_exchange import _cache as _rate_cache, force_refresh_rates
+            current_rates = force_refresh_rates().copy()
+            if eur_samples:
+                # Aykırı değerleri elemek için medyan kullan
+                eur_samples_sorted = sorted(eur_samples)
+                mid = len(eur_samples_sorted) // 2
+                ikas_eur_rate = eur_samples_sorted[mid]
+                old_eur = current_rates.get("EUR", 0)
+                current_rates["EUR"] = ikas_eur_rate
+                logger.info(f"CRON: İkas EUR kuru güncellendi: {old_eur:.4f} → {ikas_eur_rate:.4f} ({len(eur_samples)} örnekten)")
+            if usd_samples:
+                usd_samples_sorted = sorted(usd_samples)
+                mid = len(usd_samples_sorted) // 2
+                ikas_usd_rate = usd_samples_sorted[mid]
+                old_usd = current_rates.get("USD", 0)
+                current_rates["USD"] = ikas_usd_rate
+                logger.info(f"CRON: İkas USD kuru güncellendi: {old_usd:.4f} → {ikas_usd_rate:.4f} ({len(usd_samples)} örnekten)")
+            _rate_cache["rates"] = current_rates
+            import time as _time
+            _rate_cache["fetched_at"] = _time.time()
+            await db.system_status.update_one(
+                {"task": "ikas_implied_rates"},
+                {"$set": {
+                    "eur": current_rates.get("EUR"),
+                    "usd": current_rates.get("USD"),
+                    "eur_samples": len(eur_samples),
+                    "usd_samples": len(usd_samples),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "source": "ikas_nihai_fiyat"
+                }},
+                upsert=True
+            )
+
         local_products = await db.products.find(
             {"inactive": {"$ne": True}}, {"_id": 0, "slug": 1, "name": 1}
         ).to_list(10000)
