@@ -4252,6 +4252,134 @@ api_router.include_router(competitor_router)
 from filter_routes import router as filter_router
 api_router.include_router(filter_router)
 
+# ============ OTOMASYON YÖNETİMİ ============
+
+async def _run_competitor_scan_job():
+    """Module-level wrapper — custom/extra scheduler job'ları için kullanılır."""
+    await run_scheduled_competitor_scan(db, ikas_graphql)
+
+SYSTEM_JOB_IDS = {
+    "feed_sync", "ikas_currency_sync_cron", "price_check_cron",
+    "competitor_scan_cron", "competitor_scan_10_00", "competitor_scan_14_00",
+    "competitor_scan_18_00", "auto_seo_cron"
+}
+
+def _job_type_from_id(job_id: str) -> str:
+    if "competitor_scan" in job_id:
+        return "competitor_scan"
+    if "feed_sync" in job_id:
+        return "feed_sync"
+    if "ikas_currency" in job_id:
+        return "ikas_sync"
+    if "price_check" in job_id:
+        return "price_check"
+    if "auto_seo" in job_id:
+        return "auto_seo"
+    return "competitor_scan"
+
+def _job_type_label(job_id: str) -> str:
+    labels = {
+        "competitor_scan": "Rakip Fiyat Tarama",
+        "feed_sync": "Feed Senkron",
+        "ikas_sync": "İkas Senkron",
+        "price_check": "Akakçe Fiyat",
+        "auto_seo": "Otomatik SEO",
+    }
+    return labels.get(_job_type_from_id(job_id), "Bilinmiyor")
+
+def _parse_cron_trigger(job) -> dict:
+    try:
+        fields = {f.name: str(f) for f in job.trigger.fields}
+        return {"hour": fields.get("hour", "?"), "minute": fields.get("minute", "?")}
+    except Exception:
+        return {"hour": "?", "minute": "?"}
+
+@api_router.get("/automations")
+async def get_automations(user: dict = Depends(get_current_user)):
+    from pytz import timezone as pytz_tz
+    TR_tz = pytz_tz("Europe/Istanbul")
+    jobs_list = []
+    for job in scheduler.get_jobs():
+        is_paused = job.next_run_time is None
+        next_run = None
+        if job.next_run_time:
+            try:
+                next_run = job.next_run_time.astimezone(TR_tz).strftime("%H:%M %d.%m.%Y")
+            except Exception:
+                next_run = str(job.next_run_time)
+        last_run_doc = await db.system_status.find_one({"task": job.id}, {"_id": 0})
+        cron = _parse_cron_trigger(job)
+        jobs_list.append({
+            "id": job.id,
+            "name": job.name,
+            "type": _job_type_from_id(job.id),
+            "type_label": _job_type_label(job.id),
+            "next_run": next_run,
+            "is_paused": is_paused,
+            "last_run": last_run_doc.get("completed_at") if last_run_doc else None,
+            "last_status": last_run_doc.get("status", "Bilinmiyor") if last_run_doc else None,
+            "hour": cron["hour"],
+            "minute": cron["minute"],
+            "is_system": job.id in SYSTEM_JOB_IDS,
+        })
+    jobs_list.sort(key=lambda j: (j["hour"].zfill(2) if j["hour"] != "?" else "99"))
+    return {"jobs": jobs_list, "scheduler_running": scheduler.running}
+
+@api_router.post("/automations/{job_id}/pause")
+async def pause_automation(job_id: str, user: dict = Depends(get_current_user)):
+    try:
+        scheduler.pause_job(job_id)
+        return {"success": True, "message": "Otomasyon duraklatıldı"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@api_router.post("/automations/{job_id}/resume")
+async def resume_automation(job_id: str, user: dict = Depends(get_current_user)):
+    try:
+        scheduler.resume_job(job_id)
+        return {"success": True, "message": "Otomasyon devam ettirildi"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@api_router.post("/automations")
+async def add_automation(payload: dict, user: dict = Depends(get_current_user)):
+    from pytz import timezone as pytz_tz
+    TR_tz = pytz_tz("Europe/Istanbul")
+    job_type = payload.get("job_type", "competitor_scan")
+    hour = int(payload.get("hour", 12))
+    minute = int(payload.get("minute", 0))
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        raise HTTPException(status_code=400, detail="Geçersiz saat/dakika")
+    job_id = f"custom_{job_type}_{hour:02d}_{minute:02d}"
+    if scheduler.get_job(job_id):
+        raise HTTPException(status_code=400, detail="Bu saatte zaten bir otomasyon mevcut")
+    label = "Rakip Fiyat Tarama"
+    job_name = f"{label} ({hour:02d}:{minute:02d} TR) [Özel]"
+    scheduler.add_job(
+        _run_competitor_scan_job,
+        CronTrigger(hour=hour, minute=minute, timezone=TR_tz),
+        id=job_id, name=job_name, replace_existing=True, misfire_grace_time=3600
+    )
+    await db.scheduled_jobs.update_one(
+        {"job_id": job_id},
+        {"$set": {"job_id": job_id, "name": job_name, "job_type": job_type,
+                  "hour": hour, "minute": minute,
+                  "created_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True
+    )
+    return {"success": True, "job_id": job_id, "name": job_name}
+
+@api_router.delete("/automations/{job_id}")
+async def delete_automation(job_id: str, user: dict = Depends(get_current_user)):
+    if job_id in SYSTEM_JOB_IDS:
+        raise HTTPException(status_code=400, detail="Sistem otomasyonları silinemez, sadece duraklatılabilir")
+    try:
+        scheduler.remove_job(job_id)
+        await db.scheduled_jobs.delete_one({"job_id": job_id})
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 app.include_router(api_router)
 
 
@@ -4331,8 +4459,29 @@ async def startup():
     scheduler.add_job(scheduled_price_check, CronTrigger(hour=0, minute=30, timezone=TR), id="price_check_cron", name="Akakce Fiyat (00:30 TR)", replace_existing=True, misfire_grace_time=3600)
     # 00:45 TR → Rakip fiyat tara + en ucuz rakibin 200 TL altına güncelle
     scheduler.add_job(_sched_competitor_scan, CronTrigger(hour=0, minute=45, timezone=TR), id="competitor_scan_cron", name="Rakip Tara+Fiyat Guncelle (00:45 TR)", replace_existing=True, misfire_grace_time=3600)
+    # 10:00 TR → Gündüz rakip fiyat taraması
+    scheduler.add_job(_run_competitor_scan_job, CronTrigger(hour=10, minute=0, timezone=TR), id="competitor_scan_10_00", name="Rakip Tara+Fiyat Guncelle (10:00 TR)", replace_existing=True, misfire_grace_time=3600)
+    # 14:00 TR → Öğle rakip fiyat taraması
+    scheduler.add_job(_run_competitor_scan_job, CronTrigger(hour=14, minute=0, timezone=TR), id="competitor_scan_14_00", name="Rakip Tara+Fiyat Guncelle (14:00 TR)", replace_existing=True, misfire_grace_time=3600)
+    # 18:00 TR → Akşam rakip fiyat taraması
+    scheduler.add_job(_run_competitor_scan_job, CronTrigger(hour=18, minute=0, timezone=TR), id="competitor_scan_18_00", name="Rakip Tara+Fiyat Guncelle (18:00 TR)", replace_existing=True, misfire_grace_time=3600)
     # 03:00 TR → Otomatik SEO
     scheduler.add_job(_sched_auto_seo, CronTrigger(hour=3, minute=0, timezone=TR), id="auto_seo_cron", name="Oto SEO (03:00 TR)", replace_existing=True, misfire_grace_time=3600)
+
+    # Kalıcı kaydedilmiş özel job'ları yükle
+    custom_jobs = await db.scheduled_jobs.find({}).to_list(length=100)
+    for cj in custom_jobs:
+        cj_id = cj.get("job_id")
+        if cj_id and not scheduler.get_job(cj_id):
+            try:
+                scheduler.add_job(
+                    _run_competitor_scan_job,
+                    CronTrigger(hour=cj["hour"], minute=cj["minute"], timezone=TR),
+                    id=cj_id, name=cj["name"], replace_existing=True, misfire_grace_time=3600
+                )
+                logger.info(f"Özel job yüklendi: {cj['name']}")
+            except Exception as ex:
+                logger.warning(f"Özel job yüklenemedi {cj_id}: {ex}")
     scheduler.start()
     # Log next fire times
     for job in scheduler.get_jobs():

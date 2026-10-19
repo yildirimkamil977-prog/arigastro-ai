@@ -9,8 +9,11 @@ Mutfak10, Cafemarkt, Mutbex, Hakbilenler, Oğuz Mutfak (render-only), Kariyer Mu
 | 00:00 | Feed sync — yeni ürün ekle, silinen pasif yap, fiyat güncelle |
 | 00:15 | İkas sync — fiyat, kategori, marka güncelle + filter_categories |
 | 00:30 | Akakçe fiyat kontrolü (ayrı akış) |
-| 00:45 | Rakip fiyat tara + en ucuz rakibin 100 TL altına güncelle (dip fiyat korumalı) |
+| 00:45 | Rakip fiyat tara + en ucuz rakibin 200 TL altına güncelle (dip fiyat korumalı) |
 | 03:00 | Otomatik SEO üretimi |
+| 10:00 | Rakip fiyat tara + fiyat güncelle (gündüz taraması) |
+| 14:00 | Rakip fiyat tara + fiyat güncelle (öğle taraması) |
+| 18:00 | Rakip fiyat tara + fiyat güncelle (akşam taraması) |
 
 ## Tamamlanan ✅
 - 6 rakip sitesi, multi-currency, dip fiyat koruması

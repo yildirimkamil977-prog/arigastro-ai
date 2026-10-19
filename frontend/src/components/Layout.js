@@ -4,13 +4,14 @@ import { useNavigate, useLocation, Link } from "react-router-dom";
 import { Button } from "./ui/button";
 import {
   LayoutDashboard, Package, Tags, TrendingDown, FileText,
-  ChevronLeft, ChevronRight, LogOut, Menu, Sparkles, Settings, BookOpen, Send, Brain, BarChart3, Building2, Radar, History, SlidersHorizontal
+  ChevronLeft, ChevronRight, LogOut, Menu, Sparkles, Settings, BookOpen, Send, Brain, BarChart3, Building2, Radar, History, SlidersHorizontal, CalendarClock
 } from "lucide-react";
 
 const navItems = [
   { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { path: "/products", label: "Urunler & Eslestirme", icon: Package },
   { path: "/competitor-scan", label: "Otomasyon", icon: Radar },
+  { path: "/automations", label: "Otomasyon Yönetimi", icon: CalendarClock },
   { path: "/price-changes", label: "Islem Loglari", icon: History },
   { path: "/categories", label: "Kategoriler", icon: Tags },
   { path: "/seo", label: "SEO Uretici", icon: FileText },
