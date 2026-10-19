@@ -552,14 +552,68 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
         skipped = 0
 
         try:
-            # Force refresh exchange rates before pricing
+            # Phase 1: İkas'tan canlı EUR/USD kurunu çek + kategori ürünlerinin fiyatlarını güncelle
             force_refresh_rates()
-            logger.info(f"Category pricing [{category_name}]: Kur verileri güncellendi")
+            logger.info(f"Category pricing [{category_name}]: CurrencyAPI kuru alındı")
+            await db.system_status.update_one({"task": task_key}, {"$set": {"phase": "ikas_rate_sync", "progress": 0, "current_product": "İkas kuru tespit ediliyor..."}})
 
-            # Phase 1 (İkas refresh) MANUEL çalışmalarda atlanıyor — mevcut DB fiyatları kullanılıyor
-            # Nightly sync (00:15) zaten güncel fiyatları MongoDB'ye yazar
-            logger.info(f"Category pricing [{category_name}]: Phase 1 atlandı (manuel mod) — rakip taramaya geçiliyor")
-            await db.system_status.update_one({"task": task_key}, {"$set": {"phase": "competitor_scan", "progress": 0}})
+            if ikas_fn:
+                await _update_rates_from_ikas(db, ikas_fn, max_pages=2)
+                logger.info(f"Category pricing [{category_name}]: İkas kuru güncellendi")
+
+                # Kategori ürünlerinin fiyatlarını İkas'tan çek ve DB'ye yaz
+                PRICE_LISTS_LOCAL = {
+                    "db850a77-bfd6-43de-8892-78d16dc01e0e": "EUR",
+                    "28b86f15-34b5-4c49-8d96-678194f4a8ba": "USD",
+                    "35b38ca5-9f2d-4482-a9d8-3a6b0df33efd": "TRY",
+                }
+                NIHAI_PREFIX_LOCAL = "b8f60257"
+                loop_local = asyncio.get_event_loop()
+                ikas_refreshed = 0
+                for idx, prod in enumerate(products):
+                    ikas_id = prod.get("ikas_id") or prod.get("ikas_product_id")
+                    if not ikas_id:
+                        continue
+                    try:
+                        gql = f'{{ listProduct(id: {{eq: "{ikas_id}"}}) {{ data {{ variants {{ prices {{ sellPrice currency priceListId }} }} }} }} }}'
+                        res = await loop_local.run_in_executor(None, ikas_fn, gql, None)
+                        variants = (res.get("listProduct", {}).get("data", []) or [{}])[0].get("variants", [])
+                        if variants:
+                            prices_data = variants[0].get("prices", [])
+                            bc = bp = plid_out = None
+                            for p in prices_data:
+                                plid = p.get("priceListId") or ""
+                                if plid.startswith(NIHAI_PREFIX_LOCAL):
+                                    continue
+                                sell = p.get("sellPrice", 0)
+                                if not sell or sell <= 0:
+                                    continue
+                                cur = PRICE_LISTS_LOCAL.get(plid, p.get("currency") or "TRY")
+                                if cur == "EUR":
+                                    bc, bp, plid_out = "EUR", sell, plid
+                                    break
+                                elif cur == "USD" and bc != "EUR":
+                                    bc, bp, plid_out = "USD", sell, plid
+                                elif cur == "TRY" and not bc:
+                                    bc, bp, plid_out = "TRY", sell, plid
+                            if bc and bp:
+                                uf = {"base_currency": bc, "base_price": bp, "price_list_id": plid_out}
+                                if bc != "TRY":
+                                    from tcmb_exchange import convert_to_tl as _c2tl
+                                    uf["our_price"] = _c2tl(bp, bc)
+                                await db.products.update_one({"slug": prod["slug"]}, {"$set": uf})
+                                ikas_refreshed += 1
+                    except Exception as e:
+                        logger.warning(f"Manuel İkas fiyat çekimi hatası ({prod.get('slug')}): {e}")
+                    await db.system_status.update_one({"task": task_key}, {"$set": {
+                        "progress": idx + 1, "ikas_refreshed": ikas_refreshed,
+                        "current_product": f"İkas güncelleniyor: {prod.get('name', prod['slug'])[:40]}",
+                    }})
+                    await asyncio.sleep(0.1)
+
+                logger.info(f"Category pricing [{category_name}]: {ikas_refreshed}/{len(products)} ürün İkas'tan güncellendi")
+
+            await db.system_status.update_one({"task": task_key}, {"$set": {"phase": "competitor_scan", "progress": 0, "current_product": ""}})
 
             product_slugs = [p["slug"] for p in products]
             # Get products with competitor matches
@@ -1891,6 +1945,90 @@ def setup_competitor_routes(db, get_current_user, ikas_graphql):
     return router
 
 
+async def _update_rates_from_ikas(db, ikas_graphql, max_pages: int = 2) -> dict:
+    """İkas'ın nihai TRY fiyatlarından EUR/USD kurunu hesapla ve cache'e yaz."""
+    import time as _time
+    from tcmb_exchange import _cache as _rate_cache
+    NIHAI_PREFIX = "b8f60257"
+    PRICE_LISTS = {
+        "db850a77-bfd6-43de-8892-78d16dc01e0e": "EUR",
+        "28b86f15-34b5-4c49-8d96-678194f4a8ba": "USD",
+        "35b38ca5-9f2d-4482-a9d8-3a6b0df33efd": "TRY",
+    }
+    loop = asyncio.get_event_loop()
+    eur_samples, usd_samples = [], []
+    query = """query ListProducts($pagination: PaginationInput) {
+        listProduct(pagination: $pagination) {
+            data { id variants { prices { sellPrice currency priceListId } } }
+        }
+    }"""
+    try:
+        for page in range(1, max_pages + 1):
+            result = await loop.run_in_executor(None, ikas_graphql, query, {"pagination": {"page": page, "limit": 100}})
+            products_data = result.get("listProduct", {}).get("data", [])
+            if not products_data:
+                break
+            for ip in products_data:
+                variants = ip.get("variants", [])
+                if not variants:
+                    continue
+                prices = variants[0].get("prices", [])
+                base_currency = base_price = nihai_try = None
+                for p in prices:
+                    plid = p.get("priceListId") or ""
+                    sell = p.get("sellPrice", 0)
+                    if not sell or sell <= 0:
+                        continue
+                    if plid.startswith(NIHAI_PREFIX):
+                        nihai_try = sell
+                        continue
+                    cur = PRICE_LISTS.get(plid, p.get("currency") or "TRY")
+                    if cur == "EUR" and not base_currency:
+                        base_currency, base_price = "EUR", sell
+                    elif cur == "USD" and base_currency not in ("EUR",):
+                        base_currency, base_price = "USD", sell
+                if base_currency and base_price and nihai_try:
+                    implied = round(nihai_try / base_price, 4)
+                    if base_currency == "EUR" and 20 < implied < 200:
+                        eur_samples.append(implied)
+                    elif base_currency == "USD" and 15 < implied < 150:
+                        usd_samples.append(implied)
+            if len(eur_samples) + len(usd_samples) >= 50:
+                break  # Yeterli örnek var, duruyoruz
+
+        rates_updated = {}
+        if eur_samples or usd_samples:
+            current = dict(_rate_cache.get("rates", {})) or {}
+            if eur_samples:
+                mid = sorted(eur_samples)[len(eur_samples) // 2]
+                old = current.get("EUR", 0)
+                current["EUR"] = mid
+                rates_updated["EUR"] = mid
+                logger.info(f"İkas EUR kuru: {old:.4f} → {mid:.4f} ({len(eur_samples)} örnekten)")
+            if usd_samples:
+                mid = sorted(usd_samples)[len(usd_samples) // 2]
+                old = current.get("USD", 0)
+                current["USD"] = mid
+                rates_updated["USD"] = mid
+                logger.info(f"İkas USD kuru: {old:.4f} → {mid:.4f} ({len(usd_samples)} örnekten)")
+            _rate_cache["rates"] = current
+            _rate_cache["fetched_at"] = _time.time()
+            await db.system_status.update_one(
+                {"task": "ikas_implied_rates"},
+                {"$set": {
+                    "eur": current.get("EUR"), "usd": current.get("USD"),
+                    "eur_samples": len(eur_samples), "usd_samples": len(usd_samples),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "source": "ikas_nihai_fiyat"
+                }},
+                upsert=True
+            )
+        return rates_updated
+    except Exception as e:
+        logger.warning(f"İkas kur tespiti başarısız (fallback kullanılacak): {e}")
+        return {}
+
+
 async def run_scheduled_competitor_scan(db, ikas_graphql=None):
     """Called by APScheduler — scans all matched products, then auto-updates İkas for enabled categories."""
     from competitor_pricing import (
@@ -1899,8 +2037,10 @@ async def run_scheduled_competitor_scan(db, ikas_graphql=None):
     from tcmb_exchange import convert_from_tl, convert_to_tl, force_refresh_rates
     logger.info("CRON: Rakip fiyat taramasi basladi")
     try:
-        # Force refresh exchange rates before scan
+        # Önce CurrencyAPI'dan kur al, sonra İkas'ın kendi kuru ile üzerine yaz
         force_refresh_rates()
+        if ikas_graphql:
+            await _update_rates_from_ikas(db, ikas_graphql)
         logger.info("CRON: Kur verileri güncellendi")
         rules_list = await db.pricing_rules.find({"enabled": True}).to_list(100)
         rules_map = {r["category_name"]: r for r in rules_list}
